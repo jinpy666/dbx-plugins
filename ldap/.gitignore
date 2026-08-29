@@ -1,0 +1,7 @@
+/dist/
+/backend/bin/
+/dbx-plugin-ldap
+node_modules/
+frontend/dist/
+.DS_Store
+*.log

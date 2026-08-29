@@ -1,0 +1,30 @@
+# TLS variant of docker-compose.ldap-test.yml: bitnami/openldap with LDAPS
+# (636) and StartTLS (on 1389) for the M3/TLS smoke scenarios in
+# scripts/smoke_auth_test.py.
+#
+# No credential material in this file:
+#   * LDAP_ADMIN_PASSWORD must come from the environment (same rule as the
+#     plain-text variant);
+#   * LDAP_TLS_CERTS_DIR must point at an ephemeral directory with a
+#     throwaway self-signed server certificate (smoke_auth_test.py generates
+#     one into a temp dir; never commit a key here).
+services:
+  ldap-tls-test:
+    image: bitnami/openldap:latest
+    container_name: dbx-ldap-tls-test
+    environment:
+      LDAP_ROOT: "dc=example,dc=org"
+      LDAP_ADMIN_USERNAME: "admin"
+      LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD:?export LDAP_ADMIN_PASSWORD before running}"
+      LDAP_PORT_NUMBER: "1389"
+      LDAP_LDAPS_PORT_NUMBER: "636"
+      LDAP_ENABLE_TLS: "yes"
+      LDAP_TLS_CERT_FILE: "/certs/openldap.crt"
+      LDAP_TLS_KEY_FILE: "/certs/openldap.key"
+      LDAP_TLS_CA_FILE: "/certs/openldap-ca.crt"
+    ports:
+      - "1389:1389"
+      - "636:636"
+    volumes:
+      - ./scripts/ldap-seed:/ldifs:ro
+      - ${LDAP_TLS_CERTS_DIR:?export LDAP_TLS_CERTS_DIR (ephemeral dir with openldap.crt/.key/-ca.crt)}:/certs:ro

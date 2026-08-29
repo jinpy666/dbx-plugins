@@ -1,0 +1,1391 @@
+{
+  "$schema": "https://raw.githubusercontent.com/t8y2/dbx/dev/plugin-framework-current/plugins/manifest.schema.json",
+  "manifest_version": 1,
+  "id": "io.dbx.ldap",
+  "name": "DBX LDAP",
+  "version": "0.1.3",
+  "publisher": "dbx",
+  "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
+  "icon": "assets/plugin.svg",
+  "engines": {
+    "dbx": ">=0.5.77",
+    "host_api": ">=1.0.0"
+  },
+  "permissions": [
+    "host.events",
+    "host.workbench"
+  ],
+  "entrypoints": {
+    "backend": {
+      "transport": "stdio-jsonl",
+      "executable": "bin/dbx-plugin-ldap"
+    },
+    "ui": {
+      "root": "ui",
+      "entry": "ui/index.html"
+    }
+  },
+  "contributions": [
+    {
+      "type": "connection-provider",
+      "id": "io.dbx.ldap.connection",
+      "label": "LDAP server",
+      "icon": "assets/plugin.svg",
+      "database_type": "ldap",
+      "description": "LDAP directory connection with simple, anonymous, unauthenticated and advanced authentication.",
+      "capabilities": [
+        "test",
+        "connect",
+        "disconnect"
+      ],
+      "workbench": "io.dbx.ldap.workbench",
+      "fields": [
+        {
+          "key": "display_name",
+          "label": "Connection name",
+          "type": "text",
+          "default": "LDAP server",
+          "binding": "name",
+          "required": true
+        },
+        {
+          "key": "url",
+          "label": "LDAP URL",
+          "type": "text",
+          "description": "ldap / ldaps URL. Network traffic dials the DBX transport endpoint; TLS SNI uses the host in this URL.",
+          "placeholder": "ldap://host:389 or ldaps://host:636",
+          "default": "ldap://127.0.0.1:389",
+          "binding": "host",
+          "required": true
+        },
+        {
+          "key": "base_dn",
+          "label": "Base DN",
+          "type": "text",
+          "default": "",
+          "binding": "config"
+        },
+        {
+          "key": "auth_type",
+          "label": "Authentication",
+          "type": "select",
+          "options": [
+            {
+              "label": "Anonymous",
+              "value": "anonymous"
+            },
+            {
+              "label": "Unauthenticated bind",
+              "value": "unauthenticated"
+            },
+            {
+              "label": "Simple",
+              "value": "simple"
+            },
+            {
+              "label": "Kerberos (GSSAPI)",
+              "value": "kerberos"
+            },
+            {
+              "label": "NTLM",
+              "value": "ntlm"
+            },
+            {
+              "label": "NTLM hash",
+              "value": "ntlm_hash"
+            },
+            {
+              "label": "DIGEST-MD5",
+              "value": "digest_md5"
+            },
+            {
+              "label": "External (SASL EXTERNAL)",
+              "value": "external"
+            }
+          ],
+          "default": "simple",
+          "binding": "config"
+        },
+        {
+          "key": "bind_dn",
+          "label": "Bind DN",
+          "type": "text",
+          "description": "DN used for the bind. Required for unauthenticated bind (DN with empty password).",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "simple",
+              "unauthenticated"
+            ]
+          },
+          "required_when": {
+            "field": "auth_type",
+            "one_of": [
+              "unauthenticated"
+            ]
+          }
+        },
+        {
+          "key": "username",
+          "label": "Username",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "simple",
+              "ntlm",
+              "ntlm_hash",
+              "digest_md5",
+              "kerberos"
+            ]
+          },
+          "required_when": {
+            "field": "auth_type",
+            "one_of": [
+              "ntlm",
+              "ntlm_hash",
+              "digest_md5"
+            ]
+          }
+        },
+        {
+          "key": "domain",
+          "label": "Domain",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "ntlm",
+              "ntlm_hash",
+              "digest_md5"
+            ]
+          }
+        },
+        {
+          "key": "bind_password",
+          "label": "Bind password",
+          "type": "password",
+          "default": "",
+          "binding": "secret",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "simple",
+              "ntlm",
+              "digest_md5"
+            ]
+          },
+          "required_when": {
+            "field": "auth_type",
+            "one_of": [
+              "simple",
+              "ntlm",
+              "digest_md5"
+            ]
+          }
+        },
+        {
+          "key": "ntlm_hash",
+          "label": "NTLM hash",
+          "type": "password",
+          "default": "",
+          "binding": "secret",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "ntlm_hash"
+            ]
+          },
+          "required_when": {
+            "field": "auth_type",
+            "one_of": [
+              "ntlm_hash"
+            ]
+          }
+        },
+        {
+          "key": "use_starttls",
+          "label": "Use StartTLS",
+          "type": "boolean",
+          "description": "Mutually exclusive with an ldaps URL (validated on connect).",
+          "default": false,
+          "binding": "config"
+        },
+        {
+          "key": "tls_verify",
+          "label": "Verify TLS certificate",
+          "type": "boolean",
+          "default": true,
+          "binding": "config"
+        },
+        {
+          "key": "tls_ca_path",
+          "label": "TLS CA certificate path",
+          "type": "text",
+          "default": "",
+          "binding": "config"
+        },
+        {
+          "key": "tls_server_name",
+          "label": "TLS server name",
+          "type": "text",
+          "description": "Defaults to the host in the URL when empty.",
+          "default": "",
+          "binding": "config"
+        },
+        {
+          "key": "krb_credential_type",
+          "label": "Kerberos credential type",
+          "type": "select",
+          "options": [
+            {
+              "label": "Password",
+              "value": "password"
+            },
+            {
+              "label": "Keytab",
+              "value": "keytab"
+            },
+            {
+              "label": "Credential cache (ccache)",
+              "value": "ccache"
+            }
+          ],
+          "default": "password",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "krb_realm",
+          "label": "Kerberos realm",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "krb_kdc_host",
+          "label": "KDC host",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "krb_kdc_port",
+          "label": "KDC port",
+          "type": "number",
+          "default": 88,
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "krb_keytab_path",
+          "label": "Keytab file path",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "keytab"
+            ]
+          }
+        },
+        {
+          "key": "krb_ccache_path",
+          "label": "Credential cache path",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "ccache"
+            ]
+          }
+        },
+        {
+          "key": "krb5_conf_path",
+          "label": "krb5.conf path",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "sasl_host",
+          "label": "SASL host override",
+          "type": "text",
+          "description": "Optional DIGEST-MD5 SASL host; defaults to the host in the LDAP URL.",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "digest_md5"
+            ]
+          }
+        },
+        {
+          "key": "krb_username",
+          "label": "Kerberos username override",
+          "type": "text",
+          "description": "Optional principal username (without realm); defaults to the username field.",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "sasl_qop",
+          "label": "Quality of protection",
+          "type": "select",
+          "description": "GSSAPI quality of protection (kerberos).",
+          "options": [
+            {
+              "label": "Authentication only",
+              "value": "auth"
+            },
+            {
+              "label": "Authentication with integrity",
+              "value": "auth-int"
+            },
+            {
+              "label": "Authentication with confidentiality",
+              "value": "auth-conf"
+            }
+          ],
+          "default": "auth",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "sasl_mutual_auth",
+          "label": "Mutual authentication",
+          "type": "boolean",
+          "description": "Request mutual authentication in the GSSAPI context.",
+          "default": false,
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "krb_password",
+          "label": "Kerberos password",
+          "type": "password",
+          "description": "Secret used only when the Kerberos credential type is password (ignored for keytab/ccache).",
+          "default": "",
+          "binding": "secret",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "timeout_secs",
+          "label": "Timeout (seconds)",
+          "type": "number",
+          "default": 30,
+          "binding": "config"
+        },
+        {
+          "key": "read_only",
+          "label": "Read-only",
+          "type": "boolean",
+          "default": false,
+          "binding": "config"
+        },
+        {
+          "key": "allowed_base_dns",
+          "label": "Allowed base DNs (read)",
+          "type": "textarea",
+          "description": "One DN per line; empty means unrestricted.",
+          "default": "",
+          "binding": "config"
+        },
+        {
+          "key": "allowed_write_base_dns",
+          "label": "Allowed base DNs (write)",
+          "type": "textarea",
+          "description": "Falls back to the read allowlist when empty.",
+          "default": "",
+          "binding": "config"
+        },
+        {
+          "key": "blocked_attributes",
+          "label": "Blocked attributes",
+          "type": "textarea",
+          "description": "One attribute name per line; filtered from results and rejected on writes.",
+          "default": "userPassword\nunicodePwd\npassword\npwd\nsecret\ntoken\napiKey\nprivateKey\nobjectSid\nobjectGUID\nmemberOf",
+          "binding": "config"
+        }
+      ]
+    },
+    {
+      "type": "workbench",
+      "id": "io.dbx.ldap.workbench",
+      "label": "LDAP Workbench",
+      "description": "Browse and edit LDAP directory entries.",
+      "icon": "assets/plugin.svg"
+    }
+  ],
+  "localizations": {
+    "zh-CN": {
+      "name": "DBX LDAP",
+      "description": "DBX 的 LDAP 控制台插件：DN 树、RFC 4515 搜索、条目编辑、Schema 与搜索预设。",
+      "contributions": {
+        "io.dbx.ldap.connection": {
+          "label": "LDAP 服务器",
+          "description": "支持 simple、匿名、unauthenticated 及进阶认证的 LDAP 目录连接。",
+          "fields": {
+            "display_name": {
+              "label": "连接名称"
+            },
+            "url": {
+              "label": "LDAP URL"
+            },
+            "base_dn": {
+              "label": "Base DN"
+            },
+            "auth_type": {
+              "label": "认证方式",
+              "options": {
+                "anonymous": "匿名",
+                "unauthenticated": "Unauthenticated bind",
+                "simple": "Simple",
+                "kerberos": "Kerberos（GSSAPI）",
+                "ntlm": "NTLM",
+                "ntlm_hash": "NTLM 哈希",
+                "digest_md5": "DIGEST-MD5",
+                "external": "External（SASL 外部）"
+              }
+            },
+            "bind_dn": {
+              "label": "Bind DN"
+            },
+            "username": {
+              "label": "用户名"
+            },
+            "domain": {
+              "label": "域"
+            },
+            "bind_password": {
+              "label": "Bind 密码"
+            },
+            "ntlm_hash": {
+              "label": "NTLM 哈希"
+            },
+            "use_starttls": {
+              "label": "启用 StartTLS"
+            },
+            "tls_verify": {
+              "label": "校验 TLS 证书"
+            },
+            "tls_ca_path": {
+              "label": "TLS CA 证书路径"
+            },
+            "tls_server_name": {
+              "label": "TLS 服务器名"
+            },
+            "krb_credential_type": {
+              "label": "Kerberos 凭据类型",
+              "options": {
+                "password": "密码",
+                "keytab": "Keytab",
+                "ccache": "凭据缓存（ccache）"
+              }
+            },
+            "krb_realm": {
+              "label": "Kerberos Realm"
+            },
+            "krb_kdc_host": {
+              "label": "KDC 主机"
+            },
+            "krb_kdc_port": {
+              "label": "KDC 端口"
+            },
+            "krb_keytab_path": {
+              "label": "Keytab 文件路径"
+            },
+            "krb_ccache_path": {
+              "label": "凭据缓存路径"
+            },
+            "krb5_conf_path": {
+              "label": "krb5.conf 路径"
+            },
+            "sasl_host": {
+              "label": "SASL 主机覆盖",
+              "description": "可选 DIGEST-MD5 SASL 主机；缺省使用 LDAP URL 中的主机。"
+            },
+            "krb_username": {
+              "label": "Kerberos 用户名覆盖",
+              "description": "可选的主体用户名（不含 Realm）；缺省使用用户名字段。"
+            },
+            "sasl_qop": {
+              "label": "保护质量（QoP）",
+              "description": "GSSAPI 保护质量（Kerberos）。",
+              "options": {
+                "auth": "仅认证",
+                "auth-int": "认证 + 完整性保护",
+                "auth-conf": "认证 + 机密性保护"
+              }
+            },
+            "sasl_mutual_auth": {
+              "label": "相互认证",
+              "description": "在 GSSAPI 上下文中请求相互认证。"
+            },
+            "krb_password": {
+              "label": "Kerberos 密码"
+            },
+            "timeout_secs": {
+              "label": "超时（秒）"
+            },
+            "read_only": {
+              "label": "只读模式"
+            },
+            "allowed_base_dns": {
+              "label": "允许的 Base DN（读）"
+            },
+            "allowed_write_base_dns": {
+              "label": "允许的 Base DN（写）"
+            },
+            "blocked_attributes": {
+              "label": "屏蔽属性"
+            }
+          }
+        },
+        "io.dbx.ldap.workbench": {
+          "label": "LDAP 工作台",
+          "description": "浏览与编辑 LDAP 目录条目。"
+        }
+      }
+    },
+    "zh-TW": {
+      "name": "DBX LDAP",
+      "description": "DBX 的 LDAP 主控台外掛：DN 樹、RFC 4515 搜尋、條目編輯、Schema 與搜尋預設。",
+      "contributions": {
+        "io.dbx.ldap.connection": {
+          "label": "LDAP 伺服器",
+          "description": "支援 simple、匿名、unauthenticated 及進階認證的 LDAP 目錄連線。",
+          "fields": {
+            "display_name": {
+              "label": "連線名稱"
+            },
+            "url": {
+              "label": "LDAP URL"
+            },
+            "base_dn": {
+              "label": "Base DN"
+            },
+            "auth_type": {
+              "label": "認證方式",
+              "options": {
+                "anonymous": "匿名",
+                "unauthenticated": "Unauthenticated bind",
+                "simple": "Simple",
+                "kerberos": "Kerberos（GSSAPI）",
+                "ntlm": "NTLM",
+                "ntlm_hash": "NTLM 雜湊",
+                "digest_md5": "DIGEST-MD5",
+                "external": "External（SASL 外部）"
+              }
+            },
+            "bind_dn": {
+              "label": "Bind DN"
+            },
+            "username": {
+              "label": "使用者名稱"
+            },
+            "domain": {
+              "label": "網域"
+            },
+            "bind_password": {
+              "label": "Bind 密碼"
+            },
+            "ntlm_hash": {
+              "label": "NTLM 雜湊"
+            },
+            "use_starttls": {
+              "label": "啟用 StartTLS"
+            },
+            "tls_verify": {
+              "label": "驗證 TLS 憑證"
+            },
+            "tls_ca_path": {
+              "label": "TLS CA 憑證路徑"
+            },
+            "tls_server_name": {
+              "label": "TLS 伺服器名稱"
+            },
+            "krb_credential_type": {
+              "label": "Kerberos 憑證類型",
+              "options": {
+                "password": "密碼",
+                "keytab": "Keytab",
+                "ccache": "憑證快取（ccache）"
+              }
+            },
+            "krb_realm": {
+              "label": "Kerberos Realm"
+            },
+            "krb_kdc_host": {
+              "label": "KDC 主機"
+            },
+            "krb_kdc_port": {
+              "label": "KDC 連接埠"
+            },
+            "krb_keytab_path": {
+              "label": "Keytab 檔案路徑"
+            },
+            "krb_ccache_path": {
+              "label": "憑證快取路徑"
+            },
+            "krb5_conf_path": {
+              "label": "krb5.conf 路徑"
+            },
+            "sasl_host": {
+              "label": "SASL 主機覆寫",
+              "description": "選擇性 DIGEST-MD5 SASL 主機；預設使用 LDAP URL 中的主機。"
+            },
+            "krb_username": {
+              "label": "Kerberos 使用者名稱覆寫",
+              "description": "選擇性的主體使用者名稱（不含 Realm）；預設使用使用者名稱欄位。"
+            },
+            "sasl_qop": {
+              "label": "保護品質（QoP）",
+              "description": "GSSAPI 保護品質（Kerberos）。",
+              "options": {
+                "auth": "僅驗證",
+                "auth-int": "驗證 + 完整性保護",
+                "auth-conf": "驗證 + 機密性保護"
+              }
+            },
+            "sasl_mutual_auth": {
+              "label": "相互驗證",
+              "description": "在 GSSAPI 上下文中要求相互驗證。"
+            },
+            "krb_password": {
+              "label": "Kerberos 密碼"
+            },
+            "timeout_secs": {
+              "label": "逾時（秒）"
+            },
+            "read_only": {
+              "label": "唯讀模式"
+            },
+            "allowed_base_dns": {
+              "label": "允許的 Base DN（讀）"
+            },
+            "allowed_write_base_dns": {
+              "label": "允許的 Base DN（寫）"
+            },
+            "blocked_attributes": {
+              "label": "封鎖屬性"
+            }
+          }
+        },
+        "io.dbx.ldap.workbench": {
+          "label": "LDAP 工作台",
+          "description": "瀏覽與編輯 LDAP 目錄條目。"
+        }
+      }
+    },
+    "en": {
+      "name": "DBX LDAP",
+      "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
+      "contributions": {
+        "io.dbx.ldap.connection": {
+          "label": "LDAP server",
+          "description": "LDAP directory connection with simple, anonymous, unauthenticated and advanced authentication.",
+          "fields": {
+            "display_name": {
+              "label": "Connection name"
+            },
+            "url": {
+              "label": "LDAP URL"
+            },
+            "base_dn": {
+              "label": "Base DN"
+            },
+            "auth_type": {
+              "label": "Authentication",
+              "options": {
+                "anonymous": "Anonymous",
+                "unauthenticated": "Unauthenticated bind",
+                "simple": "Simple",
+                "kerberos": "Kerberos (GSSAPI)",
+                "ntlm": "NTLM",
+                "ntlm_hash": "NTLM hash",
+                "digest_md5": "DIGEST-MD5",
+                "external": "External (SASL EXTERNAL)"
+              }
+            },
+            "bind_dn": {
+              "label": "Bind DN"
+            },
+            "username": {
+              "label": "Username"
+            },
+            "domain": {
+              "label": "Domain"
+            },
+            "bind_password": {
+              "label": "Bind password"
+            },
+            "ntlm_hash": {
+              "label": "NTLM hash"
+            },
+            "use_starttls": {
+              "label": "Use StartTLS"
+            },
+            "tls_verify": {
+              "label": "Verify TLS certificate"
+            },
+            "tls_ca_path": {
+              "label": "TLS CA certificate path"
+            },
+            "tls_server_name": {
+              "label": "TLS server name"
+            },
+            "krb_credential_type": {
+              "label": "Kerberos credential type",
+              "options": {
+                "password": "Password",
+                "keytab": "Keytab",
+                "ccache": "Credential cache (ccache)"
+              }
+            },
+            "krb_realm": {
+              "label": "Kerberos realm"
+            },
+            "krb_kdc_host": {
+              "label": "KDC host"
+            },
+            "krb_kdc_port": {
+              "label": "KDC port"
+            },
+            "krb_keytab_path": {
+              "label": "Keytab file path"
+            },
+            "krb_ccache_path": {
+              "label": "Credential cache path"
+            },
+            "krb5_conf_path": {
+              "label": "krb5.conf path"
+            },
+            "sasl_host": {
+              "label": "SASL host override",
+              "description": "Optional DIGEST-MD5 SASL host; defaults to the host in the LDAP URL."
+            },
+            "krb_username": {
+              "label": "Kerberos username override",
+              "description": "Optional principal username (without realm); defaults to the username field."
+            },
+            "sasl_qop": {
+              "label": "Quality of protection",
+              "description": "GSSAPI quality of protection (kerberos).",
+              "options": {
+                "auth": "Authentication only",
+                "auth-int": "Authentication with integrity",
+                "auth-conf": "Authentication with confidentiality"
+              }
+            },
+            "sasl_mutual_auth": {
+              "label": "Mutual authentication",
+              "description": "Request mutual authentication in the GSSAPI context."
+            },
+            "krb_password": {
+              "label": "Kerberos password"
+            },
+            "timeout_secs": {
+              "label": "Timeout (seconds)"
+            },
+            "read_only": {
+              "label": "Read-only"
+            },
+            "allowed_base_dns": {
+              "label": "Allowed base DNs (read)"
+            },
+            "allowed_write_base_dns": {
+              "label": "Allowed base DNs (write)"
+            },
+            "blocked_attributes": {
+              "label": "Blocked attributes"
+            }
+          }
+        },
+        "io.dbx.ldap.workbench": {
+          "label": "LDAP Workbench",
+          "description": "Browse and edit LDAP directory entries."
+        }
+      }
+    },
+    "es": {
+      "name": "DBX LDAP",
+      "description": "Plugin de consola LDAP para DBX: árbol de DN, búsqueda RFC 4515, edición de entradas, esquema y búsquedas guardadas.",
+      "contributions": {
+        "io.dbx.ldap.connection": {
+          "label": "Servidor LDAP",
+          "description": "Conexión a directorio LDAP con autenticación simple, anónima, unauthenticated y avanzada.",
+          "fields": {
+            "display_name": {
+              "label": "Nombre de la conexión"
+            },
+            "url": {
+              "label": "URL LDAP"
+            },
+            "base_dn": {
+              "label": "DN base"
+            },
+            "auth_type": {
+              "label": "Autenticación",
+              "options": {
+                "anonymous": "Anónima",
+                "unauthenticated": "Bind no autenticado",
+                "simple": "Simple",
+                "kerberos": "Kerberos (GSSAPI)",
+                "ntlm": "NTLM",
+                "ntlm_hash": "Hash NTLM",
+                "digest_md5": "DIGEST-MD5",
+                "external": "Externa (SASL EXTERNAL)"
+              }
+            },
+            "bind_dn": {
+              "label": "DN de bind"
+            },
+            "username": {
+              "label": "Usuario"
+            },
+            "domain": {
+              "label": "Dominio"
+            },
+            "bind_password": {
+              "label": "Contraseña de bind"
+            },
+            "ntlm_hash": {
+              "label": "Hash NTLM"
+            },
+            "use_starttls": {
+              "label": "Usar StartTLS"
+            },
+            "tls_verify": {
+              "label": "Verificar certificado TLS"
+            },
+            "tls_ca_path": {
+              "label": "Ruta del certificado CA TLS"
+            },
+            "tls_server_name": {
+              "label": "Nombre del servidor TLS"
+            },
+            "krb_credential_type": {
+              "label": "Tipo de credencial Kerberos",
+              "options": {
+                "password": "Contraseña",
+                "keytab": "Keytab",
+                "ccache": "Caché de credenciales (ccache)"
+              }
+            },
+            "krb_realm": {
+              "label": "Realm de Kerberos"
+            },
+            "krb_kdc_host": {
+              "label": "Host KDC"
+            },
+            "krb_kdc_port": {
+              "label": "Puerto KDC"
+            },
+            "krb_keytab_path": {
+              "label": "Ruta del keytab"
+            },
+            "krb_ccache_path": {
+              "label": "Ruta de la caché de credenciales"
+            },
+            "krb5_conf_path": {
+              "label": "Ruta de krb5.conf"
+            },
+            "sasl_host": {
+              "label": "Anulación de host SASL",
+              "description": "Host SASL DIGEST-MD5 opcional; por defecto, el host de la URL LDAP."
+            },
+            "krb_username": {
+              "label": "Anulación de usuario de Kerberos",
+              "description": "Nombre de usuario principal opcional (sin reino); por defecto, el campo de usuario."
+            },
+            "sasl_qop": {
+              "label": "Calidad de protección (QoP)",
+              "description": "Calidad de protección GSSAPI (Kerberos).",
+              "options": {
+                "auth": "Solo autenticación",
+                "auth-int": "Autenticación con integridad",
+                "auth-conf": "Autenticación con confidencialidad"
+              }
+            },
+            "sasl_mutual_auth": {
+              "label": "Autenticación mutua",
+              "description": "Solicita autenticación mutua en el contexto GSSAPI."
+            },
+            "krb_password": {
+              "label": "Contraseña de Kerberos"
+            },
+            "timeout_secs": {
+              "label": "Tiempo de espera (segundos)"
+            },
+            "read_only": {
+              "label": "Solo lectura"
+            },
+            "allowed_base_dns": {
+              "label": "DN base permitidos (lectura)"
+            },
+            "allowed_write_base_dns": {
+              "label": "DN base permitidos (escritura)"
+            },
+            "blocked_attributes": {
+              "label": "Atributos bloqueados"
+            }
+          }
+        },
+        "io.dbx.ldap.workbench": {
+          "label": "Banco de trabajo LDAP",
+          "description": "Explore y edite entradas del directorio LDAP."
+        }
+      }
+    },
+    "it": {
+      "name": "DBX LDAP",
+      "description": "Plugin console LDAP per DBX: albero DN, ricerca RFC 4515, modifica delle voci, schema e ricerche salvate.",
+      "contributions": {
+        "io.dbx.ldap.connection": {
+          "label": "Server LDAP",
+          "description": "Connessione a directory LDAP con autenticazione simple, anonima, unauthenticated e avanzata.",
+          "fields": {
+            "display_name": {
+              "label": "Nome connessione"
+            },
+            "url": {
+              "label": "URL LDAP"
+            },
+            "base_dn": {
+              "label": "DN base"
+            },
+            "auth_type": {
+              "label": "Autenticazione",
+              "options": {
+                "anonymous": "Anonima",
+                "unauthenticated": "Bind non autenticato",
+                "simple": "Simple",
+                "kerberos": "Kerberos (GSSAPI)",
+                "ntlm": "NTLM",
+                "ntlm_hash": "Hash NTLM",
+                "digest_md5": "DIGEST-MD5",
+                "external": "External (SASL EXTERNAL)"
+              }
+            },
+            "bind_dn": {
+              "label": "DN di bind"
+            },
+            "username": {
+              "label": "Nome utente"
+            },
+            "domain": {
+              "label": "Dominio"
+            },
+            "bind_password": {
+              "label": "Password di bind"
+            },
+            "ntlm_hash": {
+              "label": "Hash NTLM"
+            },
+            "use_starttls": {
+              "label": "Usa StartTLS"
+            },
+            "tls_verify": {
+              "label": "Verifica certificato TLS"
+            },
+            "tls_ca_path": {
+              "label": "Percorso certificato CA TLS"
+            },
+            "tls_server_name": {
+              "label": "Nome server TLS"
+            },
+            "krb_credential_type": {
+              "label": "Tipo di credenziale Kerberos",
+              "options": {
+                "password": "Password",
+                "keytab": "Keytab",
+                "ccache": "Cache credenziali (ccache)"
+              }
+            },
+            "krb_realm": {
+              "label": "Realm Kerberos"
+            },
+            "krb_kdc_host": {
+              "label": "Host KDC"
+            },
+            "krb_kdc_port": {
+              "label": "Porta KDC"
+            },
+            "krb_keytab_path": {
+              "label": "Percorso del keytab"
+            },
+            "krb_ccache_path": {
+              "label": "Percorso cache credenziali"
+            },
+            "krb5_conf_path": {
+              "label": "Percorso di krb5.conf"
+            },
+            "sasl_host": {
+              "label": "Override host SASL",
+              "description": "Host SASL DIGEST-MD5 facoltativo; per impostazione predefinita, l'host nell'URL LDAP."
+            },
+            "krb_username": {
+              "label": "Override nome utente Kerberos",
+              "description": "Nome utente principal facoltativo (senza realm); per impostazione predefinita, il campo nome utente."
+            },
+            "sasl_qop": {
+              "label": "Qualità della protezione (QoP)",
+              "description": "Qualità della protezione GSSAPI (Kerberos).",
+              "options": {
+                "auth": "Solo autenticazione",
+                "auth-int": "Autenticazione con integrità",
+                "auth-conf": "Autenticazione con riservatezza"
+              }
+            },
+            "sasl_mutual_auth": {
+              "label": "Autenticazione reciproca",
+              "description": "Richiede l'autenticazione reciproca nel contesto GSSAPI."
+            },
+            "krb_password": {
+              "label": "Password Kerberos"
+            },
+            "timeout_secs": {
+              "label": "Timeout (secondi)"
+            },
+            "read_only": {
+              "label": "Sola lettura"
+            },
+            "allowed_base_dns": {
+              "label": "DN base consentiti (lettura)"
+            },
+            "allowed_write_base_dns": {
+              "label": "DN base consentiti (scrittura)"
+            },
+            "blocked_attributes": {
+              "label": "Attributi bloccati"
+            }
+          }
+        },
+        "io.dbx.ldap.workbench": {
+          "label": "Banco di lavoro LDAP",
+          "description": "Sfoglia e modifica le voci della directory LDAP."
+        }
+      }
+    },
+    "ja": {
+      "name": "DBX LDAP",
+      "description": "DBX 用 LDAP コンソールプラグイン: DN ツリー、RFC 4515 検索、エントリ編集、スキーマ、検索プリセット。",
+      "contributions": {
+        "io.dbx.ldap.connection": {
+          "label": "LDAP サーバー",
+          "description": "simple・匿名・unauthenticated および高度な認証に対応した LDAP ディレクトリ接続。",
+          "fields": {
+            "display_name": {
+              "label": "接続名"
+            },
+            "url": {
+              "label": "LDAP URL"
+            },
+            "base_dn": {
+              "label": "Base DN"
+            },
+            "auth_type": {
+              "label": "認証方式",
+              "options": {
+                "anonymous": "匿名",
+                "unauthenticated": "Unauthenticated bind",
+                "simple": "Simple",
+                "kerberos": "Kerberos（GSSAPI）",
+                "ntlm": "NTLM",
+                "ntlm_hash": "NTLM ハッシュ",
+                "digest_md5": "DIGEST-MD5",
+                "external": "External（SASL EXTERNAL）"
+              }
+            },
+            "bind_dn": {
+              "label": "Bind DN"
+            },
+            "username": {
+              "label": "ユーザー名"
+            },
+            "domain": {
+              "label": "ドメイン"
+            },
+            "bind_password": {
+              "label": "Bind パスワード"
+            },
+            "ntlm_hash": {
+              "label": "NTLM ハッシュ"
+            },
+            "use_starttls": {
+              "label": "StartTLS を使用"
+            },
+            "tls_verify": {
+              "label": "TLS 証明書を検証"
+            },
+            "tls_ca_path": {
+              "label": "TLS CA 証明書のパス"
+            },
+            "tls_server_name": {
+              "label": "TLS サーバー名"
+            },
+            "krb_credential_type": {
+              "label": "Kerberos 認証情報タイプ",
+              "options": {
+                "password": "パスワード",
+                "keytab": "Keytab",
+                "ccache": "認証情報キャッシュ（ccache）"
+              }
+            },
+            "krb_realm": {
+              "label": "Kerberos レルム"
+            },
+            "krb_kdc_host": {
+              "label": "KDC ホスト"
+            },
+            "krb_kdc_port": {
+              "label": "KDC ポート"
+            },
+            "krb_keytab_path": {
+              "label": "Keytab ファイルのパス"
+            },
+            "krb_ccache_path": {
+              "label": "認証情報キャッシュのパス"
+            },
+            "krb5_conf_path": {
+              "label": "krb5.conf のパス"
+            },
+            "sasl_host": {
+              "label": "SASL ホスト上書き",
+              "description": "省略可能な DIGEST-MD5 の SASL ホスト。既定では LDAP URL 内のホストを使用します。"
+            },
+            "krb_username": {
+              "label": "Kerberos ユーザー名の上書き",
+              "description": "省略可能なプリンシパルのユーザー名（レルムを除く）。既定ではユーザー名フィールドを使用します。"
+            },
+            "sasl_qop": {
+              "label": "保護品質（QoP）",
+              "description": "GSSAPI の保護品質（Kerberos）。",
+              "options": {
+                "auth": "認証のみ",
+                "auth-int": "認証 + 完全性保護",
+                "auth-conf": "認証 + 機密性保護"
+              }
+            },
+            "sasl_mutual_auth": {
+              "label": "相互認証",
+              "description": "GSSAPI コンテキストで相互認証を要求します。"
+            },
+            "krb_password": {
+              "label": "Kerberos パスワード"
+            },
+            "timeout_secs": {
+              "label": "タイムアウト（秒）"
+            },
+            "read_only": {
+              "label": "読み取り専用"
+            },
+            "allowed_base_dns": {
+              "label": "許可された Base DN（読み取り）"
+            },
+            "allowed_write_base_dns": {
+              "label": "許可された Base DN（書き込み）"
+            },
+            "blocked_attributes": {
+              "label": "ブロックされた属性"
+            }
+          }
+        },
+        "io.dbx.ldap.workbench": {
+          "label": "LDAP ワークベンチ",
+          "description": "LDAP ディレクトリエントリの閲覧と編集。"
+        }
+      }
+    },
+    "pt-BR": {
+      "name": "DBX LDAP",
+      "description": "Plugin de console LDAP para o DBX: árvore de DN, busca RFC 4515, edição de entradas, schema e buscas salvas.",
+      "contributions": {
+        "io.dbx.ldap.connection": {
+          "label": "Servidor LDAP",
+          "description": "Conexão a diretório LDAP com autenticação simples, anônima, unauthenticated e avançada.",
+          "fields": {
+            "display_name": {
+              "label": "Nome da conexão"
+            },
+            "url": {
+              "label": "URL LDAP"
+            },
+            "base_dn": {
+              "label": "DN base"
+            },
+            "auth_type": {
+              "label": "Autenticação",
+              "options": {
+                "anonymous": "Anônima",
+                "unauthenticated": "Bind não autenticado",
+                "simple": "Simples",
+                "kerberos": "Kerberos (GSSAPI)",
+                "ntlm": "NTLM",
+                "ntlm_hash": "Hash NTLM",
+                "digest_md5": "DIGEST-MD5",
+                "external": "External (SASL EXTERNAL)"
+              }
+            },
+            "bind_dn": {
+              "label": "DN de bind"
+            },
+            "username": {
+              "label": "Nome de usuário"
+            },
+            "domain": {
+              "label": "Domínio"
+            },
+            "bind_password": {
+              "label": "Senha de bind"
+            },
+            "ntlm_hash": {
+              "label": "Hash NTLM"
+            },
+            "use_starttls": {
+              "label": "Usar StartTLS"
+            },
+            "tls_verify": {
+              "label": "Verificar certificado TLS"
+            },
+            "tls_ca_path": {
+              "label": "Caminho do certificado CA TLS"
+            },
+            "tls_server_name": {
+              "label": "Nome do servidor TLS"
+            },
+            "krb_credential_type": {
+              "label": "Tipo de credencial Kerberos",
+              "options": {
+                "password": "Senha",
+                "keytab": "Keytab",
+                "ccache": "Cache de credenciais (ccache)"
+              }
+            },
+            "krb_realm": {
+              "label": "Realm do Kerberos"
+            },
+            "krb_kdc_host": {
+              "label": "Host KDC"
+            },
+            "krb_kdc_port": {
+              "label": "Porta KDC"
+            },
+            "krb_keytab_path": {
+              "label": "Caminho do arquivo keytab"
+            },
+            "krb_ccache_path": {
+              "label": "Caminho do cache de credenciais"
+            },
+            "krb5_conf_path": {
+              "label": "Caminho do krb5.conf"
+            },
+            "sasl_host": {
+              "label": "Substituição de host SASL",
+              "description": "Host SASL DIGEST-MD5 opcional; por padrão, o host da URL LDAP."
+            },
+            "krb_username": {
+              "label": "Substituição de usuário do Kerberos",
+              "description": "Nome de usuário do principal opcional (sem realm); por padrão, o campo de usuário."
+            },
+            "sasl_qop": {
+              "label": "Qualidade de proteção (QoP)",
+              "description": "Qualidade de proteção GSSAPI (Kerberos).",
+              "options": {
+                "auth": "Somente autenticação",
+                "auth-int": "Autenticação com integridade",
+                "auth-conf": "Autenticação com confidencialidade"
+              }
+            },
+            "sasl_mutual_auth": {
+              "label": "Autenticação mútua",
+              "description": "Solicita autenticação mútua no contexto GSSAPI."
+            },
+            "krb_password": {
+              "label": "Senha do Kerberos"
+            },
+            "timeout_secs": {
+              "label": "Tempo limite (segundos)"
+            },
+            "read_only": {
+              "label": "Somente leitura"
+            },
+            "allowed_base_dns": {
+              "label": "DNs base permitidos (leitura)"
+            },
+            "allowed_write_base_dns": {
+              "label": "DNs base permitidos (escrita)"
+            },
+            "blocked_attributes": {
+              "label": "Atributos bloqueados"
+            }
+          }
+        },
+        "io.dbx.ldap.workbench": {
+          "label": "Bancada de trabalho LDAP",
+          "description": "Navegue e edite entradas do diretório LDAP."
+        }
+      }
+    }
+  }
+}

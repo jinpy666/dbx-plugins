@@ -1,0 +1,46 @@
+# Bootstrap seed data for the smoke-test OpenLDAP container (bitnami/openldap,
+# LDAP_CUSTOM_LDIF_DIR). Root DN is dc=example,dc=org (bitnami default).
+# No credentials here: the admin password is supplied via LDAP_ADMIN_PASSWORD.
+#
+# Note: when LDAP_CUSTOM_LDIF_DIR is non-empty bitnami skips the default tree
+# import entirely, so the base entry must be seeded here as well (and a seed
+# "ou=Groups" would collide with nothing, but keep the seed minimal).
+
+dn: dc=example,dc=org
+objectClass: top
+objectClass: dcObject
+objectClass: organization
+o: Example Org
+dc: example
+
+dn: ou=People,dc=example,dc=org
+objectClass: organizationalUnit
+ou: People
+
+# Note: bitnami/openldap ships a default tree with ou=users/ou=groups, so a
+# seed "ou=Groups" would collide case-insensitively with ou=groups and abort
+# the bootstrap import; only ou=People is seeded here.
+
+dn: uid=jane,ou=People,dc=example,dc=org
+objectClass: inetOrgPerson
+cn: Jane Tester
+sn: Tester
+uid: jane
+mail: jane@example.org
+
+dn: uid=bob,ou=People,dc=example,dc=org
+objectClass: inetOrgPerson
+cn: Bob Tester
+sn: Tester
+uid: bob
+mail: bob@example.org
+
+# Fixture for smoke scenario S7 (blocked_attributes stripping): the value is a
+# dummy, not a real credential; the plugin must never return userPassword.
+dn: uid=seedpw,ou=People,dc=example,dc=org
+objectClass: inetOrgPerson
+cn: Seed Password
+sn: Seed
+uid: seedpw
+userPassword: dummy-seeded-value-not-a-real-secret
+

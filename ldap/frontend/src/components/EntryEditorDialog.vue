@@ -1,0 +1,253 @@
+<script setup lang="ts">
+// 条目编辑器：查看/编辑/新增三形态。
+// 表单模式 = 属性行（属性名 + 多行值）；LDIF 模式 = RFC 2849 文本双向同步
+// （serializeEntriesToLdif / parseLdif）。新增走 ldap/entry/add，修改走
+// ldap/entry/modify（按行 diff 生成 add/replace/delete changes）。
+import { computed, ref, watch } from "vue";
+import { Plus, Trash2, X } from "@lucide/vue";
+import { ldapApi, type LdapEntry } from "../lib/api";
+import { parseLdif, serializeEntriesToLdif } from "../lib/ldif";
+import { attrRowsToAttributes, diffChanges, type AttrRowDraftSource } from "../lib/ldapDiff";
+import { joinRdnAndParent, splitFirstDnRdn } from "../lib/dn";
+import { t } from "../lib/i18n";
+
+export interface AttrRowDraft extends AttrRowDraftSource {
+  /** 源值自身含换行：编辑后按行重切分为多值（歧义提示用）。 */
+  multiline?: boolean;
+}
+
+type EditorMode = "view" | "edit" | "add";
+
+const props = defineProps<{
+  canWrite: boolean;
+  open: boolean;
+  /** view/edit: an existing entry; add: the parent DN to create under. */
+  entry?: LdapEntry;
+  parentDn?: string;
+}>();
+
+const emit = defineEmits<{
+  (e: "close"): void;
+  (e: "saved", dn: string, mode: "add" | "edit"): void;
+  (e: "error", message: string): void;
+  (e: "notify", message: string): void;
+}>();
+
+const mode = ref<EditorMode>("view");
+const dnDraft = ref("");
+const rdnDraft = ref("");
+const rows = ref<AttrRowDraft[]>([]);
+const ldifText = ref("");
+const ldifMode = ref(false);
+const ldifError = ref("");
+const saving = ref(false);
+let suppressLdifSync = false;
+
+const isAdd = computed(() => mode.value === "add");
+const editable = computed(() => props.canWrite && !saving.value);
+const dirty = computed(() => {
+  if (mode.value === "add") return true;
+  const source = props.entry;
+  if (!source) return false;
+  const current = rowsToAttributes();
+  const originalKeys = Object.keys(source.attributes);
+  const currentKeys = Object.keys(current);
+  if (originalKeys.length !== currentKeys.length) return true;
+  return currentKeys.some((key) => (current[key] ?? []).join("\n") !== (source.attributes[key] ?? []).join("\n"));
+});
+
+function entryToRows(entry: LdapEntry): AttrRowDraft[] {
+  return Object.keys(entry.attributes)
+    .sort((left, right) => left.localeCompare(right))
+    .map((name) => {
+      const values = entry.attributes[name] ?? [];
+      return {
+        name,
+        valuesText: values.join("\n"),
+        sourceValues: values,
+        // 值本身含换行时，编辑该行后的重切分歧义（round-3 保真只覆盖未编辑
+        // 行）——标记出来提示用户：这一行编辑会按行拆分成多值。
+        multiline: values.some((value) => value.includes("\n")),
+      };
+    });
+}
+
+function rowsToAttributes(): Record<string, string[]> {
+  return attrRowsToAttributes(rows.value);
+}
+
+function syncLdifFromRows() {
+  if (suppressLdifSync) return;
+  const attributes = rowsToAttributes();
+  if (isAdd.value) {
+    const dn = joinRdnAndParent(rdnDraft.value, props.parentDn || dnDraft.value);
+    ldifText.value = serializeEntriesToLdif([{ dn, attributes }], { includeVersion: false });
+  } else {
+    ldifText.value = serializeEntriesToLdif([{ dn: dnDraft.value, attributes }], { includeVersion: false });
+  }
+}
+
+function syncRowsFromLdif() {
+  const result = parseLdif(ldifText.value);
+  if (result.errors.length > 0) {
+    ldifError.value = result.errors.map((error) => `L${error.line}: ${error.message}`).join("; ");
+    return false;
+  }
+  ldifError.value = "";
+  const entry = result.entries[0];
+  if (!entry) {
+    ldifError.value = "no entry";
+    return false;
+  }
+  rows.value = entryToRows(entry);
+  if (isAdd.value) {
+    const { rdn, parentDn } = splitFirstDnRdn(entry.dn);
+    rdnDraft.value = rdn;
+    if (parentDn) dnDraft.value = parentDn;
+  } else {
+    dnDraft.value = entry.dn;
+  }
+  return true;
+}
+
+function initFor(mode_: EditorMode, entry?: LdapEntry, parentDn?: string) {
+  mode.value = mode_;
+  ldifMode.value = false;
+  ldifError.value = "";
+  saving.value = false;
+  if (mode_ === "add") {
+    dnDraft.value = parentDn || "";
+    rdnDraft.value = "";
+    rows.value = [{ name: "objectClass", valuesText: "top" }];
+    ldifText.value = "";
+    syncLdifFromRows();
+    return;
+  }
+  if (!entry) return;
+  dnDraft.value = entry.dn;
+  rdnDraft.value = splitFirstDnRdn(entry.dn).rdn;
+  rows.value = entryToRows(entry);
+  ldifText.value = serializeEntriesToLdif([{ dn: entry.dn, attributes: entry.attributes }], { includeVersion: false });
+}
+
+watch(
+  () => [props.open, props.entry, props.parentDn] as const,
+  ([open]) => {
+    if (!open) return;
+    initFor(props.entry ? "view" : "add", props.entry, props.parentDn);
+  },
+  { immediate: true },
+);
+
+watch([rows, rdnDraft], () => {
+  if (ldifMode.value) return;
+  syncLdifFromRows();
+}, { deep: true });
+
+function switchToLdif() {
+  if (!ldifMode.value) syncLdifFromRows();
+  ldifMode.value = true;
+}
+
+function switchToForm() {
+  if (ldifMode.value) {
+    suppressLdifSync = true;
+    const ok = syncRowsFromLdif();
+    suppressLdifSync = false;
+    if (!ok) return;
+  }
+  ldifMode.value = false;
+}
+
+function addRow() {
+  rows.value.push({ name: "", valuesText: "" });
+}
+
+function removeRow(index: number) {
+  rows.value.splice(index, 1);
+}
+
+async function save() {
+  if (!editable.value) return;
+  if (ldifMode.value && !syncRowsFromLdif()) return;
+  saving.value = true;
+  try {
+    if (isAdd.value) {
+      const dn = joinRdnAndParent(rdnDraft.value, dnDraft.value);
+      if (!dn) {
+        emit("error", t("editor.rdn"));
+        return;
+      }
+      await ldapApi.entryAdd(dn, rowsToAttributes());
+      emit("saved", dn, "add");
+    } else {
+      const source = props.entry!;
+      const current = rowsToAttributes();
+      const changes = diffChanges(source.attributes, current);
+      if (changes.length === 0) {
+        emit("close");
+        return;
+      }
+      await ldapApi.entryModify(dnDraft.value, changes);
+      emit("saved", dnDraft.value, "edit");
+    }
+  } catch (cause) {
+    emit("error", cause instanceof Error ? cause.message : String(cause));
+  } finally {
+    saving.value = false;
+  }
+}
+
+const title = computed(() => (isAdd.value ? t("editor.addTitle") : `${t("editor.viewTitle")} · ${rdnDraft.value || dnDraft.value}`));
+</script>
+
+<template>
+  <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
+    <div class="modal editor-modal">
+      <header>
+        <h2>{{ title }}</h2>
+        <button class="icon-button" :title="t('close')" @click="emit('close')"><X /></button>
+      </header>
+      <div v-if="isAdd" class="attr-row">
+        <label class="field">
+          <span class="muted">{{ t("editor.rdn") }}</span>
+          <input v-model="rdnDraft" type="text" name="attr-name" class="mono" :disabled="!editable" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span class="muted">{{ t("editor.parentDn") }}</span>
+          <input :value="dnDraft" type="text" class="mono" :disabled="true" spellcheck="false" />
+        </label>
+      </div>
+      <p v-else class="entry-dn">{{ dnDraft }}</p>
+      <div class="mode-switch">
+        <button :class="{ 'is-active': !ldifMode }" @click="switchToForm">{{ t("editor.formMode") }}</button>
+        <button :class="{ 'is-active': ldifMode }" @click="switchToLdif">{{ t("editor.ldifMode") }}</button>
+      </div>
+      <p v-if="!canWrite" class="hint">{{ t("editor.readonlyHint") }}</p>
+      <p v-if="ldifError" class="form-error">{{ t("editor.ldifParseError", { error: ldifError }) }}</p>
+      <template v-if="!ldifMode">
+        <div class="attr-editor">
+          <div v-for="(row, index) in rows" :key="index" class="attr-row">
+            <input v-model="row.name" type="text" name="attr-name" :placeholder="t('editor.attribute')" :disabled="!editable" spellcheck="false" />
+            <span class="attr-value-cell">
+              <textarea v-model="row.valuesText" rows="2" :placeholder="t('editor.values')" :disabled="!editable" spellcheck="false" />
+              <small v-if="row.multiline" class="multiline-hint">{{ t("editor.multilineHint") }}</small>
+            </span>
+            <button :title="t('editor.removeAttribute')" :disabled="!editable" @click="removeRow(index)"><Trash2 /></button>
+          </div>
+        </div>
+      </template>
+      <textarea v-else v-model="ldifText" class="ldif-editor" spellcheck="false" :disabled="!editable" />
+      <footer>
+        <span v-if="dirty && canWrite" class="muted" style="margin-right: auto">{{ t("editor.changed") }}</span>
+        <button v-if="!ldifMode" class="toolbar-button" style="margin-right: auto" :disabled="!editable" @click="addRow">
+          <Plus aria-hidden="true" />{{ t("editor.addAttribute") }}
+        </button>
+        <button type="button" @click="emit('close')">{{ t("cancel") }}</button>
+        <button v-if="canWrite" type="button" class="primary-button" :disabled="!editable" @click="save">
+          {{ saving ? "…" : t("save") }}
+        </button>
+      </footer>
+    </div>
+  </div>
+</template>

@@ -1,0 +1,17 @@
+# Local OpenLDAP container for scripts/smoke_container.py (scenarios S1-S10).
+# No credential literals in this file: LDAP_ADMIN_PASSWORD must come from the
+# environment (export LDAP_ADMIN_PASSWORD=... before invoking docker compose).
+services:
+  ldap-test:
+    image: bitnami/openldap:latest
+    container_name: dbx-ldap-test
+    environment:
+      LDAP_ROOT: "dc=example,dc=org"
+      LDAP_ADMIN_USERNAME: "admin"
+      LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD:?export LDAP_ADMIN_PASSWORD before running}"
+      LDAP_PORT_NUMBER: "1389"
+      LDAP_CUSTOM_LDIF_DIR: "/ldifs"
+    ports:
+      - "1389:1389"
+    volumes:
+      - ./scripts/ldap-seed:/ldifs:ro

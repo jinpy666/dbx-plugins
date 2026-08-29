@@ -1,0 +1,35 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+target/
+ui/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+
+# e2e 宿主运行时数据与日志
+shared/host-e2e/app-data/
+shared/host-e2e/logs/
+
+# 截图与测试产物（仅本地留存，不入库）
+*.png
+screenshots/
+scroll-stress-result.json
+
+# 工具与 IDE 状态
+.idea/
+.mimosa/
+.omc/
+.playwright-mcp/
+.DS_Store
+
+# 日志、环境变量与本地密钥
+*.log
+.env
+.env.*
+!.env.example
+.dbx-repository-signing-key.env

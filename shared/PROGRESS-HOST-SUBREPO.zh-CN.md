@@ -129,3 +129,24 @@ patch/降级逻辑。
 - 顺手修：上游合并遗留的 `AppToolbar.vue` 未使用 `Loader2` import
   （TS6133 卡 typecheck，`6ffc010f8`）。
 - 验证：vitest 受影响面 815 用例全绿 + vue-tsc 通过。
+
+## 8. 日常跟上游实例：`-X ours` 丢弃 hunk 的修复（2026-08-31）
+
+- 本轮 sync 合并 origin/main 仅 `src-tauri/src/lib.rs` 冲突，脚本 `-X ours`
+  重试通过，但静默丢弃了 main 新特性 MCP HTTP Server（`f075caef2`）在
+  `run()` 的启动 spawn 块：命令注册与前端设置页都合并进来了，服务却永不
+  启动。已手工补回并提交（`774f9a29b`）。
+- 顺带修掉上一轮同步（`d150a5642`）遗留的 tests use 悬空引用
+  `linux_appimage_system_gtk_immodules_cache`：上游 `fd17037a2` 删除了该
+  函数，use 行因与本地 close_tab 菜单改造落在同一冲突 hunk 被 `-X ours`
+  保留——即上一轮起 lib.rs 的 `#[cfg(test)]` 实际编译不过。
+- 教训（并入第 6 节工作流）：`-X ours` 合并后必须
+  ① `git diff <merge>^2 <merge> -- <冲突文件>` 核对 main 侧被丢内容；
+  ② `cargo check -p dbx --lib --bins --tests`（不带 `--tests` 不编译
+  cfg(test) 的 use 行）；③ PATH 里 Homebrew cargo/rustc 1.69 会遮蔽
+  rustup 工具链（且不认 Cargo.lock v4），宿主构建需前置
+  `~/.rustup/toolchains/<ver>-aarch64-apple-darwin/bin`。
+- 遗留（上游问题，本地不修）：main 新增 mcp pnpm shim 测试（`316a1f2a7`）
+  用 `std::env::temp_dir()` 建 fixture 却断言 canonicalize 后路径，macOS
+  `/tmp → /private/tmp` symlink 下 6 例必失败（288 其余用例全绿），
+  Linux CI 不受影响，等上游修。

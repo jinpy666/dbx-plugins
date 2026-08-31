@@ -33,3 +33,4 @@ scroll-stress-result.json
 .env.*
 !.env.example
 .dbx-repository-signing-key.env
+/.zcode/

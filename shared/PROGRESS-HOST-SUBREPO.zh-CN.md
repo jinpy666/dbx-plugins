@@ -48,6 +48,8 @@ dbx-plugins/
 | `7687046` | `LocalBackend::open_with_app_version`（安装管线测试） |
 | `4528ce0` | external_config 保留 + required_when 缺失降级 optional |
 | `697b44989` | 插件连接按 manifest 豁免登录密码弹窗（SSH key 认证不再报 "Password is required"，见第 7 节） |
+| `859de2744` | `buildPluginConnectionConfig` 兼容 reactive existing config（修复编辑导入连接时 "The object can not be cloned."，见第 7 节） |
+| `6ffc010f8` | 删上游遗留未使用 `Loader2` import（vue-tsc TS6133 卡 typecheck） |
 
 本轮收编时新提交（原未跟踪/未提交改动，随迁移落库）：
 
@@ -113,3 +115,17 @@ patch/降级逻辑。
 - 验证：vue-tsc 通过；`vitest run stores lib/connection lib/plugins`
   87 文件 814 用例全绿（新增 connectionPassword.spec 10 例 +
   savePassword.spec 插件分支 4 例）。
+
+### 7.1 后续暴露的编辑路径 DataCloneError（`859de2744`）
+
+- 症状：弹窗豁免生效后，对已导入连接编辑 → 测试连接报
+  "The object can not be cloned."（WebKit DataCloneError）。
+- 根因：ConnectionDialog 把 store 的 reactive 连接配置经 `editConfig` prop
+  传入，`buildPluginConnectionConfig` 对 `existing.external_config`
+  `structuredClone` 时克隆 Vue Proxy 失败。新建连接无 existing 不触发，
+  故只在"编辑脚本导入的连接"时暴露（同 `pluginHostBridge` 曾踩的坑）。
+- 修复：`cloneExternalConfig` 失败时 JSON round-trip 兜底（对齐
+  structuredCloneSafe 模式）；回归测试用 `Proxy` 复现克隆失败。
+- 顺手修：上游合并遗留的 `AppToolbar.vue` 未使用 `Loader2` import
+  （TS6133 卡 typecheck，`6ffc010f8`）。
+- 验证：vitest 受影响面 815 用例全绿 + vue-tsc 通过。

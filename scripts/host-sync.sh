@@ -13,12 +13,13 @@
 #   scripts/host-sync.sh fetch           # fetch upstream refs
 #   scripts/host-sync.sh sync            # fetch + merge origin/main (and
 #                                        #   origin/dev/plugin-framework-current)
-#   scripts/host-sync.sh sync --merge-policy=manual
-#                                        # on conflict: fail for human resolution
-#                                        #   (default: ours — retry with -X ours
-#                                        #   so local patches win; main-side
-#                                        #   edits in conflicted hunks are dropped
-#                                        #   and only reported)
+#   scripts/host-sync.sh sync [--merge-policy=ours]
+#                                        # on conflict: stop with the merge left
+#                                        #   in progress for human resolution
+#                                        #   (default: manual — no edits are
+#                                        #   dropped). ours explicitly opts into a
+#                                        #   -X ours retry: main-side edits in
+#                                        #   conflicted hunks are DROPPED.
 #
 # NOTE: local commits are not pushed anywhere; the submodule pointer in this
 # repo records them. Never run `git submodule update --force/--checkout` in
@@ -30,7 +31,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST_DIR="$ROOT/host"
 UPSTREAM_MAIN="origin/main"
 UPSTREAM_BRANCH="origin/dev/plugin-framework-current"
-MERGE_POLICY=ours
+MERGE_POLICY=manual
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
@@ -110,20 +111,31 @@ merge_ref() {
   if git merge --no-edit "$REF"; then
     return 0
   fi
-  if [ "$MERGE_POLICY" = "ours" ] && git diff --name-only --diff-filter=U | grep -q .; then
-    local CONFLICTS
-    CONFLICTS="$(git diff --name-only --diff-filter=U | sed 's/^/    ! /')"
-    git merge --abort
-    echo "merge conflicts with $REF — retrying with -X ours (local patches win):"
-    printf '%s\n' "$CONFLICTS"
-    echo "    caution: main-side edits inside those hunks are dropped by the auto-merge;"
-    echo "    skim the merge commit if a conflicted file carries features you need."
-    git merge -X ours --no-edit "$REF" || {
-      echo "auto-merge with -X ours failed for $REF — resolve manually" >&2; exit 1; }
-  else
-    echo "merge conflict with $REF — resolve manually" >&2
+  if ! git diff --name-only --diff-filter=U | grep -q .; then
+    echo "merge failed for $REF without content conflicts — resolve manually" >&2
     exit 1
   fi
+  if [ "$MERGE_POLICY" = "ours" ]; then
+    echo "merge conflicts with $REF — retrying with -X ours (local patches win):"
+    git diff --name-only --diff-filter=U | sed 's/^/    ! /'
+    echo "    caution: main-side edits inside those hunks are dropped by the auto-merge;"
+    echo "    skim the merge commit if a conflicted file carries features you need."
+    git merge --abort
+    git merge -X ours --no-edit "$REF" || {
+      echo "auto-merge with -X ours failed for $REF — resolve manually" >&2; exit 1; }
+    return 0
+  fi
+  echo "merge conflicts with $REF — stopping, merge left in progress:"
+  git diff --name-only --diff-filter=U | sed 's/^/    ! /'
+  echo
+  echo "main-side changes at stake in those files (vs merge base):"
+  git diff --name-only -z --diff-filter=U | xargs -0 git diff --stat "HEAD...$REF" --
+  echo
+  echo "resolve each conflicted hunk so BOTH sides' intent survives (local 二开 +"
+  echo "upstream feature), then finish the merge and verify before building:"
+  echo "    git add <resolved files> && git commit    # completes the merge"
+  echo "    cargo check -p dbx --lib --bins --tests   # --tests catches dangling test imports"
+  exit 1
 }
 
 sync_upstream() {

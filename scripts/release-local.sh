@@ -13,13 +13,13 @@
 #   scripts/release-local.sh --no-launch        # do not open DBX.app at the end
 #   scripts/release-local.sh --isolated         # install into shared/host-e2e/app-data
 #                                               #   instead of the real app data
-#   scripts/release-local.sh --merge-policy=manual
-#                                               # on merge conflict: fail and let the
-#                                               # human resolve (default: ours — retry
-#                                               # the merge with -X ours so conflicting
-#                                               # hunks keep local patches; main-side
-#                                               # edits in those hunks are dropped and
-#                                               # only reported in the log)
+#   scripts/release-local.sh --merge-policy=ours
+#                                               # on merge conflict: stop and leave the
+#                                               # merge in progress for human resolution
+#                                               # (default: manual — no edits are dropped).
+#                                               # ours explicitly opts into a -X ours retry:
+#                                               # main-side edits in conflicted hunks are
+#                                               # DROPPED and only reported in the log
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,7 +39,7 @@ APP_DATA="${DBX_APP_DATA:-$HOME/Library/Application Support/com.dbx.app}"
 INSTALLED_APP="/Applications/DBX.app"
 PLUGINS=(ssh ldap files)
 
-SKIP_HOST=0; SKIP_PLUGINS=0; SKIP_PULL=0; SKIP_BUMP=0; NO_LAUNCH=0; MERGE_POLICY=ours
+SKIP_HOST=0; SKIP_PLUGINS=0; SKIP_PULL=0; SKIP_BUMP=0; NO_LAUNCH=0; MERGE_POLICY=manual
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-host) SKIP_HOST=1 ;;
@@ -109,17 +109,29 @@ if [ "$SKIP_PULL" = 0 ]; then
       [ -z "$(git status --porcelain --untracked-files=no)" ] || {
         echo "host worktree dirty, cannot merge — commit/stash first" >&2; exit 1; }
       git merge "$BRANCH" || {
-        if [ "$MERGE_POLICY" = "ours" ] && git diff --name-only --diff-filter=U | grep -q .; then
-          CONFLICTS="$(git diff --name-only --diff-filter=U | sed 's/^/    ! /')"
-          git merge --abort
+        if ! git diff --name-only --diff-filter=U | grep -q .; then
+          echo "merge failed for $BRANCH without content conflicts — resolve manually" >&2; exit 1
+        fi
+        if [ "$MERGE_POLICY" = "ours" ]; then
           echo "merge conflicts with $BRANCH — retrying with -X ours (local patches win):"
-          printf '%s\n' "$CONFLICTS"
+          git diff --name-only --diff-filter=U | sed 's/^/    ! /'
           echo "    caution: main-side edits inside those hunks are dropped by the auto-merge;"
           echo "    skim the merge commit if a conflicted file carries features you need."
+          git merge --abort
           git merge -X ours --no-edit "$BRANCH" || {
             echo "auto-merge with -X ours failed for $BRANCH — resolve manually" >&2; exit 1; }
         else
-          echo "merge conflict with $BRANCH — resolve manually" >&2; exit 1
+          echo "merge conflicts with $BRANCH — stopping, merge left in progress:"
+          git diff --name-only --diff-filter=U | sed 's/^/    ! /'
+          echo
+          echo "main-side changes at stake in those files (vs merge base):"
+          git diff --name-only -z --diff-filter=U | xargs -0 git diff --stat "HEAD...$BRANCH" --
+          echo
+          echo "resolve each conflicted hunk so BOTH sides' intent survives (local 二开 +"
+          echo "upstream feature), finish the merge, verify, then rerun this script:"
+          echo "    git add <resolved files> && git commit    # completes the merge"
+          echo "    cargo check -p dbx --lib --bins --tests   # --tests catches dangling test imports"
+          exit 1
         fi
       }
     else

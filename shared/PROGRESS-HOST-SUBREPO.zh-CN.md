@@ -150,3 +150,16 @@ patch/降级逻辑。
   用 `std::env::temp_dir()` 建 fixture 却断言 canonicalize 后路径，macOS
   `/tmp → /private/tmp` symlink 下 6 例必失败（288 其余用例全绿），
   Linux CI 不受影响，等上游修。
+
+## 9. 同步/发版脚本合并策略改为 manual（2026-09-01）
+
+- 第 8 节事故后，`host-sync.sh` 与 `release-local.sh` 的默认合并策略由
+  `ours` 改为 `manual`：冲突即停、保留合并现场（MERGE_HEAD + 冲突标记），
+  不再自动 `-X ours` 重试。停住时脚本直接打印 main 侧在冲突文件上的
+  `diff --stat` 摘要（`HEAD...<ref>` vs merge-base），解决者两侧意图可见。
+- `--merge-policy=ours` 仍可显式传入（知道并接受丢弃时才用）。
+- 凌晨 00:01 用旧脚本跑的合并 `a68e114a8`（main tip `ef2fdb941`）经逐提交
+  核对：8 个 main 新提交（oracle/export/es/kafka/ai/editor/tabs/grid）
+  改动全部完整保留，无丢失；merge-base 为 `f075caef2`。
+- manual 停住后的标准动作：逐 hunk 双侧语义合并 → `git add` + `git commit`
+  完成合并 → `cargo check -p dbx --lib --bins --tests` → 再重跑脚本。

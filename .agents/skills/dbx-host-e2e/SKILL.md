@@ -11,7 +11,8 @@ description: 用 shared/host-e2e 做宿主端到端验证：把插件 .dbxp 安�
 
 ## 前置
 
-- 宿主 worktree：`~/btroot/dbx-plugin-host-worktree`（或 `DBX_HOST_WORKTREE` 指定）。
+- 宿主 checkout：仓库内 `host/` 子仓库（或 `DBX_HOST_WORKTREE` 指定；
+  旧相邻路径自动兜底）。
 - 插件已打包：`<plugin-dir>/dist/*.dbxp`（先跑该插件 `scripts/build.sh`）。
 
 ## 流程
@@ -26,7 +27,7 @@ shared/host-e2e/install.sh files --reinstall  # 开发迭代：同版本重装
 shared/host-e2e/install.sh files --no-restart # 只装不拉起
 
 # 3. 手动打开测试 DBX.app（宿主框架分支构建）：
-open ~/btroot/dbx-plugin-host-worktree/target/debug/bundle/macos/DBX.app
+open host/target/debug/bundle/macos/DBX.app   # 工作区根目录下执行
 ```
 
 - 指定其他存储：`--app-data <dir>` 或 `DBX_E2E_APP_DATA`；

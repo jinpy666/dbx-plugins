@@ -13,7 +13,8 @@
 #
 # Environment:
 #   DBX_HOST_WORKTREE   host checkout used for the installer binary
-#                       (default: sibling dbx-plugin-host-worktree)
+#                       (default: in-repo host/ submodule, then sibling
+#                       dbx-plugin-host-worktree)
 #   DBX_TEST_APP        DBX.app bundle to relaunch (default: host worktree debug bundle)
 set -euo pipefail
 
@@ -42,7 +43,7 @@ PLUGIN_ID="$(python3 -c "import json;print(json.load(open('manifest.json'))['id'
 VERSION="$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])")"
 
 if [ -z "${DBX_HOST_WORKTREE:-}" ]; then
-  for candidate in "$WORKSPACE_ROOT/../dbx-plugin-host-worktree" "$HOME/dbx-plugin-host-worktree"; do
+  for candidate in "$WORKSPACE_ROOT/host" "$WORKSPACE_ROOT/../dbx-plugin-host-worktree" "$HOME/dbx-plugin-host-worktree"; do
     [ -d "$candidate" ] && DBX_HOST_WORKTREE="$candidate" && break
   done
 fi

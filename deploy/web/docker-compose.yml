@@ -1,0 +1,22 @@
+# DBX web + 三插件（io.dbx.ssh / io.dbx.ldap / io.dbx.files）服务器部署
+# 用法：
+#   docker compose up -d          # 需先构建镜像（scripts/release-docker.sh）
+#   浏览器打开 http://<host>:4224，用 DBX_PASSWORD 登录
+services:
+  dbx:
+    image: dbx-web-plugins:latest
+    # 如需服务端构建：在本仓库跑 scripts/release-docker.sh 导出镜像，
+    # 或直接 docker buildx build --platform linux/amd64（QEMU 模拟，较慢）。
+    ports:
+      - "4224:4224"
+    environment:
+      # 暴露到网络前务必修改密码
+      - DBX_PASSWORD=changeme
+      # 反向代理子路径部署时取消注释：
+      # - DBX_PUBLIC_BASE_PATH=/dbx
+    volumes:
+      - dbx-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  dbx-data:

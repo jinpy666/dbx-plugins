@@ -62,10 +62,20 @@ if [ ! -x "$INSTALLER" ]; then
   build_installer
 fi
 
-APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-  "$DBX_HOST_WORKTREE/target/debug/bundle/macos/DBX.app/Contents/Info.plist" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-  /Applications/DBX.app/Contents/Info.plist 2>/dev/null || echo 0.6.0)"
+# Pick the first existing host bundle and read its version in a clean
+# substitution: PlistBuddy prints "File Doesn't Exist, Will Create: ..." on
+# stdout even when it fails, so `cmd1 || cmd2` inside $() would concatenate
+# that error text with the real version.
+APP_PLIST=""
+for candidate in \
+  "$DBX_HOST_WORKTREE/target/debug/bundle/macos/DBX.app/Contents/Info.plist" \
+  "/Applications/DBX.app/Contents/Info.plist"; do
+  [ -f "$candidate" ] && APP_PLIST="$candidate" && break
+done
+APP_VERSION="0.6.0"
+if [ -n "$APP_PLIST" ]; then
+  APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")"
+fi
 
 # Do not restart/kill anything by default: the isolated app-data is meant for a
 # manually launched test DBX.app; killing the user's real DBX would be rude.
@@ -99,6 +109,7 @@ fi
 
 if [ "$RESTART" = 1 ]; then
   TEST_APP="${DBX_TEST_APP:-$DBX_HOST_WORKTREE/target/debug/bundle/macos/DBX.app}"
+  [ -d "$TEST_APP" ] || TEST_APP="/Applications/DBX.app"
   echo "==> launching test DBX.app: $TEST_APP"
   open "$TEST_APP"
 fi

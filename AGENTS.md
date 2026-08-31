@@ -20,6 +20,7 @@ Go）、`files/`（io.dbx.files，Rust + OpenDAL）。**不做任何新插件**�
 | `dbx-host-e2e` | shared/host-e2e 宿主端到端验证（隔离 app-data 安装） |
 | `dbx-ldap-dev` | LDAP 插件专项（Go、stdio-jsonl、认证矩阵、测试容器） |
 | `dbx-files-dev` | Files 插件专项（OpenDAL、二进制通道、异步 job 传输） |
+| `dbx-web-docker` | web Docker 发版（deploy/web 镜像构建、插件自动安装、服务器部署） |
 | `dbx-ssh-dev`（用户级） | ssh 插件专项（russh、sudo/sftp_ext、宿主 worktree 细节） |
 
 ## 硬性规则

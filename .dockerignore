@@ -1,0 +1,15 @@
+# 构建上下文 = 本工作区根（deploy/web/Dockerfile）。排除依赖与产物，
+# 插件前端/侧车在镜像内重新构建，不能复用 macOS 产物。
+**/node_modules/
+**/dist/
+**/ui/
+**/target/
+**/__pycache__/
+.git/
+.mimosa/
+.omc/
+.playwright-mcp/
+.idea/
+*.log
+*.dbxp
+.DS_Store

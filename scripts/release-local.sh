@@ -13,6 +13,13 @@
 #   scripts/release-local.sh --no-launch        # do not open DBX.app at the end
 #   scripts/release-local.sh --isolated         # install into shared/host-e2e/app-data
 #                                               #   instead of the real app data
+#   scripts/release-local.sh --merge-policy=manual
+#                                               # on merge conflict: fail and let the
+#                                               # human resolve (default: ours — retry
+#                                               # the merge with -X ours so conflicting
+#                                               # hunks keep local patches; main-side
+#                                               # edits in those hunks are dropped and
+#                                               # only reported in the log)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,7 +28,7 @@ APP_DATA="${DBX_APP_DATA:-$HOME/Library/Application Support/com.dbx.app}"
 INSTALLED_APP="/Applications/DBX.app"
 PLUGINS=(ssh ldap files)
 
-SKIP_HOST=0; SKIP_PLUGINS=0; SKIP_PULL=0; SKIP_BUMP=0; NO_LAUNCH=0
+SKIP_HOST=0; SKIP_PLUGINS=0; SKIP_PULL=0; SKIP_BUMP=0; NO_LAUNCH=0; MERGE_POLICY=ours
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-host) SKIP_HOST=1 ;;
@@ -30,10 +37,12 @@ while [ $# -gt 0 ]; do
     --no-bump) SKIP_BUMP=1 ;;
     --no-launch) NO_LAUNCH=1 ;;
     --isolated) APP_DATA="$ROOT/shared/host-e2e/app-data" ;;
+    --merge-policy=*) MERGE_POLICY="${1#--merge-policy=}" ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
 done
+case "$MERGE_POLICY" in ours|manual) ;; *) echo "unknown merge policy: $MERGE_POLICY (ours|manual)" >&2; exit 2 ;; esac
 
 # 每次发版版本号递增（patch +1）：manifest.json 必改；Rust 插件同步 Cargo.toml
 # 并再生 Cargo.lock（否则 CLI 以 --locked 构建时因本地包版本过期而失败）。
@@ -74,16 +83,36 @@ log "step 1/5: sync host worktree ($HOST_WORKTREE)"
 cd "$HOST_WORKTREE"
 [ -d .git ] || { echo "host worktree not found: $HOST_WORKTREE" >&2; exit 1; }
 if [ "$SKIP_PULL" = 0 ]; then
-  git fetch origin main dev/plugin-framework-current
+  # Fetch with explicit refspecs: remote.origin.fetch in the host worktree may
+  # not cover main, and a bare `git fetch origin main` then only writes
+  # FETCH_HEAD, leaving origin/main stale so the behind-check below always
+  # reports "up to date" and the merge never fires.
+  git fetch origin \
+    main:refs/remotes/origin/main \
+    dev/plugin-framework-current:refs/remotes/origin/dev/plugin-framework-current
   for BRANCH in origin/main origin/dev/plugin-framework-current; do
     BEHIND="$(git rev-list --count HEAD.."$BRANCH" 2>/dev/null || echo 0)"
+    TIP="$(git log -1 --format='%h %cs' "$BRANCH" 2>/dev/null || echo '?')"
     if [ "$BEHIND" != "0" ]; then
-      echo "local HEAD is $BEHIND behind $BRANCH — merging (local patches are kept)"
+      echo "local HEAD is $BEHIND behind $BRANCH ($TIP) — merging (local patches are kept)"
       [ -z "$(git status --porcelain --untracked-files=no)" ] || {
         echo "host worktree dirty, cannot merge — commit/stash first" >&2; exit 1; }
-      git merge "$BRANCH" || { echo "merge conflict with $BRANCH — resolve manually" >&2; exit 1; }
+      git merge "$BRANCH" || {
+        if [ "$MERGE_POLICY" = "ours" ] && git diff --name-only --diff-filter=U | grep -q .; then
+          CONFLICTS="$(git diff --name-only --diff-filter=U | sed 's/^/    ! /')"
+          git merge --abort
+          echo "merge conflicts with $BRANCH — retrying with -X ours (local patches win):"
+          printf '%s\n' "$CONFLICTS"
+          echo "    caution: main-side edits inside those hunks are dropped by the auto-merge;"
+          echo "    skim the merge commit if a conflicted file carries features you need."
+          git merge -X ours --no-edit "$BRANCH" || {
+            echo "auto-merge with -X ours failed for $BRANCH — resolve manually" >&2; exit 1; }
+        else
+          echo "merge conflict with $BRANCH — resolve manually" >&2; exit 1
+        fi
+      }
     else
-      echo "up to date vs $BRANCH"
+      echo "up to date vs $BRANCH ($TIP)"
     fi
   done
 fi
@@ -99,10 +128,23 @@ elif [ ! -d "$HOST_APP" ] || [ "$SKIP_HOST" = 0 ]; then
   (cd "$HOST_WORKTREE" && pnpm exec tauri build --debug --bundles app \
     --config '{"bundle":{"createUpdaterArtifacts":false}}')
 fi
-[ -d "$HOST_APP" ] || { echo "host build produced no DBX.app at $HOST_APP" >&2; exit 1; }
+if [ ! -d "$HOST_APP" ]; then
+  if [ "$SKIP_HOST" = 1 ] && [ -d "$INSTALLED_APP" ]; then
+    echo "no worktree bundle — will reuse installed app"
+  else
+    echo "host build produced no DBX.app at $HOST_APP" >&2
+    exit 1
+  fi
+fi
 
 log "step 3/5: publish DBX.app -> $INSTALLED_APP"
 RUNNING="$(pgrep -x DBX || true)"
+if [ ! -d "$HOST_APP" ] && [ -d "$INSTALLED_APP" ]; then
+  echo "reuse installed app (--skip-host): $INSTALLED_APP"
+elif [ ! -d "$HOST_APP" ]; then
+  echo "host build produced no DBX.app at $HOST_APP and none installed" >&2
+  exit 1
+else
 if [ -n "$RUNNING" ]; then
   echo "quitting running DBX (pid $RUNNING)"
   osascript -e 'quit app "DBX"' 2>/dev/null || kill $RUNNING || true
@@ -115,6 +157,14 @@ if ! ditto "$HOST_APP" "$INSTALLED_APP" 2>/dev/null; then
   sudo ditto "$HOST_APP" "$INSTALLED_APP"
 fi
 echo "published: $INSTALLED_APP"
+# Single-copy policy: /Applications/DBX.app is the one dev app (plugins live in
+# the shared app-data, so this copy is fully featured). Drop the worktree
+# bundle and stale updater/dmg artifacts so Spotlight never sees a second —
+# plugin-less-looking — copy. --skip-host already falls back to $INSTALLED_APP.
+rm -rf "$HOST_APP"
+rm -f "$HOST_WORKTREE"/target/debug/bundle/macos/*.tar.gz
+rm -rf "$HOST_WORKTREE/target/debug/bundle/dmg"
+fi
 
 # ---------------------------------------------------------------------------
 if [ "$SKIP_PLUGINS" = 0 ]; then

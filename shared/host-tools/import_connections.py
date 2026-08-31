@@ -127,6 +127,9 @@ def ssh_config(profile):
         "plugin_id": "io.dbx.ssh",
         "plugin_connection_provider": "io.dbx.ssh.connection",
         "plugin_connection_type": "ssh",
+        # key 认证没有可保存的登录密码；save_password=False 会让宿主在连接前
+        # 弹登录密码框（key 连接无从应答），必须为 True。
+        "save_password": True,
     })
     return cfg
 

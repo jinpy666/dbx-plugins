@@ -47,6 +47,7 @@ dbx-plugins/
 | `1a7d760` | 条件字段（visible_when/required_when）、本地密钥选择、短 tab 标题 |
 | `7687046` | `LocalBackend::open_with_app_version`（安装管线测试） |
 | `4528ce0` | external_config 保留 + required_when 缺失降级 optional |
+| `697b44989` | 插件连接按 manifest 豁免登录密码弹窗（SSH key 认证不再报 "Password is required"，见第 7 节） |
 
 本轮收编时新提交（原未跟踪/未提交改动，随迁移落库）：
 
@@ -93,3 +94,22 @@ git add host && git commit       # 父仓库推进 submodule 指针
 
 上游覆盖某二开功能后，在 `host/` 里 `git revert` 对应提交并删除插件侧对应
 patch/降级逻辑。
+
+## 7. 补充二开：插件连接登录密码弹窗按 manifest 豁免（2026-08-31）
+
+- 症状：批量导入（`shared/host-tools/import_connections.py`）的 SSH key 认证
+  连接（`save_password=false`、密码为空）连接时被宿主弹登录密码框，取消即报
+  "Password is required for this connection"，sidecar 从未收到连接请求。
+- 根因：`connectionNeedsPasswordPrompt` 的免密豁免只认 Impala/Kyuubi，不理解
+  插件 manifest 声明的认证语义。
+- 修复（`697b44989`）：`db_type=plugin` 且 save_password 启发式命中时，取该
+  连接 provider 的 manifest，用 `required_when`（与连接表单同一套
+  `pluginFieldIsRequired` 规则）判定 `binding=password` 字段对当前
+  `external_config` 是否必填；不必填则直接连接。manifest 查询失败回退弹窗，
+  provider 缺失（插件已卸载/不兼容）不弹、由后端报真实错误。同步短路保持
+  fast-path 微任务节奏不变（connectionStore.mq spec 守护）。
+- 导入脚本同步修：`ssh_config` 覆盖 `save_password=True`（key 认证无可保存
+  登录密码）。
+- 验证：vue-tsc 通过；`vitest run stores lib/connection lib/plugins`
+  87 文件 814 用例全绿（新增 connectionPassword.spec 10 例 +
+  savePassword.spec 插件分支 4 例）。

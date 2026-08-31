@@ -22,9 +22,9 @@ description: 把三插件打进 DBX web Docker 镜像并发布到服务器的全
   `cargo zigbuild --target ...` 交叉编译；Go（ldap）走 `GOOS/GOARCH`
   原生交叉，无需包装。
 - 构建 = 两个上下文：`.`（本工作区）+ 命名上下文 `host=`（精简后的宿主
-  worktree，`scripts/release-docker.sh` 会 rsync 剔除 target/node_modules/.git）。
-  插件 `[patch.crates-io]` 的相对路径 `../../../dbx-plugin-host-worktree`
-  依赖镜像内 `/build/{ssh,ldap,files,dbx-plugin-host-worktree}` 布局。
+  子仓库 `host/`，`scripts/release-docker.sh` 会 rsync 剔除 target/node_modules/.git）。
+  插件 `[patch.crates-io]` 的相对路径 `../../host`
+  依赖镜像内 `/build/{ws/<p>,host}` 布局（与本地结构一致）。
 - 容器 entrypoint（`deploy/web/entrypoint.sh`）读 `/app/plugins-builtin/
   plugins.tsv`（id/version/文件），版本目录不存在才调 `install_plugin`
   安装——幂等，升级镜像即升级插件，数据卷里已有数据不受影响。
@@ -59,7 +59,7 @@ docker compose -f deploy/web/docker-compose.yml up -d
 | --- | --- |
 | COPY entrypoint.sh not found | Dockerfile 上下文是仓库根，路径须写 `deploy/web/entrypoint.sh` |
 | SKIP_HOST_SYNC: unbound variable | 脚本变量名统一 SKIP_HOST_SYNC |
-| patch 解析到 /dbx-plugin-host-worktree | 布局必须镜像本地结构：插件在 `/build/ws/<p>/`，宿主树在 `/build/dbx-plugin-host-worktree`（`../../../` 从 `<p>/backend` 上溯三级到 `/build`） |
+| patch 解析到 /build 外 | 布局必须镜像本地结构：插件在 `/build/ws/<p>/`，宿主树在 `/build/host`（`../../host` 从 `<p>/backend` 上溯两级到 `/build`） |
 | CLI 报 unexpected argument 'build' | zigbuild 不接受 `build` 子参数：包装器先 `[ "$1" = build ] && shift` |
 | Rust 编译成功但 CLI 找不到二进制 | 带 `--target` 会把产物放进 `target/<triple>/release/`，CLI 只认 `target/release/`——不注入 `--target`（RUN 进程即目标平台，原生构建即可） |
 | `GET /` 404 插件 API 正常 | Stage 4 漏了 `COPY --from=frontend /app/dist /app/static` |

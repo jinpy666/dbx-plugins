@@ -53,11 +53,11 @@ FROM --platform=$BUILDPLATFORM rust:1-bookworm AS backend
 ARG TARGETARCH
 WORKDIR /build/ws
 
-# 宿主 worktree（release-docker.sh 已剔除 target/node_modules/.git）与插件源码。
-# 布局镜像本地结构：插件在 /build/ws/<p>/，宿主树在 /build/dbx-plugin-host-worktree
-# ——插件 [patch.crates-io] 的相对路径 ../../../dbx-plugin-host-worktree 从
-# /build/ws/<p>/backend 上溯三级正好落在 /build。
-COPY --from=host . /build/dbx-plugin-host-worktree/
+# 宿主子仓库（release-docker.sh 已剔除 target/node_modules/.git）与插件源码。
+# 布局与本地结构一致：插件在 /build/ws/<p>/，宿主树在 /build/host
+# ——插件 [patch.crates-io] 的相对路径 ../../host 从 /build/ws/<p>/backend
+# 上溯两级正好落在 /build。
+COPY --from=host . /build/host/
 COPY ssh/ ssh/
 COPY files/ files/
 COPY ldap/ ldap/
@@ -93,7 +93,7 @@ RUN case "$TARGETARCH" in \
 
 # ---- dbx-web + install_plugin（交叉编译，产物随镜像架构） --------------------
 # dbx-core 的 build.rs 需要 plugins/dialects + plugins/connection-types（已随 host 树拷入）。
-RUN cd /build/dbx-plugin-host-worktree \
+RUN cd /build/host \
     && RUST_TARGET="$(cat /tmp/rust_target)" \
     && ARCH_PREFIX="$(echo "$RUST_TARGET" | cut -d- -f1)-linux-gnu" \
     && LIBRARY_PATH="/usr/lib/$ARCH_PREFIX" \
@@ -107,12 +107,12 @@ RUN cd /build/dbx-plugin-host-worktree \
     && cp "target/$RUST_TARGET/release/examples/install_plugin" "/out/linux/$TARGETARCH/"
 
 # ---- 官方 dbx-plugin CLI（构建期使用，本机架构即可） --------------------------
-RUN cd /build/dbx-plugin-host-worktree/plugins/sdk/cli && cargo build --release
+RUN cd /build/host/plugins/sdk/cli && cargo build --release
 
 # ---- 打包三插件为 Linux .dbxp + 生成 entrypoint 安装清单 ----------------------
 RUN RUST_TARGET="$(cat /tmp/rust_target)" \
     && GOARCH="$(cat /tmp/goarch)" \
-    && CLI=/build/dbx-plugin-host-worktree/plugins/sdk/cli/target/release/dbx-plugin \
+    && CLI=/build/host/plugins/sdk/cli/target/release/dbx-plugin \
     && mkdir -p /out/plugins /out/linux \
     && for p in ssh files; do \
          cd "/build/ws/$p" \
@@ -132,7 +132,7 @@ RUN RUST_TARGET="$(cat /tmp/rust_target)" \
          printf '%s\t%s\t%s\n' "$id" "$ver" "$f" >> /out/plugins.tsv; \
        done \
     && cat /out/plugins.tsv \
-    && python3 -c "import tomllib;print(tomllib.load(open('/build/dbx-plugin-host-worktree/crates/dbx-web/Cargo.toml','rb'))['package']['version'])" > /out/VERSION
+    && python3 -c "import tomllib;print(tomllib.load(open('/build/host/crates/dbx-web/Cargo.toml','rb'))['package']['version'])" > /out/VERSION
 
 # ---- Stage 4: 运行时（与官方镜像相同的系统依赖 + 插件层） ---------------------
 FROM debian:bookworm-slim

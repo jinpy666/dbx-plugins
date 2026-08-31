@@ -9,6 +9,9 @@ Go）、`files/`（io.dbx.files，Rust + OpenDAL）。**不做任何新插件**�
 
 - 根 `README.md`：目录结构、三插件一览、实施 agent 入口。
 - `shared/`：跨插件方案与基线（总提案、M0 公共基线、能力盘点）。
+- `host/`：DBX 宿主子仓库（git submodule → t8y2/dbx，上游为主、本地二开
+  补丁跟随）；同步入口 `scripts/host-sync.sh`，红线与流程见
+  `shared/PROGRESS-HOST-SUBREPO.zh-CN.md`。
 - 各插件 `docs/IMPL_PLAN_*.zh-CN.md` 是该插件唯一工作来源；
   `docs/PROGRESS-*.zh-CN.md` 随任务收尾更新。
 

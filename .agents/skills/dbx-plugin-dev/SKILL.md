@@ -20,7 +20,8 @@ description: DBX 插件族（ssh / ldap / files）通用开发规范与构建、
 export PATH="$HOME/.nvm/versions/node/v22.21.0/bin:$HOME/Library/pnpm:$HOME/.cargo/bin:$PATH"
 npm install -g @dbx-app/plugin-cli @dbx-app/cli @dbx-app/mcp-server
 # 插件本地打包不需要 DBX 源码：CLI 自带 SDK（sdk-root）。
-# 仅宿主集成验证需要相邻 worktree：~/btroot/dbx-plugin-host-worktree
+# 仅宿主集成验证需要 host/ 子仓库（scripts/host-sync.sh init；
+# 旧相邻路径 ~/btroot/dbx-plugin-host-worktree 为指向 host/ 的符号链接）
 ```
 
 ## 硬性约定（三插件共同遵守）

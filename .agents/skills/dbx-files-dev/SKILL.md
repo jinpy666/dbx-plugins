@@ -15,7 +15,7 @@ Rust sidecar（dbx-plugin-sdk，`stdio-framed` + **二进制通道**，与 ssh �
   进度记 `files/docs/PROGRESS-*.zh-CN.md`。
 - 通用规范（环境/硬性约定/故障速查）：skill `dbx-plugin-dev`；宿主验证：skill `dbx-host-e2e`。
 - SDK 引用照 ssh 插件 `backend/Cargo.toml` 的 `[patch.crates-io]` 模式指向
-  `~/btroot/dbx-plugin-host-worktree` 的 Rust SDK。
+  `host/` 子仓库（`../../host/plugins/sdk/rust/dbx-plugin-sdk`）的 Rust SDK。
 
 ## 脚本与测试
 

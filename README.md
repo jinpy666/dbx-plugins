@@ -16,6 +16,8 @@ dbx-plugins/
 │   ├── IMPL_PLAN_M0_COMMON.zh-CN.md           # M0 公共基线（SDK 契约/lifecycle/审计/测试基建/roadmap）
 │   ├── CAPABILITY_CANDIDATES.zh-CN.md         # 能力盘点（聚焦版：三插件边界 + 不迁移清单）
 │   └── host-e2e/      # 插件无关的宿主 e2e 安装脚本（install.sh，隔离 app-data）
+├── scripts/           # 工作区级脚本：release-local / release-docker / host-sync
+├── host/              # DBX 宿主子仓库（git submodule → t8y2/dbx，插件框架分支 + 本地二开提交）
 ├── deploy/web/        # DBX web Docker 发版（Dockerfile + entrypoint + compose，
 │                      #   三插件 Linux .dbxp 烤进镜像，容器首启自动安装）
 ├── ssh/          # 插件 1：io.dbx.ssh（Rust）
@@ -43,15 +45,23 @@ dbx-plugins/
 3. 完成定义四件套：单测 + smoke + 对标清单更新 + 七语（ssh 仓 skill 硬性约定，沿用）；
 4. 宿主侧不确定项记入 `ssh/docs/FRAMEWORK_FEEDBACK.zh-CN.md` 并按文档内降级方案继续。
 
-## 相邻目录（不在本工作区内，路径约定）
+## 宿主子仓库与相邻目录
 
-- 宿主 worktree：`~/btroot/dbx-plugin-host-worktree`（插件框架分支 + 本地补丁）。
-  ssh 的 `backend/Cargo.toml` 以 `[patch.crates-io]` 相对路径 `../../../dbx-plugin-host-worktree/…` 引用其 Rust SDK；files 插件照抄此模式。
+- 宿主子仓库：`host/`（git submodule → `https://github.com/t8y2/dbx.git`，分支
+  `dev/plugin-framework-current` = origin/main + 少量本地二开提交）。策略：
+  **上游为主、本地补丁跟随**——用 `scripts/host-sync.sh sync` 定期合并
+  origin/main 保留二开提交，待上游功能覆盖所需后逐个移除二开提交。
+  ssh/files 的 `backend/Cargo.toml` 以 `[patch.crates-io]` 相对路径
+  `../../host/plugins/sdk/rust/dbx-plugin-sdk` 引用其 Rust SDK。
+  旧相邻路径 `~/btroot/dbx-plugin-host-worktree` 保留为指向 `host/` 的符号链接，
+  兼容历史文档与外部引用。
 - 参照源：`~/GolandProjects/tiny-rdm`（能力来源，只读）。
 - ssh 开发规范 skill：`dbx-ssh-dev`（构建/测试/安装全流程，环境准备同源适用）。
 
 ## 发版
 
+- **日常跟上游**：`scripts/host-sync.sh sync`（宿主子仓库拉取并合并上游，
+  保留本地二开提交；完成后在父仓库提交 submodule 指针）。
 - **本地 macOS 应用**：`scripts/release-local.sh`（拉宿主 → 构建 DBX.app →
   `/Applications` → 递增版本并打包三插件 → 装入真实插件存储 → 拉起）。
 - **服务器 web 访问**：`scripts/release-docker.sh`（构建含三插件 Linux .dbxp 的

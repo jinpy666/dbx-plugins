@@ -153,3 +153,31 @@
 ## 9. 阻塞
 
 无。
+
+## 10. 真实 AD 只读验证 + 匿名 bind 修复（2026-08-31 追加）
+
+背景：用真实企业 AD 域控（ldaps 636 / ldap 389，CORP 林）做只读冒烟；凭据
+全程仅经环境变量注入（`LDAP_REAL_*`），未写入任何文件/日志/报告。
+
+### 10.1 交付
+
+| 交付 | 状态 |
+|---|---|
+| `scripts/smoke_real_test.py`（R1-R10 只读真机 smoke） | 新增：connection/test、rootDse、base 搜索、分页聚合、count、entry/get、schema、白名单、坏过滤器、断连；连接默认 `read_only=true` 防御；凭据缺失/不可达按 SKIP 语义 |
+| anonymous bind AD 兼容修复（`dial.go`） | 完成：原实现对 anonymous 跳过 bind，AD 拒绝未绑定连接上的目录操作（Operations Error, 000004DC）；改为显式 RFC 4513 匿名 simple bind（空 DN + 空密码，`AllowEmptyPassword: true`） |
+| 真实 AD 复测（匿名路径） | connection/test 成功；rootDse 返回全部 5 个 namingContexts（与 Studio 基线一致）；匿名读目录树被 AD 正确拒绝（预期，AD 匿名仅开放 RootDSE） |
+
+### 10.2 回归验证
+
+| 验证 | 结果 |
+|---|---|
+| `go vet` + `go test ./...`（四包） | 全绿 |
+| `smoke_container.py`（S1-S10） | 11/11 PASS，容器 down -v 清理 |
+| `smoke_auth_test.py`（T1-T5 + A1-A5） | 9 PASS + 1 SKIP（A2 沿袭：容器无 DIGEST-MD5 mech） |
+
+### 10.3 阻塞
+
+真实服务器凭据绑定被 AD 拒绝（result 49 / data 52e；sidecar 与系统
+`ldapsearch` 双通道独立复现，传输层排除）。判定为凭据本身被拒（口令变更/
+失效或抄录失真），非插件缺陷；`LDAP_REAL_URL_PLAIN` 明文 389 通道同样 52e。
+待有效凭据后重跑 R1-R10 凭据场景（脚本与场景已就绪，环境变量驱动）。

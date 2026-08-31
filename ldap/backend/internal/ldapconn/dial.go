@@ -112,7 +112,10 @@ func dialProfile(ctx context.Context, profile Profile, target connTarget, secret
 func bindLDAPConnection(ctx context.Context, conn *ldap.Conn, profile Profile, logicalHost string, secrets bindSecrets) error {
 	switch profile.AuthType {
 	case LDAPAuthAnonymous, "":
-		return nil
+		// AD 拒绝未 bind 连接上的目录操作（Operations Error）：匿名也发
+		// RFC 4513 匿名 simple bind（空 DN + 空密码）显式完成 bind。
+		_, err := conn.SimpleBind(&ldap.SimpleBindRequest{Username: "", Password: "", AllowEmptyPassword: true})
+		return err
 	case LDAPAuthUnauthenticated:
 		return conn.UnauthenticatedBind(firstLDAPNonEmpty(profile.BindDN, profile.Username))
 	case LDAPAuthSimple:

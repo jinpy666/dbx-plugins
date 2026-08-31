@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.ldap",
   "name": "DBX LDAP",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "dbx",
   "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
   "icon": "assets/plugin.svg",

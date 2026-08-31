@@ -3,7 +3,7 @@
 #
 # Two build contexts are used:
 #   .                 -> this workspace (plugins + deploy/web)
-#   host (named)      -> dbx-plugin-host-worktree, trimmed copy prepared here
+#   host (named)      -> host/ submodule checkout, trimmed copy prepared here
 #                        (target/node_modules/.git excluded to keep context small)
 #
 # Usage:
@@ -14,7 +14,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOST_WORKTREE="${DBX_HOST_WORKTREE:-$ROOT/../dbx-plugin-host-worktree}"
+# Host checkout resolution: DBX_HOST_WORKTREE env → in-repo host/ submodule →
+# legacy sibling dbx-plugin-host-worktree.
+HOST_WORKTREE="${DBX_HOST_WORKTREE:-}"
+if [ -z "$HOST_WORKTREE" ]; then
+  for candidate in "$ROOT/host" "$ROOT/../dbx-plugin-host-worktree"; do
+    if [ -d "$candidate/.git" ]; then HOST_WORKTREE="$candidate"; break; fi
+  done
+fi
+[ -n "$HOST_WORKTREE" ] && [ -d "$HOST_WORKTREE/.git" ] || {
+  echo "host checkout not found — init the host/ submodule (scripts/host-sync.sh init) or set DBX_HOST_WORKTREE" >&2
+  exit 1
+}
 HOST_CONTEXT="${DBX_DOCKER_HOST_CONTEXT:-/tmp/dbx-docker-host}"
 TAG="${DBX_WEB_IMAGE:-dbx-web-plugins:latest}"
 PLATFORM=""

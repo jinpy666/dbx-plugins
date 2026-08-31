@@ -23,7 +23,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOST_WORKTREE="${DBX_HOST_WORKTREE:-$ROOT/../dbx-plugin-host-worktree}"
+# Host checkout resolution: DBX_HOST_WORKTREE env → in-repo host/ submodule →
+# legacy sibling dbx-plugin-host-worktree.
+HOST_WORKTREE="${DBX_HOST_WORKTREE:-}"
+if [ -z "$HOST_WORKTREE" ]; then
+  for candidate in "$ROOT/host" "$ROOT/../dbx-plugin-host-worktree"; do
+    if [ -d "$candidate/.git" ]; then HOST_WORKTREE="$candidate"; break; fi
+  done
+fi
+[ -n "$HOST_WORKTREE" ] && [ -d "$HOST_WORKTREE/.git" ] || {
+  echo "host checkout not found — init the host/ submodule (scripts/host-sync.sh init) or set DBX_HOST_WORKTREE" >&2
+  exit 1
+}
 APP_DATA="${DBX_APP_DATA:-$HOME/Library/Application Support/com.dbx.app}"
 INSTALLED_APP="/Applications/DBX.app"
 PLUGINS=(ssh ldap files)

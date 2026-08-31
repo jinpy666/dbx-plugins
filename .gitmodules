@@ -1,0 +1,4 @@
+[submodule "host"]
+	path = host
+	url = https://github.com/t8y2/dbx.git
+	branch = dev/plugin-framework-current

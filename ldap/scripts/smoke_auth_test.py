@@ -338,7 +338,7 @@ def run_a5(client: SidecarClient) -> None:
         make_connection(
             "smoke-krb-deadkdc",
             f"ldap://{HOST}:{LDAP_PORT}",
-            extra_secrets={"krb_password": "dummy-krb-password-not-a-real-secret"},
+            extra_secrets={"krb_password": os.urandom(16).hex()},
             auth_type="kerberos",
             username="admin",
             krb_credential_type="password",

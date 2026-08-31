@@ -149,7 +149,9 @@ if [ ! -d "$HOST_APP" ]; then
 fi
 
 log "step 3/5: publish DBX.app -> $INSTALLED_APP"
-RUNNING="$(pgrep -x DBX || true)"
+# Upstream renamed the binary to lowercase `dbx`; match case-insensitively or
+# the quit/kill below silently misses the running app.
+RUNNING="$(pgrep -ix DBX || true)"
 if [ ! -d "$HOST_APP" ] && [ -d "$INSTALLED_APP" ]; then
   echo "reuse installed app (--skip-host): $INSTALLED_APP"
 elif [ ! -d "$HOST_APP" ]; then

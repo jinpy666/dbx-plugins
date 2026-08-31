@@ -33,10 +33,19 @@ if [ ! -f manifest.json ]; then
   exit 0
 fi
 
+# Identity version comes from manifest.json — the single source of truth — so
+# the sidecar's reported identity always matches the manifest (the host rejects
+# mismatches at init: "backend identity ... does not match manifest").
+PLUGIN_VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' manifest.json | head -1)"
+PLUGIN_VERSION="${PLUGIN_VERSION:-0.0.0-dev}"
+
 # Build the Go sidecar first when the backend workspace is present.
+# backend/bin is for local smoke/debug; the packaging CLI rebuilds the sidecar
+# itself (build_go_backend runs plain `go build`, no ldflags support), so the
+# same version is injected into that rebuild via GOFLAGS below.
 if [ -f backend/go.mod ] && command -v go >/dev/null 2>&1; then
   echo "==> backend: go build (owned by backend path; failures are recorded in docs/PROGRESS-C.zh-CN.md)"
-  (cd backend && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/dbx-plugin-ldap .) || {
+  (cd backend && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${PLUGIN_VERSION}" -o bin/dbx-plugin-ldap .) || {
     echo "WARN: go build failed (backend under parallel development); packaging will fail until it is green"
   }
 fi
@@ -47,9 +56,9 @@ fi
 CLI_PKG="$(npm root -g 2>/dev/null)/@dbx-app/plugin-cli"
 NATIVE_CLI="$CLI_PKG/node_modules/@dbx-app/plugin-cli-darwin-arm64/bin/dbx-plugin"
 if [ -x "$NATIVE_CLI" ]; then
-  env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 "$NATIVE_CLI" package .
+  env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 GOFLAGS="-ldflags=-X=main.version=${PLUGIN_VERSION}" "$NATIVE_CLI" package .
 else
-  env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 dbx-plugin package .
+  env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 GOFLAGS="-ldflags=-X=main.version=${PLUGIN_VERSION}" dbx-plugin package .
 fi
 
 echo

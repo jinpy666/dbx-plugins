@@ -70,11 +70,12 @@ BUILTIN_MAPPING = {
 }
 
 SQL_UPDATE_TEMPLATE = """-- 由 sidebar_groups.py 生成：将 layout_json 置为 {layout_file}
-UPDATE sidebar_layout SET layout_json = readfile('{layout_file}') WHERE id = 1;
+-- 注意必须 CAST AS TEXT：readfile() 返回 BLOB，宿主按 TEXT 读取该列
+UPDATE sidebar_layout SET layout_json = CAST(readfile('{layout_file}') AS TEXT) WHERE id = 1;
 """
 
 SQL_ROLLBACK_TEMPLATE = """-- 由 sidebar_groups.py 生成：回滚到备份的 layout_json（{backup_note}）
-UPDATE sidebar_layout SET layout_json = readfile('{backup_file}') WHERE id = 1;
+UPDATE sidebar_layout SET layout_json = CAST(readfile('{backup_file}') AS TEXT) WHERE id = 1;
 """
 
 

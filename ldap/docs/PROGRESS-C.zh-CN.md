@@ -78,6 +78,11 @@
 - 打包必须经 `/tmp/go-shim`（剥 CLI 硬编码 GOWORK 的 go.work go 1.22，见 M0_FINDINGS §2.1）；build.sh 未内置 shim（机器本地产物，不宜写死 /tmp 路径），打包命令：
   `PATH="/tmp/go-shim:$PATH" bash scripts/build.sh`。
 - `SidecarClient.start_default` 实际类方法名为 `start`（framed 版同名语义）；M0 §5.1 的 `start_default` 以 `SidecarClient.start()` 兑现，别名未加（避免无用代码），如 smoke 外部脚本有依赖可再加一行别名。
+- （2026-08-31）宿主报 `backend identity io.dbx.ldap/0.1.0 does not match manifest 0.1.10`：`backend/main.go` 的 `Metadata.Version` 硬编码 `0.1.0`，从未随 manifest 升版。修复为单一来源 manifest.json：
+  - `main.go` 改为可注入的包级 `var version = "0.0.0-dev"`（裸 `go build`/`go test` 兜底值，缺失注入时失败可见）；
+  - `build.sh` 显式 go build 直接 `-X main.version=$PLUGIN_VERSION` 注入 `backend/bin`（smoke/调试用）；但 `dbx-plugin package` 对 Go 工程走 CLI 内部 `build_go_backend`（固定 `go build -trimpath`，无 ldflags 入口，也不复用 `backend/bin`）→ 改经 `GOFLAGS="-ldflags=-X=main.version=…"` 传入 CLI 子进程（GOFLAGS 条目不能含空格，用 `-X=name=value` 紧凑形式）；
+  - 验证：解包 `dist/io.dbx.ldap-0.1.11-darwin-arm64.dbxp` 实测 `plugin/initialize` 上报 `io.dbx.ldap/0.1.11` 与包内 manifest 一致；go vet/test 绿。今后升版只改 manifest.json，sidecar 身份自动跟随。
+  - 本次打包未用 `/tmp/go-shim` 亦可（build.sh 已 `unset DBX_PLUGIN_SDK_ROOT` 避开 CLI 捆绑 SDK 的 go.work）。
 
 ## 5. 遗留与交接
 

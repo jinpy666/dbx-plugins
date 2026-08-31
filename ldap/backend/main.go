@@ -28,6 +28,10 @@ import (
 	"io.dbx.ldap.plugin/internal/store"
 )
 
+// 身份版本：默认仅 go run/go test 兜底；scripts/build.sh 打包时用
+// -ldflags "-X main.version=..." 从 manifest.json 注入，保证与 manifest 一致。
+var version = "0.0.0-dev"
+
 // pluginHandler 实现 dbxpluginsdk.Handler。
 type pluginHandler struct {
 	svc *ldapconn.Service
@@ -52,7 +56,7 @@ func main() {
 
 	metadata := dbxpluginsdk.Metadata{
 		ID:           "io.dbx.ldap",
-		Version:      "0.1.0",
+		Version:      version,
 		Capabilities: []string{"connections", "events"},
 	}
 	server := dbxpluginsdk.NewServer(metadata, handler)

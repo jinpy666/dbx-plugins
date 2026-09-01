@@ -110,8 +110,11 @@ export const ldapApi = {
     return callLdap<{ entry: LdapEntry }>("ldap/entry/get", { dn, ...(attributes ? { attributes } : {}) });
   },
 
-  rootDse() {
-    return callLdap<{ attributes: Record<string, string[]> }>("ldap/rootDse");
+  rootDse(attributes?: string[]) {
+    return callLdap<{ attributes: Record<string, string[]> }>(
+      "ldap/rootDse",
+      attributes?.length ? { attributes } : {},
+    );
   },
 
   schema(refresh = false) {

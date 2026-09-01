@@ -78,7 +78,7 @@ const attributeOptions = computed(() => {
 
 const generatedFilter = computed(() => buildNodeFilter(builderRoot.value));
 const builderErrors = computed(() => collectBuilderErrors(builderRoot.value));
-const builderValid = computed(() => builderErrors.value.length === 0 && generatedFilter.value !== "");
+const builderValid = computed(() => builderErrors.value.length === 0);
 
 const builderErrorMessage = computed(() => {
   const first = builderErrors.value[0];
@@ -89,7 +89,8 @@ const builderErrorMessage = computed(() => {
 
 const sourceValid = computed(() => {
   const value = sourceFilter.value.trim();
-  return value !== "" && validateLDAPFilter(value);
+  // 空过滤器 = 匹配全部（运行时回退 (objectClass=*)），合法不算错。
+  return value === "" || validateLDAPFilter(value);
 });
 
 const filterValid = computed(() => (builderMode.value ? builderValid.value : sourceValid.value));
@@ -274,7 +275,7 @@ const derefOptions = computed(() => [
       </select>
     </label>
     <div class="field" style="justify-content: flex-end">
-      <button class="primary-button" type="submit" :disabled="disabled || running || !filterValid">
+      <button class="primary-button compact" type="submit" :disabled="disabled || running" :title="activeFilter() || t('search.filterAll')">
         <Play aria-hidden="true" />{{ running ? t("search.running") : t("search.run") }}
       </button>
       <span v-if="!filterValid" class="form-error">{{ builderMode ? builderErrorMessage : t("search.filterInvalid") }}</span>
@@ -311,6 +312,7 @@ const derefOptions = computed(() => [
       <datalist :id="ATTR_LIST_ID">
         <option v-for="name in attributeOptions" :key="name" :value="name" />
       </datalist>
+      <p class="filter-hint">{{ t("search.filterEmptyHint") }}</p>
     </div>
 
     <div class="search-extra">

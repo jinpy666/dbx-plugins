@@ -61,6 +61,7 @@ func dialProfile(ctx context.Context, profile Profile, target connTarget, secret
 		if port <= 0 {
 			port = ldapURLPort(parsed)
 		}
+		host, port = normalizeDialHost(host, port)
 		clone := *parsed
 		clone.Host = net.JoinHostPort(host, strconv.Itoa(port))
 		dialURL = clone.String()
@@ -218,6 +219,25 @@ func ldapURLPort(parsed *url.URL) int {
 		return 636
 	}
 	return 389
+}
+
+// normalizeDialHost 容错 runtime.host 里混入的完整 URL：宿主直连路径把
+// connection.host 原文透传进 runtime.host（host 仓库 dbx-core
+// connection_host_port，不做 scheme 剥离），而 LDAP 连接的 host 绑定按
+// manifest 约定是完整 ldap/ldaps URL；不剥离会被 net.JoinHostPort 包进
+// []，得到 ldaps://[ldaps:%2F%2F…]:636 这类不可解析目标。
+func normalizeDialHost(host string, port int) (string, int) {
+	if !strings.Contains(host, "://") {
+		return host, port
+	}
+	parsed, err := url.Parse(host)
+	if err != nil || parsed.Hostname() == "" {
+		return host, port
+	}
+	if port <= 0 {
+		port = ldapURLPort(parsed)
+	}
+	return parsed.Hostname(), port
 }
 
 // newBaseProbeRequest 是 connection/test 的 base scope 探测（读 1 条）。

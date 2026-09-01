@@ -259,3 +259,177 @@ LDIF 对抗往返（冒号/`<`/前后空格/换行/CR+LF/TAB/中英混排/emoji/
   `multiline` 并显示提示（编辑该行会按行拆分为多值），替代沉默歧义；七语
   `editor.multilineHint`。完整逐值编辑器仍属新功能面（未做）。
 - 验证：go 四包绿、前端 vitest **126 passed**、typecheck/build 绿。
+
+## 13. 2026-09-01 追加：runtime.host 完整 URL 容错（真机连接失败修复）
+
+### 13.1 现象与根因
+
+真机（AD `dc-apac.corp.int.kn`）连接报：
+`dial ldap: LDAP Result Code 200 "Network Error": parse "ldaps://[ldaps:%2F%2Fdc-apac.corp.int.kn:636]:636": invalid URL escape "%2F"`。
+
+根因是插件与宿主对 `runtime.host` 的契约错位：
+
+- manifest 的 "LDAP URL" 字段 `binding: host`，按占位符约定填完整
+  `ldaps://host:636`（这是**预期用法**，非用户误填）；
+- 宿主直连路径（host 仓库 `dbx-core` `connection_host_port`）把
+  `connection.host` **原文**透传进 `runtime.host`，无 scheme 剥离；仅配置
+  transport layers（SSH 隧道等）时才是 `127.0.0.1:本地端口`；
+- `dialProfile` 把 `runtime.host` 当裸主机名做 `net.JoinHostPort`，URL 被包进
+  `[]` 且 `/` 转义为 `%2F`，得到不可解析目标。
+
+### 13.2 修复与验证
+
+- `dial.go` 新增 `normalizeDialHost`：拨号目标带 `://` 时按 URL 解析取
+  hostname/port（端口为 0 时按 scheme 缺省），裸主机名与 `127.0.0.1` 传输端点
+  原样放行，IPv6 字面量/畸形输入不受影响；D5 语义（隧道走本地端点）不变。
+- 回归单测 `dial_target_test.go`：8 组表格用例 + 拼回 URL 必须可解析的钉子用例。
+- 验证：`gofmt` 干净、`go vet ./internal/ldapconn/` 绿、
+  `go test ./internal/ldapconn/` ok（含新增用例）。
+
+### 13.3 本小节改动清单
+
+`backend/internal/ldapconn/dial.go`、`dial_target_test.go`（新增）、本文档。
+遗留：ssh 插件若存在同类「host 绑定即完整 URL」字段需另查（本轮未查）。
+
+## 14. 2026-09-01 追加：连接表单结构化改造（host/port/tls_mode，v0.1.19）
+
+### 14.1 背景
+
+§13 修复后真机仍报同一错误：宿主里安装的 0.1.18 是 10:43 的**修复前同名构建**，
+11:42 重构建的包未被重装（同版本号安装被跳过）。本次连同表单易用性一起改造，
+并 bump 版本号 0.1.19 强制升级。
+
+### 14.2 改动
+
+- **manifest**（version → 0.1.19）：`url`（binding host）拆为三字段，对齐
+  ssh 族约定——`host`（binding host，裸主机名，`127.0.0.1`）、`port`
+  （binding port，389）、`tls_mode`（select config：none/starttls/ldaps，
+  取代 `use_starttls`）；七语（en/zh-CN/zh-TW/ja/es/it/pt-BR）label 与
+  tls_mode 选项全量补齐。
+- **后端**：`service.go` 新增 `buildLDAPURL`——host 绑定为裸主机名时按
+  tls_mode 组装 `scheme://host`（IPv6 字面量自动加 []，组装后 parse 校验，
+  host:port 误填报错并指向端口字段）；旧连接的完整 ldap/ldaps/ldapi URL
+  原样透传（StartTLS 仍取旧 `use_starttls`，ldaps+StartTLS 冲突保持 dial
+  校验拒绝）。`NewProfileFromLifecycle` 改为三返回值（带 error）。
+- **拨号容错保留**：`dial.go` `normalizeDialHost`（§13）继续兜底旧连接经
+  runtime.host 透传的完整 URL。
+- **测试**：`service_url_test.go`（组装/错误面/含 `tls_mode` 不被旧字段
+  覆盖的回归钉子）、`manifest_contract_test.go`（字段矩阵换 host/port/
+  tls_mode + 七语守卫扩展 + 旧字段必须移除）、smoke 新增 **T6**（结构化
+  字段走真 ldaps 容器）。
+- **文档**：IMPL_PLAN §4 字段表与 §10 风险项更新；smoke 注释同步。
+
+### 14.3 验证
+
+| 层 | 命令 | 结果 |
+| --- | --- | --- |
+| 后端 | `go vet ./...` / `go test ./...` | 绿 / 四包 ok（新增 15 个用例） |
+| 前端 | typecheck / vitest / build | 全绿（无 UI 改动） |
+| 打包 | `scripts/build.sh` | `dist/io.dbx.ldap-0.1.19-darwin-arm64.dbxp` |
+| 真机 TLS | `smoke_auth_test.py`（自签证书容器） | **10 PASS + 1 SKIP**（A2 预期），含 T6 结构化字段 |
+| 真机主 | `smoke_container.py`（S1–S10） | **11/11 PASS** |
+
+容器均 `compose down -v` 清理；密码一次性随机生成仅经环境变量。
+
+### 14.4 遗留
+
+- 宿主侧未做任何改动（`runtime.host` 直连透传行为保留），插件侧双保险已覆盖。
+- ssh 插件是否存在「host 绑定即完整 URL」同类形态仍未排查（与 §13 同）。
+
+## 15. 2026-09-01 追加：工作台自动定位 Base DN（v0.1.20）
+
+### 15.1 现象与根因
+
+真机 AD（corp.int.kn:389）连接成功，但工作台空无一物并提示"连接未配置
+Base DN"。根因：`App.vue` 的 `contextBaseDn` 只读连接表单 `base_dn`，为空时
+目录树 `hasBaseDn=false` 直接空态；tiny-rdm 移植的主机名推断助手
+（lib/baseDn.ts `inferBaseDnFromProfile`）是**死代码**，从未接线。
+
+### 15.2 改动
+
+- `lib/baseDn.ts` 新增纯函数 `pickBaseDnFromRootDse`：AD
+  `defaultNamingContext` 优先 → `namingContexts` 里首个 `dc=` 项（跳过
+  CN=Configuration/Schema、monitor）→ 首个 context。
+- `lib/api.ts` `rootDse()` 支持显式 attributes（namingContexts/
+  defaultNamingContext 属 operational 属性，缺省请求可能不下发）。
+- `App.vue` 新增 `resolveAutoBaseDn`：显式 base_dn 优先 → RootDSE → 主机名
+  推断（corp.int.kn → dc=corp,dc=int,dc=kn）；带竞态守卫（解析期间上下文
+  带来显式值则放弃）；成功后 toast 提示实际生效值（七语 `tree.autoBaseDn`）。
+- smoke 新增 **S11**（rootDse 显式 namingContexts 请求，钉住前端依赖的
+  后端原语）；manifest version → 0.1.20。
+
+### 15.3 验证
+
+| 层 | 命令 | 结果 |
+| --- | --- | --- |
+| 前端 | vitest（baseDn.spec 新增 8 用例 + i18n 奇偶校验）| 13 passed |
+| 前端 | typecheck / build | 绿 |
+| 打包 | `scripts/build.sh` | `dist/io.dbx.ldap-0.1.20-darwin-arm64.dbxp` |
+| 真机 | `smoke_container.py`（S1–S11） | **12/12 PASS**（含新 S11） |
+
+容器 `compose down -v` 清理，密码一次性随机仅经环境变量。
+
+### 15.4 备注
+
+- 配了 `allowed_base_dns` 时 RootDSE 读取按策略拒绝（schema.go
+  rootDSEAllowed），自动定位自动退回主机名推断；显式 base_dn 永远优先。
+- 多命名上下文（AD Configuration/Schema）默认不进目录树根，可用
+  搜索表单手填 baseDn 覆盖。
+
+## 16. 2026-09-01 追加：工作台树/搜索交互修复（v0.1.21）
+
+### 16.1 现象与根因
+
+真机反馈：做子树搜索、条件搜索后「左边一下子就没了整棵树，无法还原」。
+根因两处：
+
+1. `App.vue` `searchHere`（树右键「在此搜索」）直接 `baseDn.value = dn`，
+   而 DnTree watch `baseDn` 变化即整树重根——原根（dc=corp,…）被替换成被点
+   节点的子树，且无任何还原途径。`baseDn` 同时承担「树根」与「搜索 base」
+   两个语义是设计缺陷。
+2. 树顶关键字过滤激活时左栏切换为平铺匹配列表，只有 Esc/清空输入框才恢复
+   且无显式入口，观感即"树不见了"。
+
+### 16.2 改动（tiny-rdm 语义：树常驻、搜索联动）
+
+- `searchHere` 只把搜索面板 base 指向被点节点（`applyBaseDn`），树根恒为
+  连接 Base DN，不再重根；
+- `selectEntry`（点选树节点）联动搜索面板 base（tiny-rdm 搜索框跟随选中
+  节点语义），替代原 no-op；
+- DnTree 过滤框激活时显示显式 ✕ 清除按钮（恢复目录树），七语
+  `tree.clearFilter`；懒展开失败已有"错误横幅与树并存"语义保持不变。
+- 未做（登记）：搜索结果"在树中定位"需逐级异步展开祖先链，属新功能面。
+
+### 16.3 验证
+
+| 层 | 命令 | 结果 |
+| --- | --- | --- |
+| 前端 | vitest 7 文件 134 用例（i18n 奇偶含新 key） | 全绿 |
+| 前端 | typecheck / build | 绿 |
+| 打包 | `scripts/build.sh` | `dist/io.dbx.ldap-0.1.21-darwin-arm64.dbxp` |
+| 真机 | `smoke_container.py` S1–S11 | **12/12 PASS**（sidecar 未改动，回归确认） |
+
+### 16.4 备注
+
+`baseDn`（树根）现在只由连接上下文（显式 base_dn / RootDSE / 主机名推断）
+写入；搜索 base 只存在于 SearchForm 表单内。两语义解耦后，"在此搜索/点选
+联动/表单手改"均不再影响目录树。
+
+## 17. 2026-09-01 追加：搜索表单交互打磨（v0.1.22）
+
+### 17.1 反馈与改动
+
+| 反馈 | 根因 | 改动 |
+| --- | --- | --- |
+| 搜索按钮太大 | `.primary-button svg` 未限尺寸（lucide 默认 24px）+ 28px 高 | 新增 `compact` 变体（24px 高 / 12px 图标 / 11px 字号），仅搜索按钮使用 |
+| 报错提示不友好 | 横幅直接透传 sidecar 原始串（`LDAP Result Code 49 "Invalid Credentials": …`） | 新增 `lib/ldapErrors.ts`：按结果码/传输错误映射 13 类可行动文案（认证失败、条目不存在、DN 语法、TLS 证书、网络不通、超时、限制类…），七语 `err.*`；横幅/树内错误展示友好文案，原始串挂 `title` 悬停可查；未知错误原样透传 |
+| 条件必须合法，应允许为空 | 构建器空子句报 `attribute_required`、源码空串判 invalid，`run` 被 `filterValid` 拦死 | 空条件 = 匹配全部：构建器「属性与值皆空」的子句不报错（半填仍报错）、源码模式空串合法；运行时回退 `(objectClass=*)`（`toModel`/App `runSearch` 原有兜底）；过滤块下新增七语提示「条件留空 = 匹配全部条目」 |
+
+### 17.2 验证
+
+| 层 | 命令 | 结果 |
+| --- | --- | --- |
+| 前端 | vitest（新增 ldapErrors.spec 7 用例 + ldapFilter 空条件用例） | 全绿（141 用例） |
+| 前端 | typecheck / build | 绿 |
+| 打包 | `scripts/build.sh` | `dist/io.dbx.ldap-0.1.22-darwin-arm64.dbxp` |
+| 真机 | `smoke_container.py` S1–S11 | **12/12 PASS**（sidecar 未改动） |

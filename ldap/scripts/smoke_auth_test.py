@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M3/TLS smoke test for the dbx-ldap-plugin sidecar (scenarios T1-T5, A1-A5).
+"""M3/TLS smoke test for the dbx-ldap-plugin sidecar (scenarios T1-T6, A1-A5).
 
 Covers the X-C路 M3 tasks over a live OpenLDAP container with LDAPS/StartTLS
 (docker-compose.ldap-tls-test.yml, bitnami/openldap, self-signed server cert):
@@ -9,6 +9,7 @@ Covers the X-C路 M3 tasks over a live OpenLDAP container with LDAPS/StartTLS
     T3  connection/test with StartTLS (ldap:// 389)           -> success
     T4  ldaps:// with tls_verify=true (self-signed)           -> dial rejected (certificate error)
     T5  ldaps + use_starttls=true                             -> rejected (mutually exclusive)
+    T6  structured form: bare host + tls_mode=ldaps + port    -> success (v0.1.19 fields)
     A1  external (SASL EXTERNAL) over TCP                     -> real bind attempted (no "planned for M3")
     A2  digest_md5                                            -> PASS or SKIP when server lacks the SASL mech
     A3  ntlm (no AD in container)                             -> real NTLMSSP bind attempted (mech-missing error ok)
@@ -252,6 +253,19 @@ def run_t5(client: SidecarClient) -> None:
         raise AssertionError(f"expected StartTLS/ldaps mutual-exclusion error, got: {cause}")
 
 
+@scenario("T6", "structured form: bare host + tls_mode=ldaps (v0.1.19 fields)")
+def run_t6(client: SidecarClient) -> None:
+    """T6 新表单三字段（host 裸主机名 / port / tls_mode）与 legacy URL 同链路。"""
+    connection = make_connection(
+        "smoke-tls-structured", f"ldaps://{HOST}:{LDAPS_PORT}", tls_verify=False,
+    )
+    connection["host"] = HOST
+    connection["external_config"]["tls_mode"] = "ldaps"
+    result = client.request("connection/test", lifecycle_params(connection))
+    if result.get("success") is not True:
+        raise AssertionError(f"structured-field ldaps connection/test did not succeed: {result}")
+
+
 # -- M3 auth scenarios (A) -----------------------------------------------------
 
 @scenario("A1", "external (SASL EXTERNAL) over TCP attempts real bind")
@@ -432,6 +446,7 @@ STEPS = [
     ("T3", "StartTLS connection/test on 389", run_t3),
     ("T4", "ldaps tls_verify=true rejects self-signed", run_t4),
     ("T5", "ldaps + use_starttls mutually exclusive", run_t5),
+    ("T6", "structured form (host/tls_mode) over ldaps", run_t6),
     ("A1", "external (SASL EXTERNAL) real bind path", run_a1),
     ("A2", "digest_md5 (SASL mech dependent)", run_a2),
     ("A3", "ntlm real bind attempt (no AD)", run_a3),

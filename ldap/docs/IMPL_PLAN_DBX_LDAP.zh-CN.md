@@ -79,7 +79,9 @@ connection-provider `io.dbx.ldap.connection`，`database_type: "ldap"`，
 | key | 类型 | binding | 默认 | visible_when (auth_type ∈) |
 |---|---|---|---|---|
 | `display_name` | text | name | `LDAP server` | — |
-| `url` | text | host | `ldap://127.0.0.1:389` | — |
+| `host` | text | host | `127.0.0.1` | —（v0.1.19 起裸主机名；sidecar 组装 URL，旧完整 URL 连接兼容透传） |
+| `port` | number | port | `389` | —（ldaps 时填 636；拨号空缺按 scheme 缺省） |
+| `tls_mode` | select | config | `none` | —（none/starttls/ldaps；取代旧 `use_starttls`） |
 | `base_dn` | text | config | 空 | — |
 | `auth_type` | select | config | `simple` | —（8 选项：anonymous/unauthenticated/simple/kerberos/ntlm/ntlm_hash/digest_md5/external） |
 | `bind_dn` | text | config | 空 | simple |
@@ -87,7 +89,6 @@ connection-provider `io.dbx.ldap.connection`，`database_type: "ldap"`，
 | `domain` | text | config | 空 | ntlm/ntlm_hash/digest_md5 |
 | `bind_password` | password | secret | 空 | simple/digest_md5（required_when simple） |
 | `ntlm_hash` | password | secret | 空 | ntlm_hash |
-| `use_starttls` | boolean | config | false | 非 ldaps URL 时（sidecar 兜底校验互斥） |
 | `tls_verify` | boolean | config | true | — |
 | `tls_ca_path` | text | config | 空 | — |
 | `tls_server_name` | text | config | 空 | —（缺省用 connection.host） |
@@ -100,9 +101,11 @@ connection-provider `io.dbx.ldap.connection`，`database_type: "ldap"`，
 | `allowed_base_dns` / `allowed_write_base_dns` | textarea | config | 空（=不限） | — |
 | `blocked_attributes` | textarea | config | 内置 11 项默认表 | — |
 
-> M0-T1/T6 验证：`url` 绑定 `host`（宿主 host 字段语义）是否满足
-> `ldap(s)://host:port` 整体输入；不满足则拆 host/port + `use_ssl` 布尔
->（备份方案，方法契约不变）。
+> M0-T1/T6 曾按 `url` 绑定 `host`（完整 `ldap(s)://host:port`）落地；真机
+> 验证发现宿主把 `connection.host` 原文透传进 `runtime.host`，完整 URL 会
+> 污染拨号目标（PROGRESS-A §13）。v0.1.19 起切换到备份方案：`host` 存裸
+> 主机名 + `port`/`tls_mode` 结构化字段，sidecar `buildLDAPURL` 组装 URL；
+> 旧连接的完整 URL 原样透传（方法契约不变）。
 
 ## 5. Sidecar 方法契约
 
@@ -260,7 +263,8 @@ ssh-sftp mcp.rs 语义）、`mcp/settings/get|set`（写白名单策略）；敏
 
 ## 10. 风险与备注
 
-- `url` 绑定 `host` 的表单形态待 M0-T6 确认（备份方案已备，不影响契约）。
+- ~~`url` 绑定 `host` 的表单形态待 M0-T6 确认~~ → v0.1.19 已切换为
+  `host`/`port`/`tls_mode` 结构化字段（见 §4 字段表与 PROGRESS-A §13/§14）。
 - ldaps 自签证书：`tls_verify=false` 走 InsecureSkipVerify（连接级显式配置，
   审计记录一条 warning）。
 - SearchWithPaging 聚合上限：`sizeLimit` 缺省 500（tiny-rdm 语义），truncated

@@ -25,6 +25,7 @@ scroll-stress-result.json
 .mimosa/
 .omc/
 .playwright-mcp/
+.release-state/
 .DS_Store
 
 # 日志、环境变量与本地密钥

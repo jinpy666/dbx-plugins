@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift ;;
     --platform) PLATFORM="$2"; shift ;;
     --push) PUSH=1 ;;
-    --skip-host-sync) SKIP_SYNC=1 ;;
+    --skip-host-sync) SKIP_HOST_SYNC=1 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

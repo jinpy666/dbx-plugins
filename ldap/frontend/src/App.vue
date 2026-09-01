@@ -7,6 +7,8 @@ import { Database, Download, Info, Loader2, Network, RefreshCw } from "@lucide/v
 import { DBX_POPOVER, resolveAppearance } from "./lib/appearance";
 import { setWorkbenchLocale, t, workbenchLocale } from "./lib/i18n";
 import { getLdapConnectionId, ldapApi, setLdapConnectionId, type LdapEntry } from "./lib/api";
+import { inferBaseDnFromProfile, pickBaseDnFromRootDse } from "./lib/baseDn";
+import { friendlyLdapError } from "./lib/ldapErrors";
 import { serializeEntriesToCsv, serializeEntriesToJson, serializeEntriesToLdifText } from "./lib/ldapExporter";
 import DnTree from "./components/DnTree.vue";
 import SearchForm, { type SearchFormModel } from "./components/SearchForm.vue";
@@ -33,6 +35,7 @@ const appearance = ref(resolveAppearance());
 const ready = ref(false);
 const initError = ref("");
 const ldapError = ref("");
+const ldapErrorDetail = ref("");
 const notice = ref("");
 const busy = ref(false);
 
@@ -134,8 +137,13 @@ function showNotice(message: string) {
 
 function showError(cause: unknown, target: "ldap" | "init" = "ldap") {
   const message = cause instanceof Error ? cause.message : String(cause);
-  if (target === "init") initError.value = message;
-  else ldapError.value = message;
+  if (target === "init") {
+    initError.value = message;
+    return;
+  }
+  // 横幅展示本地化的可行动文案；原始错误串挂在 title 悬停里供排查。
+  ldapError.value = friendlyLdapError(message);
+  ldapErrorDetail.value = ldapError.value === message ? "" : message;
 }
 
 function dismissError() {
@@ -190,13 +198,16 @@ function positiveInt(value: string): number | undefined {
 }
 
 function searchHere(dn: string) {
-  baseDn.value = dn;
-  searchRef.value?.applyBaseDn(dn);
+  // 约束：树根（baseDn）固定为连接 Base DN，「在此搜索」只把搜索面板的
+  // base 指到该节点。此前这里直接改 baseDn.value，DnTree watch 到变化会
+  // 整树重根，原始根丢失且无还原途径（tiny-rdm 语义：树常驻、搜索联动）。
+  selectEntry(dn);
 }
 
 function selectEntry(dn: string) {
-  // Selection alone does not fetch; opening the editor does.
-  void dn;
+  // 点选节点只联动搜索面板 base（tiny-rdm 搜索框跟随选中节点语义），
+  // 不取数、不动树根；打开编辑器由显式动作触发。
+  searchRef.value?.applyBaseDn(dn);
 }
 
 async function openEntry(dn: string) {
@@ -391,6 +402,29 @@ async function initialize() {
 function syncConnectionContext() {
   setLdapConnectionId(connectionId.value);
   baseDn.value = contextBaseDn.value;
+  void resolveAutoBaseDn();
+}
+
+// 连接未配置 base_dn 时的兜底定位（tiny-rdm baseDn.js 语义）：
+// RootDSE namingContexts（AD 取 defaultNamingContext）→ 主机名推断
+// （corp.int.kn → dc=corp,dc=int,dc=kn）。两路都失败则保留空值，
+// 由目录树提示用户补配。显式配置永远优先；解析成功后提示实际生效值。
+async function resolveAutoBaseDn() {
+  if (baseDn.value) return;
+  let resolved = "";
+  try {
+    const result = await ldapApi.rootDse(["namingContexts", "defaultNamingContext"]);
+    resolved = pickBaseDnFromRootDse(result.attributes || {});
+  } catch {
+    // RootDSE 不可读（如配置了 allowed_base_dns）：退回主机名推断。
+  }
+  if (!resolved) {
+    resolved = inferBaseDnFromProfile({ url: connection.value.host, host: connection.value.host });
+  }
+  if (!resolved || baseDn.value || contextBaseDn.value) return; // 竞态守卫：期间带来显式值则放弃
+  baseDn.value = resolved;
+  void searchRef.value?.applyBaseDn(resolved);
+  showNotice(t("tree.autoBaseDn", { baseDn: resolved }));
 }
 
 function refreshTree() {
@@ -461,7 +495,7 @@ onBeforeUnmount(() => {
           :disabled="searching"
           @run="runSearch"
           @notify="showNotice"
-          @error="(message) => (ldapError = message)"
+          @error="(message) => showError(message)"
         />
         <p v-if="!baseDn" class="hint" style="padding: 0 10px">{{ t("tree.missingBaseDn") }}</p>
         <ResultTable
@@ -476,7 +510,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="ldapError" class="error-banner">
-      <span>{{ ldapError }}</span>
+      <span :title="ldapErrorDetail || ldapError">{{ ldapError }}</span>
       <button type="button" @click="dismissError">✕</button>
     </div>
     <div v-if="notice" class="notice">{{ notice }}</div>

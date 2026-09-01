@@ -3,9 +3,10 @@
 // 交互语义对照 tiny-rdm LdapConsolePage 的树区块（fetchTreeChildren /
 // buildTreeKeywordFilter / searchTreeFilterRemote），组件按 DBX 插件形态重实现。
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { RefreshCw, Search } from "@lucide/vue";
+import { RefreshCw, Search, X } from "@lucide/vue";
 import { ldapApi, type LdapEntry } from "../lib/api";
 import { buildTreeKeywordFilter } from "../lib/ldapFilter";
+import { friendlyLdapError } from "../lib/ldapErrors";
 import { splitFirstDnRdn } from "../lib/dn";
 import { t } from "../lib/i18n";
 import type { DnTreeNode } from "../lib/dnTree";
@@ -29,11 +30,13 @@ const emit = defineEmits<{
 }>();
 const rootNode = ref<DnTreeNode>();
 const treeError = ref("");
+const treeErrorRaw = ref("");
 const loadingRoot = ref(false);
 const selectedDn = ref("");
 const filterKeyword = ref("");
 const filterLoading = ref(false);
 const filterError = ref("");
+const filterErrorRaw = ref("");
 const filterResults = ref<LdapEntry[]>([]);
 const contextMenu = ref<{ x: number; y: number; dn: string }>();
 let filterSequence = 0;
@@ -87,6 +90,7 @@ async function loadRoot() {
   if (loadingRoot.value) return; // 刷新连点去重
   loadingRoot.value = true;
   treeError.value = "";
+  treeErrorRaw.value = "";
   try {
     const node = makeNode(props.baseDn.trim());
     node.loading = true;
@@ -98,7 +102,9 @@ async function loadRoot() {
     node.expanded = true;
   } catch (cause) {
     rootNode.value = undefined;
-    treeError.value = cause instanceof Error ? cause.message : String(cause);
+    const raw = cause instanceof Error ? cause.message : String(cause);
+    treeError.value = friendlyLdapError(raw);
+    treeErrorRaw.value = treeError.value === raw ? "" : raw;
   } finally {
     loadingRoot.value = false;
     if (rootNode.value) rootNode.value.loading = false;
@@ -120,10 +126,13 @@ async function toggleNode(node: DnTreeNode) {
       void refreshChildCount(node);
       // 本次懒展开成功：清除上一次失败的错误横幅（节点保持折叠，可重试）。
       treeError.value = "";
+      treeErrorRaw.value = "";
     } catch (cause) {
       // 懒展开失败不清空树：错误以横幅显示，节点保持未加载状态，
       // 再次点击即重试（根加载失败才整树替换为错误态）。
-      treeError.value = cause instanceof Error ? cause.message : String(cause);
+      const raw = cause instanceof Error ? cause.message : String(cause);
+      treeError.value = friendlyLdapError(raw);
+      treeErrorRaw.value = treeError.value === raw ? "" : raw;
       return;
     } finally {
       node.loading = false;
@@ -144,6 +153,7 @@ function clearFilter() {
   filterKeyword.value = "";
   filterLoading.value = false;
   filterError.value = "";
+  filterErrorRaw.value = "";
   filterResults.value = [];
 }
 
@@ -172,7 +182,10 @@ async function runFilter() {
   } catch (cause) {
     if (seq !== filterSequence) return;
     filterResults.value = [];
-    filterError.value = cause instanceof Error ? cause.message : String(cause);
+    // 树内过滤错误同样走友好映射；原始串在 title 悬停可见。
+    const raw = cause instanceof Error ? cause.message : String(cause);
+    filterError.value = friendlyLdapError(raw);
+    filterErrorRaw.value = filterError.value === raw ? "" : raw;
   } finally {
     if (seq === filterSequence) filterLoading.value = false;
   }
@@ -274,12 +287,16 @@ onBeforeUnmount(onMountedCleanup);
         @input="onFilterInput"
         @keydown.esc="clearFilter"
       />
+      <!-- 过滤激活时左栏切换为匹配列表：给显式还原入口，避免"树不见了" -->
+      <button v-if="hasFilter" class="icon-button" :title="t('tree.clearFilter')" @click.stop="clearFilter">
+        <X aria-hidden="true" />
+      </button>
     </div>
     <div class="tree-rows" @click="closeContextMenu">
       <div v-if="!hasBaseDn" class="tree-state">{{ t("tree.missingBaseDn") }}</div>
       <template v-else-if="hasFilter">
         <div v-if="filterLoading" class="tree-state">{{ t("tree.loading") }}</div>
-        <div v-else-if="filterError" class="tree-error">{{ filterError }}</div>
+        <div v-else-if="filterError" class="tree-error" :title="filterErrorRaw || filterError">{{ filterError }}</div>
         <div v-else-if="filterResults.length === 0" class="tree-state">{{ t("tree.filterNoMatch", { keyword: filterKeyword.trim() }) }}</div>
         <ul v-else class="filter-list">
           <li v-for="entry in filterResults" :key="entry.dn">
@@ -295,7 +312,7 @@ onBeforeUnmount(onMountedCleanup);
         <div v-if="loadingRoot" class="tree-state">{{ t("tree.loading") }}</div>
         <template v-else>
           <!-- 懒展开失败：错误横幅与树并存，不吞掉已加载的树 -->
-          <div v-if="treeError" class="tree-error">{{ treeError }}</div>
+          <div v-if="treeError" class="tree-error" :title="treeErrorRaw || treeError">{{ treeError }}</div>
           <div v-if="!rootNode && !treeError" class="tree-state">{{ t("tree.empty") }}</div>
           <TreeBranch
             v-else-if="rootNode"

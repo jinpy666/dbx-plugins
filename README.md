@@ -62,8 +62,9 @@ dbx-plugins/
 
 - **日常跟上游**：`scripts/host-sync.sh sync`（宿主子仓库拉取并合并上游，
   保留本地二开提交；完成后在父仓库提交 submodule 指针）。
-- **本地 macOS 应用**：`scripts/release-local.sh`（拉宿主 → 构建 DBX.app →
-  `/Applications` → 递增版本并打包三插件 → 装入真实插件存储 → 拉起）。
+- **本地 macOS 应用**：`scripts/release-local.sh`（指纹比对，host/插件无变更
+  自动跳过；三插件并发构建；默认不再拉上游，`--sync-host` 手动同步；完成后
+  发布 `/Applications` → 安装有变更的插件 → 拉起）。
 - **服务器 web 访问**：`scripts/release-docker.sh`（构建含三插件 Linux .dbxp 的
   dbx-web 镜像，容器首启自动安装；机制与部署见 skill `dbx-web-docker` 与
   `deploy/web/`）。

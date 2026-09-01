@@ -198,6 +198,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .filter-source input:focus { border-color: color-mix(in srgb, var(--primary) 70%, var(--border)); }
 .filter-builder { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: color-mix(in srgb, var(--muted) 30%, transparent); }
 .qb-preview { margin: 0; padding: 4px 6px; border-radius: 4px; background: color-mix(in srgb, var(--background) 80%, transparent); color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.filter-hint { margin: 0; color: var(--muted-foreground); font-size: 10px; }
+.primary-button.compact { min-height: 24px; padding: 2px 9px; gap: 4px; font-size: 11px; }
+.primary-button.compact svg { width: 12px; height: 12px; }
 .qb-group { display: flex; flex-direction: column; gap: 4px; }
 .qb-group--nested { border-left: 2px solid color-mix(in srgb, var(--primary) 45%, var(--border)); border-radius: 2px; padding: 6px 8px; background: color-mix(in srgb, var(--background) 55%, transparent); }
 .qb-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

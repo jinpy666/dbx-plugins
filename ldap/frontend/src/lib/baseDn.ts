@@ -96,3 +96,16 @@ export const inferBaseDnCandidatesFromProfile = (profile: LdapProfileLike = {}):
 
 export const inferBaseDnFromProfile = (profile: LdapProfileLike = {}): string =>
     inferBaseDnCandidatesFromProfile(profile)[0] || ''
+
+/**
+ * Pick the workable base DN from RootDSE attributes: AD's
+ * `defaultNamingContext` wins, then the first `dc=` entry among
+ * `namingContexts` (skips CN=Configuration/Schema and monitor contexts),
+ * then the first context as-is.
+ */
+export const pickBaseDnFromRootDse = (attributes: Record<string, string[]> = {}): string => {
+    const preferred = (attributes.defaultNamingContext || []).map((v) => v.trim()).find(Boolean) || ''
+    if (preferred) return preferred
+    const contexts = (attributes.namingContexts || []).map((v) => v.trim()).filter(Boolean)
+    return contexts.find((v) => /^dc=/i.test(v)) || contexts[0] || ''
+}

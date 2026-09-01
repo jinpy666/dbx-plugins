@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.ldap",
   "name": "DBX LDAP",
-  "version": "0.1.15",
+  "version": "0.1.23",
   "publisher": "dbx",
   "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
   "icon": "assets/plugin.svg",
@@ -49,14 +49,44 @@
           "required": true
         },
         {
-          "key": "url",
-          "label": "LDAP URL",
+          "key": "host",
+          "label": "Server host",
           "type": "text",
-          "description": "ldap / ldaps URL. Network traffic dials the DBX transport endpoint; TLS SNI uses the host in this URL.",
-          "placeholder": "ldap://host:389 or ldaps://host:636",
-          "default": "ldap://127.0.0.1:389",
+          "description": "LDAP server hostname only, no scheme or port (example: dc01.corp.example.com). Connections saved with an older version keep their full ldap/ldaps URL and continue to work.",
+          "placeholder": "dc01.corp.example.com",
+          "default": "127.0.0.1",
           "binding": "host",
           "required": true
+        },
+        {
+          "key": "port",
+          "label": "Port",
+          "type": "number",
+          "description": "389 for ldap/StartTLS, 636 for LDAPS; leave empty for the scheme default.",
+          "default": 389,
+          "binding": "port",
+          "required": true
+        },
+        {
+          "key": "tls_mode",
+          "label": "Encryption",
+          "type": "select",
+          "options": [
+            {
+              "label": "None (ldap)",
+              "value": "none"
+            },
+            {
+              "label": "StartTLS",
+              "value": "starttls"
+            },
+            {
+              "label": "LDAPS (TLS)",
+              "value": "ldaps"
+            }
+          ],
+          "default": "none",
+          "binding": "config"
         },
         {
           "key": "base_dn",
@@ -208,14 +238,6 @@
               "ntlm_hash"
             ]
           }
-        },
-        {
-          "key": "use_starttls",
-          "label": "Use StartTLS",
-          "type": "boolean",
-          "description": "Mutually exclusive with an ldaps URL (validated on connect).",
-          "default": false,
-          "binding": "config"
         },
         {
           "key": "tls_verify",
@@ -488,9 +510,6 @@
             "display_name": {
               "label": "连接名称"
             },
-            "url": {
-              "label": "LDAP URL"
-            },
             "base_dn": {
               "label": "Base DN"
             },
@@ -521,9 +540,6 @@
             },
             "ntlm_hash": {
               "label": "NTLM 哈希"
-            },
-            "use_starttls": {
-              "label": "启用 StartTLS"
             },
             "tls_verify": {
               "label": "校验 TLS 证书"
@@ -598,6 +614,20 @@
             },
             "blocked_attributes": {
               "label": "屏蔽属性"
+            },
+            "host": {
+              "label": "服务器地址"
+            },
+            "port": {
+              "label": "端口"
+            },
+            "tls_mode": {
+              "label": "加密方式",
+              "options": {
+                "none": "无加密（ldap）",
+                "starttls": "StartTLS",
+                "ldaps": "LDAPS（TLS）"
+              }
             }
           }
         },
@@ -617,9 +647,6 @@
           "fields": {
             "display_name": {
               "label": "連線名稱"
-            },
-            "url": {
-              "label": "LDAP URL"
             },
             "base_dn": {
               "label": "Base DN"
@@ -651,9 +678,6 @@
             },
             "ntlm_hash": {
               "label": "NTLM 雜湊"
-            },
-            "use_starttls": {
-              "label": "啟用 StartTLS"
             },
             "tls_verify": {
               "label": "驗證 TLS 憑證"
@@ -728,6 +752,20 @@
             },
             "blocked_attributes": {
               "label": "封鎖屬性"
+            },
+            "host": {
+              "label": "伺服器位址"
+            },
+            "port": {
+              "label": "連接埠"
+            },
+            "tls_mode": {
+              "label": "加密方式",
+              "options": {
+                "none": "無加密（ldap）",
+                "starttls": "StartTLS",
+                "ldaps": "LDAPS（TLS）"
+              }
             }
           }
         },
@@ -747,9 +785,6 @@
           "fields": {
             "display_name": {
               "label": "Connection name"
-            },
-            "url": {
-              "label": "LDAP URL"
             },
             "base_dn": {
               "label": "Base DN"
@@ -781,9 +816,6 @@
             },
             "ntlm_hash": {
               "label": "NTLM hash"
-            },
-            "use_starttls": {
-              "label": "Use StartTLS"
             },
             "tls_verify": {
               "label": "Verify TLS certificate"
@@ -858,6 +890,20 @@
             },
             "blocked_attributes": {
               "label": "Blocked attributes"
+            },
+            "host": {
+              "label": "Server host"
+            },
+            "port": {
+              "label": "Port"
+            },
+            "tls_mode": {
+              "label": "Encryption",
+              "options": {
+                "none": "None (ldap)",
+                "starttls": "StartTLS",
+                "ldaps": "LDAPS (TLS)"
+              }
             }
           }
         },
@@ -877,9 +923,6 @@
           "fields": {
             "display_name": {
               "label": "Nombre de la conexión"
-            },
-            "url": {
-              "label": "URL LDAP"
             },
             "base_dn": {
               "label": "DN base"
@@ -911,9 +954,6 @@
             },
             "ntlm_hash": {
               "label": "Hash NTLM"
-            },
-            "use_starttls": {
-              "label": "Usar StartTLS"
             },
             "tls_verify": {
               "label": "Verificar certificado TLS"
@@ -988,6 +1028,20 @@
             },
             "blocked_attributes": {
               "label": "Atributos bloqueados"
+            },
+            "host": {
+              "label": "Servidor"
+            },
+            "port": {
+              "label": "Puerto"
+            },
+            "tls_mode": {
+              "label": "Cifrado",
+              "options": {
+                "none": "Ninguno (ldap)",
+                "starttls": "StartTLS",
+                "ldaps": "LDAPS (TLS)"
+              }
             }
           }
         },
@@ -1007,9 +1061,6 @@
           "fields": {
             "display_name": {
               "label": "Nome connessione"
-            },
-            "url": {
-              "label": "URL LDAP"
             },
             "base_dn": {
               "label": "DN base"
@@ -1041,9 +1092,6 @@
             },
             "ntlm_hash": {
               "label": "Hash NTLM"
-            },
-            "use_starttls": {
-              "label": "Usa StartTLS"
             },
             "tls_verify": {
               "label": "Verifica certificato TLS"
@@ -1118,6 +1166,20 @@
             },
             "blocked_attributes": {
               "label": "Attributi bloccati"
+            },
+            "host": {
+              "label": "Server"
+            },
+            "port": {
+              "label": "Porta"
+            },
+            "tls_mode": {
+              "label": "Crittografia",
+              "options": {
+                "none": "Nessuna (ldap)",
+                "starttls": "StartTLS",
+                "ldaps": "LDAPS (TLS)"
+              }
             }
           }
         },
@@ -1137,9 +1199,6 @@
           "fields": {
             "display_name": {
               "label": "接続名"
-            },
-            "url": {
-              "label": "LDAP URL"
             },
             "base_dn": {
               "label": "Base DN"
@@ -1171,9 +1230,6 @@
             },
             "ntlm_hash": {
               "label": "NTLM ハッシュ"
-            },
-            "use_starttls": {
-              "label": "StartTLS を使用"
             },
             "tls_verify": {
               "label": "TLS 証明書を検証"
@@ -1248,6 +1304,20 @@
             },
             "blocked_attributes": {
               "label": "ブロックされた属性"
+            },
+            "host": {
+              "label": "サーバーホスト"
+            },
+            "port": {
+              "label": "ポート"
+            },
+            "tls_mode": {
+              "label": "暗号化",
+              "options": {
+                "none": "なし（ldap）",
+                "starttls": "StartTLS",
+                "ldaps": "LDAPS（TLS）"
+              }
             }
           }
         },
@@ -1267,9 +1337,6 @@
           "fields": {
             "display_name": {
               "label": "Nome da conexão"
-            },
-            "url": {
-              "label": "URL LDAP"
             },
             "base_dn": {
               "label": "DN base"
@@ -1301,9 +1368,6 @@
             },
             "ntlm_hash": {
               "label": "Hash NTLM"
-            },
-            "use_starttls": {
-              "label": "Usar StartTLS"
             },
             "tls_verify": {
               "label": "Verificar certificado TLS"
@@ -1378,6 +1442,20 @@
             },
             "blocked_attributes": {
               "label": "Atributos bloqueados"
+            },
+            "host": {
+              "label": "Servidor"
+            },
+            "port": {
+              "label": "Porta"
+            },
+            "tls_mode": {
+              "label": "Criptografia",
+              "options": {
+                "none": "Nenhum (ldap)",
+                "starttls": "StartTLS",
+                "ldaps": "LDAPS (TLS)"
+              }
             }
           }
         },

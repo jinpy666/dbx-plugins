@@ -67,9 +67,10 @@ TLS_VERIFY = os.environ.get("LDAP_REAL_TLS_VERIFY", "1") != "0"
 REQUIRE = os.environ.get("LDAP_TEST_REQUIRE", "") == "1"
 DATA_DIR = os.environ.get("LDAP_TEST_DATA_DIR", "")
 
-# connection.host is the manifest "url" binding field: a full ldap/ldaps URL.
-# The network layer dials runtime.host:port, so the port must ride along
-# explicitly (ldaps default 636, plain 389) or the dial falls back to 389.
+# connection.host carries a full ldap/ldaps URL (legacy form; since v0.1.19
+# the manifest binds a bare hostname + port/tls_mode fields instead, both are
+# accepted). The network layer dials runtime.host:port, so the port must ride
+# along explicitly (ldaps default 636, plain 389) or the dial falls back to 389.
 def url_port(raw_url: str) -> int:
     parsed = urlparse(raw_url)
     return parsed.port or (636 if parsed.scheme == "ldaps" else 389)

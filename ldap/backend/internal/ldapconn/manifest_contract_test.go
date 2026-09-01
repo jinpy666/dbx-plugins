@@ -121,10 +121,17 @@ func TestManifestExposesSASLKerberosOverrides(t *testing.T) {
 			t.Fatalf("localization %q missing", lang)
 		}
 		connFields := loc.Contributions["io.dbx.ldap.connection"].Fields
-		for _, key := range append([]string(nil), "sasl_host", "krb_username", "sasl_qop", "sasl_mutual_auth") {
+		for _, key := range append([]string(nil), "sasl_host", "krb_username", "sasl_qop", "sasl_mutual_auth",
+			"host", "port", "tls_mode") {
 			entry, ok := connFields[key]
 			if !ok || entry.Label == "" {
 				t.Fatalf("localization %s/%s label missing", lang, key)
+			}
+		}
+		tlsModeLoc := connFields["tls_mode"]
+		for _, want := range []string{"none", "starttls", "ldaps"} {
+			if tlsModeLoc.Options[want] == "" {
+				t.Fatalf("localization %s tls_mode option %q label missing", lang, want)
 			}
 		}
 		qopLoc := connFields["sasl_qop"]
@@ -210,7 +217,7 @@ func TestManifestAuthTypeVisibilityMatrix(t *testing.T) {
 	fields, _ := loadManifestForContract(t)
 
 	common := []string{
-		"display_name", "url", "base_dn", "auth_type", "use_starttls", "tls_verify",
+		"display_name", "host", "port", "tls_mode", "base_dn", "auth_type", "tls_verify",
 		"tls_ca_path", "tls_server_name", "timeout_secs", "read_only",
 		"allowed_base_dns", "allowed_write_base_dns", "blocked_attributes",
 	}
@@ -277,12 +284,38 @@ func TestManifestAuthTypeRequiredMatrix(t *testing.T) {
 	fields, _ := loadManifestForContract(t)
 
 	// 静态必填项必须有非空 default，否则空表单永远无法保存。
-	for _, key := range []string{"display_name", "url"} {
+	for _, key := range []string{"display_name", "host"} {
 		if !fields[key].Required {
 			t.Fatalf("%s must be statically required", key)
 		}
 		if def, _ := fields[key].Default.(string); def == "" {
 			t.Fatalf("%s is required but has empty default", key)
+		}
+	}
+
+	// 连接表单三件套契约：host 裸主机名（ssh 族约定）、port 独立字段、
+	// tls_mode 三态与后端 buildLDAPURL 取值面一致。
+	for key, wantBinding := range map[string]string{"host": "host", "port": "port", "tls_mode": "config"} {
+		if _, ok := fields[key]; !ok {
+			t.Fatalf("manifest field %q missing", key)
+		}
+		if fields[key].Binding != wantBinding {
+			t.Fatalf("%s binding = %q, want %q", key, fields[key].Binding, wantBinding)
+		}
+	}
+	if _, exists := fields["url"]; exists {
+		t.Fatal(`legacy field "url" must be removed from the manifest`)
+	}
+	if _, exists := fields["use_starttls"]; exists {
+		t.Fatal(`legacy field "use_starttls" must be removed from the manifest`)
+	}
+	tlsValues := map[string]bool{}
+	for _, option := range fields["tls_mode"].Options {
+		tlsValues[option.Value] = true
+	}
+	for _, want := range []string{"none", "starttls", "ldaps"} {
+		if !tlsValues[want] {
+			t.Fatalf("tls_mode options missing %q: %v", want, tlsValues)
 		}
 	}
 

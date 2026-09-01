@@ -335,7 +335,10 @@ func TestNewProfileFromLifecycleM3Fields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, secrets := NewProfileFromLifecycle(params)
+	profile, secrets, err := NewProfileFromLifecycle(params)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if profile.AuthType != LDAPAuthKerberos {
 		t.Fatalf("authType = %q", profile.AuthType)
@@ -380,7 +383,10 @@ func TestNewProfileFromLifecycleKerberosDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, _ := NewProfileFromLifecycle(params)
+	profile, _, err := NewProfileFromLifecycle(params)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if profile.Kerberos == nil {
 		t.Fatal("kerberos config missing")
 	}
@@ -521,6 +527,7 @@ func TestNewProfileFromLifecycleHostAndFormReadOnly(t *testing.T) {
 	hostReadOnly, err := parseLifecycleForTest(`{
 	  "connection": {
 	    "id": "c-ro",
+	    "host": "ldap://ldap.example.org:389",
 	    "read_only": true,
 	    "external_config": {"auth_type": "simple"}
 	  }
@@ -528,7 +535,10 @@ func TestNewProfileFromLifecycleHostAndFormReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, _ := NewProfileFromLifecycle(hostReadOnly)
+	profile, _, err := NewProfileFromLifecycle(hostReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !profile.ReadOnly {
 		t.Fatal("host read_only must force ReadOnly")
 	}
@@ -537,13 +547,17 @@ func TestNewProfileFromLifecycleHostAndFormReadOnly(t *testing.T) {
 	formReadOnly, err := parseLifecycleForTest(`{
 	  "connection": {
 	    "id": "c-form",
+	    "host": "ldap://ldap.example.org:389",
 	    "external_config": {"auth_type": "simple", "read_only": true}
 	  }
 	}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, _ = NewProfileFromLifecycle(formReadOnly)
+	profile, _, err = NewProfileFromLifecycle(formReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !profile.ReadOnly {
 		t.Fatal("form read_only must force ReadOnly")
 	}
@@ -552,13 +566,17 @@ func TestNewProfileFromLifecycleHostAndFormReadOnly(t *testing.T) {
 	writable, err := parseLifecycleForTest(`{
 	  "connection": {
 	    "id": "c-rw",
+	    "host": "ldap://ldap.example.org:389",
 	    "external_config": {"auth_type": "simple"}
 	  }
 	}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, _ = NewProfileFromLifecycle(writable)
+	profile, _, err = NewProfileFromLifecycle(writable)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if profile.ReadOnly {
 		t.Fatal("writable connection must not be marked read-only")
 	}

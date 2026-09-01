@@ -280,14 +280,18 @@ export interface BuilderNodeError {
     code: "attribute_required" | "attribute_invalid" | "value_required";
 }
 
-/** Validate every clause in a builder tree (UI-side pre-check before search). */
+/** Validate every clause in a builder tree (UI-side pre-check before search).
+ *  空条件（属性与值皆空）= 「无条件」匹配全部，合法不算错；半填（有属性无值
+ *  等）仍报错。generatedFilter 为空串时由调用方回退 (objectClass=*)。 */
 export const collectBuilderErrors = (node?: BuilderNode | null): BuilderNodeError[] => {
     if (!node) return [];
     if (node.kind === "clause") {
         const attribute = trimToString(node.attribute);
+        const value = trimToString(node.value);
+        if (!attribute && !value) return [];
         if (!attribute) return [{ id: node.id, code: "attribute_required" }];
         if (!isValidLDAPAttributeDescription(attribute)) return [{ id: node.id, code: "attribute_invalid" }];
-        if (node.op !== "present" && !trimToString(node.value)) return [{ id: node.id, code: "value_required" }];
+        if (node.op !== "present" && !value) return [{ id: node.id, code: "value_required" }];
         return [];
     }
     return (node.children || []).flatMap((child) => collectBuilderErrors(child));

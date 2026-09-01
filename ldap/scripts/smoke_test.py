@@ -51,9 +51,10 @@ DATA_DIR = os.environ.get("LDAP_TEST_DATA_DIR", "")
 
 PEOPLE_OU = f"ou=people,{ROOT}"
 
-# connection.host is the manifest "url" binding field: a full ldap/ldaps URL
-# (network dialing uses the runtime endpoint; the URL only carries scheme and
-# the logical host). See manifest.json contributions.fields[url].
+# connection.host: since v0.1.19 the manifest binds a bare hostname here
+# (fields host/port/tls_mode), while full ldap/ldaps URLs from older saved
+# connections are still accepted (legacy passthrough in buildLDAPURL).
+# These smokes keep exercising the legacy URL form on purpose.
 URL = f"ldap://{HOST}:{PORT}"
 
 
@@ -361,6 +362,20 @@ def run_s10(client: SidecarClient) -> None:
         raise AssertionError(f"error does not mention the filter: {cause}")
 
 
+@scenario("S11", "rootDse namingContexts (auto baseDn primitive)")
+def run_s11(client: SidecarClient) -> None:
+    """S11 explicit namingContexts request works; workbench auto-baseDn (v0.1.20)
+    依赖该原语在 namingContexts 缺省不下发时也能取到值。"""
+    connect(client, make_connection("smoke-rootdse"))
+    result = domain(client, "ldap/rootDse", {"attributes": ["namingContexts", "defaultNamingContext"]})
+    attributes = (result.get("entry") or result).get("attributes") or {}
+    contexts = [v for v in (attributes.get("namingContexts") or []) if str(v).strip()]
+    if not contexts:
+        raise AssertionError(f"rootDse namingContexts empty: {result}")
+    if not any(str(v).strip().lower().replace(" ", "") == ROOT.lower().replace(" ", "") for v in contexts):
+        raise AssertionError(f"namingContexts {contexts} does not contain the seeded ROOT {ROOT}")
+
+
 # -- driver --------------------------------------------------------------------
 
 def ldap_reachable() -> tuple[bool, str]:
@@ -383,6 +398,7 @@ def main() -> int:
         ("S7", "blocked_attributes stripping", run_s7),
         ("S8", "read whitelist enforcement", run_s8),
         ("S10", "invalid filter rejection", run_s10),
+        ("S11", "rootDse namingContexts (auto baseDn)", run_s11),
         ("S9", "disconnect then call", run_s9),
     ]
 

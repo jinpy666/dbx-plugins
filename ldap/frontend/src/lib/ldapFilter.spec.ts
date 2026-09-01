@@ -283,6 +283,16 @@ describe("nested groups", () => {
       { id: clause.id, code: "value_required" },
     ]);
   });
+
+  it("treats fully empty clauses as match-all (no error), half-filled ones still error", () => {
+    // 空条件 = 匹配全部（v0.1.22）：属性与值皆空不算错。
+    const tree = createBuilderGroup({ children: [createBuilderClause()] });
+    expect(collectBuilderErrors(tree)).toEqual([]);
+    expect(buildNodeFilter(tree)).toBe("");
+    // 半填（有属性无值）仍需报错。
+    const half = createBuilderGroup({ children: [createBuilderClause({ attribute: "cn", op: "equals" })] });
+    expect(collectBuilderErrors(half)).toEqual([{ id: half.children[0].id, code: "value_required" }]);
+  });
 });
 
 describe("parseFilterStructure (table-driven)", () => {

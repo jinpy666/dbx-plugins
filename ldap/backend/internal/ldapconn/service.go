@@ -12,6 +12,7 @@ package ldapconn
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -80,12 +81,21 @@ func NewService() *Service {
 // NewProfileFromLifecycle 把 lifecycle params 映射为 Profile（manifest §4
 // 字段表 → binding 落点，M0 文档 §3.1；M3 补 krb_* / SASL 字段接线）。
 // 第二个返回值是连接表内保存的 bind 凭据（不进 Profile，只存 connEntry）。
-func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, bindSecrets) {
+func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, bindSecrets, error) {
 	profile := Profile{
 		ID:   params.ConnectionID(),
 		Name: params.Connection.Name,
-		URL:  params.Connection.Host, // url binding host（M0-T6 待确认形态，备份方案见实施文档 §4）
 	}
+	ldapURL, useStartTLS, err := buildLDAPURL(
+		params.Connection.Host,
+		params.ConfigString("tls_mode"),
+		params.ConfigBool("use_starttls"),
+	)
+	if err != nil {
+		return Profile{}, bindSecrets{}, err
+	}
+	profile.URL = ldapURL
+	profile.UseStartTLS = useStartTLS
 	profile.BaseDN = params.ConfigString("base_dn")
 	profile.AuthType = params.ConfigString("auth_type")
 	profile.BindDN = params.ConfigString("bind_dn")
@@ -93,7 +103,6 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, bindSecrets) {
 	profile.Domain = params.ConfigString("domain")
 	profile.AuthzID = params.ConfigString("authz_id")
 	profile.NTLMHash = params.SecretString("ntlm_hash")
-	profile.UseStartTLS = params.ConfigBool("use_starttls")
 	// tls_verify 缺省 true（manifest §4 默认值）：字段未下发时保持 true。
 	if _, present := params.Connection.ExternalConfig["tls_verify"]; present {
 		profile.TLSVerify = params.ConfigBool("tls_verify")
@@ -131,19 +140,67 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, bindSecrets) {
 		BindPassword:     params.SecretString("bind_password"),
 		KerberosPassword: params.SecretString("krb_password"),
 	}
-	return NormalizeProfile(profile), secrets
+	return NormalizeProfile(profile), secrets, nil
+}
+
+// buildLDAPURL 由连接表单组装 profile.URL：host 绑定按 ssh 族约定存裸主机名
+// （加密由 tls_mode 选择：none/starttls/ldaps），端口经 binding port →
+// runtime.port 下发，拨号时空缺按 scheme 缺省（dial.go ldapURLPort）。
+// 兼容旧连接：host 绑定存的是完整 ldap/ldaps/ldapi URL 时原样透传，
+// StartTLS 沿用旧 use_starttls 字段（与 ldaps 并存时仍由 dial 校验拒绝）。
+func buildLDAPURL(connHost, tlsMode string, legacyStartTLS bool) (string, bool, error) {
+	connHost = strings.TrimSpace(connHost)
+	if connHost == "" {
+		return "", false, fmt.Errorf("connection host is required")
+	}
+	if strings.Contains(connHost, "://") {
+		parsed, err := url.Parse(connHost)
+		if err != nil {
+			return "", false, fmt.Errorf("parse ldap url: %w", err)
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "ldap", "ldaps", "ldapi":
+			return connHost, legacyStartTLS, nil
+		default:
+			return "", false, fmt.Errorf("unsupported ldap url scheme %q", parsed.Scheme)
+		}
+	}
+	// 裸主机名（含 IPv6 字面量）；误填 host:port 时明确指向端口字段。
+	if _, _, err := net.SplitHostPort(connHost); err == nil {
+		return "", false, fmt.Errorf("host %q must not include a port; use the port field", connHost)
+	}
+	scheme := "ldap"
+	useStartTLS := false
+	switch strings.ToLower(strings.TrimSpace(tlsMode)) {
+	case "", "none":
+	case "starttls":
+		useStartTLS = true
+	case "ldaps":
+		scheme = "ldaps"
+	default:
+		return "", false, fmt.Errorf("unsupported tls mode %q", tlsMode)
+	}
+	if strings.Contains(connHost, ":") {
+		// 裸 IPv6 字面量（host:port 形态已被上方守卫拒绝）。
+		connHost = "[" + connHost + "]"
+	}
+	ldapURL := scheme + "://" + connHost
+	if _, err := url.Parse(ldapURL); err != nil {
+		return "", false, fmt.Errorf("parse ldap url: %w", err)
+	}
+	return ldapURL, useStartTLS, nil
 }
 
 // Connect 处理 connection/connect：解析 lifecycle params → 存连接表。
 // 惰性建连（首个领域调用才 dial+bind，对齐 tiny-rdm withConn 语义）；
 // 幂等：重复 connect 覆盖配置并断开旧实例。
 func (s *Service) Connect(params *lifecycle.Params) error {
-	profile, bindPassword := NewProfileFromLifecycle(params)
+	profile, bindPassword, err := NewProfileFromLifecycle(params)
+	if err != nil {
+		return err
+	}
 	if profile.ID == "" {
 		return fmt.Errorf("connection.id is required")
-	}
-	if profile.URL == "" {
-		return fmt.Errorf("connection url is required")
 	}
 
 	entry := &connEntry{
@@ -173,12 +230,12 @@ func (s *Service) Connect(params *lifecycle.Params) error {
 // Test 处理 connection/test：立即 dial + bind +（有 baseDn 时）base scope
 // 读 1 条；成功返回描述 message。不缓存连接、不残留状态（§5.1）。
 func (s *Service) Test(ctx context.Context, params *lifecycle.Params) (string, error) {
-	profile, secrets := NewProfileFromLifecycle(params)
+	profile, secrets, err := NewProfileFromLifecycle(params)
+	if err != nil {
+		return "", err
+	}
 	if profile.ID == "" {
 		return "", fmt.Errorf("connection.id is required")
-	}
-	if profile.URL == "" {
-		return "", fmt.Errorf("connection url is required")
 	}
 	target := connTarget{Host: params.Runtime.Host, Port: params.Runtime.Port}
 

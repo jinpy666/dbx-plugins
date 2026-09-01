@@ -163,3 +163,27 @@ patch/降级逻辑。
   改动全部完整保留，无丢失；merge-base 为 `f075caef2`。
 - manual 停住后的标准动作：逐 hunk 双侧语义合并 → `git add` + `git commit`
   完成合并 → `cargo check -p dbx --lib --bins --tests` → 再重跑脚本。
+
+## 10. manual 策略首次实战：合并 d69cf9da7（2026-09-01）
+
+- main 前进 21 提交（`ef2fdb941..d69cf9da7`），manual 冲突 4 文件，全部按
+  "双侧语义保留" 解决后完成合并 `1e571f371`：
+  `lib.rs`（tests use 并集：本地 close_tab_label + 上游
+  should_hide_window_before_exit）、`connectionStore.ts`（i18n
+  currentLocale + xuguTablespaces 两 import 并存）、`ConnectionDialog.vue`
+  （v-if 并集：isPluginConnection + mq）、`ddl_profile.rs`（conservative_ansi
+  名单并集：Argo + Plugin）。
+- 逐提交核对 main 侧零丢失。前端 vue-tsc 通过。
+- 顺手修上游预存缺陷（`40662c7be`）：main 给 ConnectionConfig 加了
+  plugin_id 等 4 字段但没更新 transfer.rs 的 tests 初始化器——main 自身
+  cfg(test) 编译不过（上游 CI 不跑 --tests），本地补齐、上游修复后可 revert。
+- 本机（macOS debug）剩余失败均为上游测试的环境依赖，不修：
+  ① dbx 6 例 mcp pnpm shim（/tmp symlink，见第 8 节）；
+  ② dbx-core `external_driver_table_export_cancels_blocked_execute` 在默认
+  线程栈下栈溢出，`RUST_MIN_STACK=33554432` 后通过（上游 Box::pin 仍不够，
+  debug 状态机过大）；
+  ③ dbx-core 3 例 external driver 测试报 "Plugin 'jdbc' does not provide a
+  backend entrypoint"，依赖本机未构建的插件后端产物。
+- 结论：跑宿主 Rust 测试用
+  `RUST_MIN_STACK=33554432 cargo test --lib -p dbx-core -p dbx`，
+  期望失败 6+3 例（上述环境型）。

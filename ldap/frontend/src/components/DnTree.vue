@@ -9,7 +9,8 @@ import { buildTreeKeywordFilter } from "../lib/ldapFilter";
 import { friendlyLdapError } from "../lib/ldapErrors";
 import { splitFirstDnRdn } from "../lib/dn";
 import { t } from "../lib/i18n";
-import type { DnTreeNode } from "../lib/dnTree";
+import { flattenDnTree, type DnTreeNode } from "../lib/dnTree";
+import VirtualList from "./VirtualList.vue";
 import TreeBranch from "./TreeBranch.vue";
 
 const props = defineProps<{
@@ -45,8 +46,15 @@ let filterTimer = 0;
 const TREE_ATTRIBUTES = ["dn", "name", "cn", "ou", "objectClass"];
 const FILTER_ATTRIBUTES = ["dn", "name", "cn", "ou", "uid", "displayName", "mail", "objectClass"];
 
+// 虚拟滚动固定行高（与 .tree-vlist CSS 保持一致）；零依赖实现见 VirtualList.vue。
+const TREE_ROW_HEIGHT = 28;
+
 const hasBaseDn = computed(() => props.baseDn.trim() !== "");
 const hasFilter = computed(() => filterKeyword.value.trim() !== "");
+
+// 可见行扁平投影：VirtualList 只渲染视口 ± 缓冲窗口，千行子条目不再一次
+// 性挂载全量 DOM。展开/选中/右键语义不变（状态仍在 node 对象上）。
+const treeRows = computed(() => flattenDnTree(rootNode.value));
 
 function nodeLabel(dn: string): string {
   const { rdn } = splitFirstDnRdn(dn);
@@ -298,15 +306,15 @@ onBeforeUnmount(onMountedCleanup);
         <div v-if="filterLoading" class="tree-state">{{ t("tree.loading") }}</div>
         <div v-else-if="filterError" class="tree-error" :title="filterErrorRaw || filterError">{{ filterError }}</div>
         <div v-else-if="filterResults.length === 0" class="tree-state">{{ t("tree.filterNoMatch", { keyword: filterKeyword.trim() }) }}</div>
-        <ul v-else class="filter-list">
-          <li v-for="entry in filterResults" :key="entry.dn">
-            <button class="tree-node" :title="entry.dn" @click.stop="selectNode(makeNode(entry.dn))" @dblclick.stop="emit('view', entry.dn)" @contextmenu.prevent.stop="openContextMenu($event, entry.dn)">
-              <span class="tree-row" :class="{ selected: selectedDn === entry.dn }">
-                <span class="tree-label"><span class="tree-name">{{ nodeLabel(entry.dn) }}</span></span>
+        <VirtualList v-else :items="filterResults" :row-height="TREE_ROW_HEIGHT" :reset-key="filterKeyword" class="tree-vlist">
+          <template #default="{ item }">
+            <button class="tree-node" :title="item.dn" @click.stop="selectNode(makeNode(item.dn))" @dblclick.stop="emit('view', item.dn)" @contextmenu.prevent.stop="openContextMenu($event, item.dn)">
+              <span class="tree-row" :class="{ selected: selectedDn === item.dn }">
+                <span class="tree-label"><span class="tree-name">{{ nodeLabel(item.dn) }}</span></span>
               </span>
             </button>
-          </li>
-        </ul>
+          </template>
+        </VirtualList>
       </template>
       <template v-else>
         <div v-if="loadingRoot" class="tree-state">{{ t("tree.loading") }}</div>
@@ -314,16 +322,26 @@ onBeforeUnmount(onMountedCleanup);
           <!-- 懒展开失败：错误横幅与树并存，不吞掉已加载的树 -->
           <div v-if="treeError" class="tree-error" :title="treeErrorRaw || treeError">{{ treeError }}</div>
           <div v-if="!rootNode && !treeError" class="tree-state">{{ t("tree.empty") }}</div>
-          <TreeBranch
+          <VirtualList
             v-else-if="rootNode"
-            :node="rootNode"
-            :selected-dn="selectedDn"
-            :disabled="disabled"
-            @toggle="toggleNode"
-            @select="selectNode"
-            @view="(dn: string) => emit('view', dn)"
-            @menu="openContextMenu"
-          />
+            :items="treeRows"
+            :row-height="TREE_ROW_HEIGHT"
+            :reset-key="props.baseDn"
+            class="tree-vlist"
+          >
+            <template #default="{ item }">
+              <TreeBranch
+                :node="item.node"
+                :depth="item.depth"
+                :selected-dn="selectedDn"
+                :disabled="disabled"
+                @toggle="toggleNode"
+                @select="selectNode"
+                @view="(dn: string) => emit('view', dn)"
+                @menu="openContextMenu"
+              />
+            </template>
+          </VirtualList>
         </template>
       </template>
     </div>

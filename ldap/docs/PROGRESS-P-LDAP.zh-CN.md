@@ -181,3 +181,125 @@
 `ldapsearch` 双通道独立复现，传输层排除）。判定为凭据本身被拒（口令变更/
 失效或抄录失真），非插件缺陷；`LDAP_REAL_URL_PLAIN` 明文 389 通道同样 52e。
 待有效凭据后重跑 R1-R10 凭据场景（脚本与场景已就绪，环境变量驱动）。
+
+## 11. mock 桥补齐：ldap/count fixture + denied audit 分支（2026-09-01 后台 agent 轮）
+
+后台 agent 执行轮：最终汇报输出乱码（不可读），改动本体完整有效（仅
+`ldap/frontend/src/mockDbxHost.ts`，+56 行），由主 agent 补齐验证与本文档。
+对应 §8 遗留 5（mock 桥 denied audit 分支）与遗留 4 的 fixture 侧补齐
+（`ldap/count` 后端/前端接入为既有实现，fixture 此前未覆盖）：
+
+1. **mock 桥新增 `ldap/count`**：`countChildren`——scope=one 语义（baseDN
+   直接子条目、过滤 `filter`），上限 5000，超出折算 `truncated:true`；err
+   注入沿用 `?err=1`。DnTree 懒加载徽章从此走精确计数（此前 mock 无该方法
+   徽章降级为 search 截断值 500）。
+2. **denied audit fixture**：`denyWrite`——readOnly 下写操作先 emit
+   `ldap/audit`（`action:"write-policy", result:"denied"`，与后端
+   AuditRecord 语义一致）再抛业务错误；`ldap/entry/{add,modify,delete,
+   modifyDn}` 四个写路径统一接入。
+
+### 11.1 验证（主 agent 复核）
+
+| 套件 | 结果 |
+| --- | --- |
+| ldap/frontend typecheck + vitest | 过 / **142 绿**（8 spec） |
+| ldap/frontend build | 过（产物写 ui/index.html） |
+| backend `go vet ./...` + `go test ./...` | 全绿（四包，四包均 ok） |
+
+浏览器验证（visual fixture @ vite 5182，截图
+`docs/screenshots/count-badge-mock-bridge-round-p11.png`）：展开 ou=people
+后徽章显示精确 **1000 个子条目**（遗留 4 所述 500 截断值不复现）。
+
+说明：ro=1 模式下写操作在 UI 层即被禁用，denied audit 分支按设计不可经
+浏览器 UI 触达（需从 invoke 层触发）；fixture 代码路径与后端
+write-policy 分支语义一一对应，真宿主端到端验证沿袭遗留 3。
+
+### 11.2 遗留 / 下一轮候选
+
+- 沿袭 §8 遗留 1/2/3（KDC/NTLM/DIGEST-MD5 真机、宿主 e2e）不变；
+- 新候选：搜索结果虚拟滚动（大目录 1000 条渲染体验）、预设持久化接后端
+  store、audit 面板可视化（denied 事件已有数据面）。
+
+## 12. audit 面板可视化收尾（2026-09-02 收尾 agent 轮）
+
+§11.2 候选「audit 面板可视化」的落地与收尾。上一轮 agent 中途断线，留下
+半成品（`AuditFeedPanel.vue` 缺 SFC 开标签、i18n 仅 en/zh-CN 两语、无单测），
+本轮补齐至绿并完成浏览器验证。本轮无后端改动（`git diff` 复核）。
+
+### 12.1 改动清单
+
+1. **新增 `frontend/src/lib/auditFeed.ts`**（上轮半成品，本轮复核通过）：
+   `ldap/audit` 事件流数据面纯函数——`parseAuditEvent`（AuditRecord JSON 同面
+   解析，缺省兜底、未知 result 折算 error）、`pushAuditItem`（最新插头、上限
+   100 裁尾）、`formatAuditTime`（同天 HH:MM:SS、跨天加 MM-DD 前缀）、
+   `normalizeAuditResult`。
+2. **新增 `frontend/src/components/AuditFeedPanel.vue`**（上轮半成品 + 本轮
+   修复）：纯展示组件，头部常驻事件总数 + denied/error 计数徽标，列表折叠
+   可展开，denied/error 到达自动展开一次，清空由父级处理。**修复**：补缺失
+   的 `<script setup lang="ts">` 开标签（typecheck 23 个 TS2339 的根因）。
+3. **新增 `frontend/src/lib/auditFeed.spec.ts`**（本轮）：8 例覆盖
+   parse/push/format 的兜底、裁剪、跨天逻辑。
+4. **改动 `frontend/src/App.vue`**（上轮完成）：`handleEvent` 接
+   `parseAuditEvent`/`pushAuditItem` 数据面（横幅/通知即时反馈保留），
+   `<AuditFeedPanel>` 接线 + `clearAuditFeed`。
+5. **改动 `frontend/src/lib/i18n.ts`**：`audit.*` 文案块上轮仅 en/zh-CN，
+   本轮补齐 zh-TW/es/it/ja/pt-BR 五语（七语齐）。
+
+### 12.2 验证证据
+
+| 套件 | 结果 |
+| --- | --- |
+| ldap/frontend `npm run typecheck` | 0 错 |
+| ldap/frontend `npm run test` | **150 绿**（9 spec，上轮 142 + auditFeed 8） |
+| ldap/frontend `npm run build` | 过（产物写 ui/index.html） |
+| backend `go vet ./...` + `go test ./...` | 全绿（四包 ok，未动后端） |
+
+浏览器验证（visual fixture @ vite 5182，`?ro=1`；截图
+`docs/screenshots/audit-feed-panel-denied-ro1.png`）：
+
+- 空态：无事件时面板不渲染（`v-if="hasEvents || expanded"`）；
+- 触达方式：ro=1 下写操作 UI 层已禁用，denied 事件经 **invoke 层**触发——
+  依次调 `ldap/entry/{delete,add,modify,modifyDn}`，四者均先 emit
+  `ldap/audit denied` 再抛 "connection is read-only (fixture)"；
+- 渲染：面板自动展开，摘要「4 条事件 · 4 条被拒绝」，4 条 denied
+  （write-policy + 目标 DN）最新在顶，同时 showError 横幅可见；
+- 交互：折叠按钮收起列表（aria-expanded=false）、清空按钮后面板回到隐藏态；
+- 控制台仅 favicon 404（既有无害噪音）。
+
+### 12.3 遗留 / 剩余风险
+
+- 沿袭 §8 遗留 1/2/3（KDC/NTLM/DIGEST-MD5 真机、宿主 e2e）不变；denied
+  audit 的真宿主链路（sidecar emitter.Event → 宿主桥 → 面板）仍待宿主 e2e；
+- 面板仅内存态（刷新即清空，上限 100 条），按设计不持久化（audit.jsonl 才是
+  权威日志）；ok 事件不触发自动展开，多 ok 后需手动展开查看；
+- 搜索结果虚拟滚动、预设持久化接后端 store 两个候选沿袭至下轮。
+
+## 13. 树/搜索虚拟滚动（§12 候选一，2026-09-02）
+
+第三轮 agent 因配额超限中断，实现主体完整；其遗留 1 个测试期望值笔误
+（computeWindow 顶部 overscan 语义：上方 overscan 被 clamp、end 为排他索引，
+正确期望 16 而非 24），主 agent 修正后全绿并补齐验证与本文档。
+
+**实现**（纯前端，零新依赖）：
+1. `lib/virtualScroll.ts`：固定行高虚拟窗口纯函数 `computeWindow`
+   （scrollTop/viewport/total/rowHeight/overscan → [start,end) 排他窗口，
+   空/退化输入回空窗、越界 clamp 不倒置）+ 9 例单测；
+2. `components/VirtualList.vue`：通用虚拟列表容器（spacer 撑高 + 可视窗
+   渲染 + `reset-key` 滚动复位），复用于树与过滤结果两处；
+3. `DnTree.vue`：`flattenDnTree` 扁平投影可见行 → VirtualList 窗口化
+   （行高 28px 与 CSS 一致）；`TreeBranch.vue` 从递归嵌套渲染改为单行
+   渲染器（depth prop → 左缩进），展开/选中/右键语义不变（状态仍在
+   node 对象上）；过滤结果列表同步接入（`reset-key=filterKeyword`）；
+4. `lib/dnTree.ts` 新增 `flattenDnTree` + 5 例单测；i18n 无新键（无新
+   文案）。
+
+**验证**：typecheck 0 错；vitest **164 绿**（150→164：virtualScroll 9 +
+dnTree 5）；build 过；后端未动。浏览器实测（5182 fixture，截图
+`docs/screenshots/tree-virtual-scroll-round-p13.png`）：展开 ou=people
+（500 sizeLimit 子条目，扁平树 504 行、spacer 14112px）仅渲染 **80 个 DOM
+行**；scrollTop=12000 后窗口移动至 uid=user0462 区段、回收至 **48 行**；
+点击 uid=user0420 选中态正确（`.selected` 同步）。
+
+**剩余风险**：固定行高假设（行高 28px 由 CSS 常量约定，改样式需同步
+TREE_ROW_HEIGHT）；键盘导航（上下键）沿用以 DOM focus 为准，依赖窗口内
+渲染行为未单测；预设持久化候选沿袭下轮。

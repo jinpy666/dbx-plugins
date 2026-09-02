@@ -8,7 +8,9 @@
  *   ?locale=zh-CN|en|…  workbench locale (default zh-CN)
  *   ?err=1              ldap/search always rejects (error-state fixture)
  *   ?noconn=1           host context has no connectionId (init error fixture)
- *   ?ro=1               readOnly connection (write actions disabled)
+ *   ?ro=1               readOnly connection (write actions disabled; write
+ *                       attempts emit a denied `ldap/audit` event first, then
+ *                       reject — mirrors the backend write-policy branch)
  */
 import "./style.css";
 
@@ -188,6 +190,30 @@ function search(params_: Record<string, unknown>): { entries: MockEntry[]; count
   return { entries, count: entries.length, truncated: false };
 }
 
+// ldap/count（A-LDAP 契约：scope=one，上限 5000）——直接子条目精确计数，
+// 不受 search sizeLimit 截断影响；超上限折算为 truncated:true。
+function countChildren(params_: Record<string, unknown>): { count: number; truncated: boolean } {
+  if (params.get("err") === "1") throw new Error("connection lost (fixture error injection)");
+  const baseDn = String(params_.baseDn ?? BASE_DN);
+  const filter = String(params_.filter ?? "(objectClass=*)");
+  const limit = 5000;
+  let count = 0;
+  let truncated = false;
+  for (const entry of directory.values()) {
+    if (!dnWithinBase(entry.dn, baseDn)) continue;
+    if (entry.dn.toLowerCase() === baseDn.toLowerCase()) continue;
+    const relative = entry.dn.slice(0, entry.dn.length - baseDn.length - 1);
+    if (relative.includes(",")) continue;
+    if (!matchFilter(entry, filter)) continue;
+    count += 1;
+    if (count >= limit) {
+      truncated = true;
+      break;
+    }
+  }
+  return { count, truncated };
+}
+
 // -- schema fixture (RFC 4512 descriptions) -----------------------------------
 
 const attributeTypeDefinitions = [
@@ -231,6 +257,25 @@ const objectClassDefinitions = [
 const request: DbxPluginApi["request"] = async <T = unknown>(method: string) =>
   (method === "host.getContext" ? context : null) as T;
 
+// 事件注入（与 sidecar emitter.Event 同面）：denied audit fixture 用。
+function emitEvent(method: string, eventParams: Record<string, unknown>) {
+  for (const listener of eventListeners) listener({ method, params: eventParams } as DbxPluginEvent);
+}
+
+// readOnly 下写操作被策略拒绝：先发 denied audit 事件（App.vue showError 横幅
+// 与 audit.jsonl 的 denied 语义对应），再抛业务错误（与后端 write-policy 分支
+// 行为一致：AuditRecord{Action:"write-policy", Result:"denied"}）。
+function denyWrite(target: string): never {
+  emitEvent("ldap/audit", {
+    connectionId: context.connectionId,
+    action: "write-policy",
+    target,
+    result: "denied",
+    detail: "connection is read-only (fixture)",
+  });
+  throw new Error("connection is read-only (fixture)");
+}
+
 const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawParams?: unknown) => {
   const input = (rawParams ?? {}) as Record<string, unknown>;
   let result: unknown = { success: true };
@@ -250,14 +295,15 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
       },
     };
   } else if (method === "ldap/schema") result = { attributeTypes: attributeTypeDefinitions, objectClasses: objectClassDefinitions };
+  else if (method === "ldap/count") result = countChildren(input);
   else if (method === "ldap/entry/add") {
-    if (readOnly) throw new Error("connection is read-only (fixture)");
+    if (readOnly) denyWrite(String(input.dn ?? ""));
     const dn = String(input.dn ?? "");
     if (get(dn)) throw new Error(`entry already exists: ${dn}`);
     if (!dnWithinBase(dn, BASE_DN)) throw new Error(`base DN allowlist rejected: ${dn}`);
     put(dn, Object.fromEntries(Object.entries((input.attributes ?? {}) as Record<string, string[]>)));
   } else if (method === "ldap/entry/modify") {
-    if (readOnly) throw new Error("connection is read-only (fixture)");
+    if (readOnly) denyWrite(String(input.dn ?? ""));
     const entry = get(String(input.dn ?? ""));
     if (!entry) throw new Error(`entry not found: ${input.dn}`);
     for (const change of (input.changes ?? []) as Array<Record<string, unknown>>) {
@@ -267,12 +313,12 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
       else entry.attributes[attribute] = values;
     }
   } else if (method === "ldap/entry/delete") {
-    if (readOnly) throw new Error("connection is read-only (fixture)");
+    if (readOnly) denyWrite(String(input.dn ?? ""));
     const dn = String(input.dn ?? "");
     if (!get(dn)) throw new Error(`entry not found: ${dn}`);
     directory.delete(dn.toLowerCase());
   } else if (method === "ldap/entry/modifyDn") {
-    if (readOnly) throw new Error("connection is read-only (fixture)");
+    if (readOnly) denyWrite(String(input.dn ?? ""));
     const dn = String(input.dn ?? "");
     const entry = get(dn);
     if (!entry) throw new Error(`entry not found: ${dn}`);

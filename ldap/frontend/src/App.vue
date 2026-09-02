@@ -18,6 +18,8 @@ import DeleteEntryDialog from "./components/DeleteEntryDialog.vue";
 import ModifyDnDialog from "./components/ModifyDnDialog.vue";
 import SchemaPanel from "./components/SchemaPanel.vue";
 import ConnectionsPanel from "./components/ConnectionsPanel.vue";
+import AuditFeedPanel from "./components/AuditFeedPanel.vue";
+import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 
 interface ConnectionSummary {
   name?: string;
@@ -60,6 +62,10 @@ const modifyDnSource = ref("");
 const modifyDnSubmitting = ref(false);
 const schemaOpen = ref(false);
 const connectionsOpen = ref(false);
+
+// 审计事件流（ldap/audit → 最近操作面板）；横幅/通知仍保留作为即时反馈。
+const auditItems = ref<AuditFeedItem[]>([]);
+let auditSeq = 0;
 
 let noticeTimer = 0;
 const unsubscribeAppearance: Array<() => void> = [];
@@ -358,6 +364,8 @@ async function copyDn(dn: string) {
 function handleEvent(event: { method: string; params: Record<string, unknown> }) {
   if (event.method === "ldap/audit") {
     const params = event.params || {};
+    // 数据面：进入最近操作面板（denied/error 高亮）；即时反馈走横幅/通知。
+    auditItems.value = pushAuditItem(auditItems.value, parseAuditEvent(params, auditSeq++, Date.now()));
     const result = String(params.result ?? "");
     if (result === "denied" || result === "error") {
       showError(`${params.action ?? "ldap"}: ${result}`);
@@ -365,6 +373,10 @@ function handleEvent(event: { method: string; params: Record<string, unknown> })
       showNotice(`${params.action ?? "ldap"} ✓`);
     }
   }
+}
+
+function clearAuditFeed() {
+  auditItems.value = [];
 }
 
 async function waitForHostApi(timeoutMs = 8000) {
@@ -506,6 +518,7 @@ onBeforeUnmount(() => {
           @open="openEntry"
           @export="exportResults"
         />
+        <AuditFeedPanel :items="auditItems" @clear="clearAuditFeed" />
       </main>
     </div>
 

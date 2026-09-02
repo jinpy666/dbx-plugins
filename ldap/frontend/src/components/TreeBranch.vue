@@ -1,15 +1,20 @@
 <script setup lang="ts">
-// Recursive DN-tree branch renderer. Pure presentational: expansion/loading
-// state lives in the node objects owned by DnTree.vue.
+// Single-row DN-tree node renderer. DnTree.vue flattens the tree into visible
+// rows and windows them through VirtualList; nesting depth arrives as a prop
+// and becomes left padding (the old nested .tree-children indent).
 import { ChevronDown, ChevronRight, Loader2 } from "@lucide/vue";
 import { t } from "../lib/i18n";
 import type { DnTreeNode } from "../lib/dnTree";
 
-const props = defineProps<{
-  node: DnTreeNode;
-  selectedDn: string;
-  disabled?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    node: DnTreeNode;
+    depth: number;
+    selectedDn: string;
+    disabled?: boolean;
+  }>(),
+  { depth: 0 },
+);
 
 const emit = defineEmits<{
   (e: "toggle", node: DnTreeNode): void;
@@ -42,35 +47,20 @@ function onMenu(event: MouseEvent) {
 </script>
 
 <template>
-  <div class="tree-branch">
-    <button class="tree-node" :title="node.dn" @click="onSelect" @dblclick="onView" @contextmenu="onMenu">
-      <span class="tree-row" :class="{ selected: selectedDn === node.dn }">
-        <button class="tree-twist" :aria-expanded="node.expanded" @click.stop="onToggle" @dblclick.stop>
-          <Loader2 v-if="node.loading" class="spinning" />
-          <ChevronDown v-else-if="node.expanded && node.children.length > 0" />
-          <ChevronRight v-else />
-        </button>
-        <span class="tree-label"><span class="tree-name">{{ node.label }}</span></span>
-        <span v-if="node.loading" class="tree-badge tree-badge--loading" :title="t('tree.loading')">…</span>
-        <span
-          v-else-if="node.loaded && node.childCount"
-          class="tree-badge"
-          :title="t('tree.childCount', { count: node.childCount })"
-        >{{ node.childCount }}</span>
-      </span>
-    </button>
-    <div v-if="node.expanded && node.children.length > 0" class="tree-children">
-      <TreeBranch
-        v-for="child in node.children"
-        :key="child.dn"
-        :node="child"
-        :selected-dn="selectedDn"
-        :disabled="disabled"
-        @toggle="emit('toggle', $event)"
-        @select="emit('select', $event)"
-        @view="emit('view', $event)"
-        @menu="(event, dn) => emit('menu', event, dn)"
-      />
-    </div>
-  </div>
+  <button class="tree-node" :title="node.dn" @click="onSelect" @dblclick="onView" @contextmenu="onMenu">
+    <span class="tree-row" :class="{ selected: selectedDn === node.dn }" :style="{ paddingLeft: `${6 + depth * 14}px` }">
+      <button class="tree-twist" :aria-expanded="node.expanded" @click.stop="onToggle" @dblclick.stop>
+        <Loader2 v-if="node.loading" class="spinning" />
+        <ChevronDown v-else-if="node.expanded && node.children.length > 0" />
+        <ChevronRight v-else />
+      </button>
+      <span class="tree-label"><span class="tree-name">{{ node.label }}</span></span>
+      <span v-if="node.loading" class="tree-badge tree-badge--loading" :title="t('tree.loading')">…</span>
+      <span
+        v-else-if="node.loaded && node.childCount"
+        class="tree-badge"
+        :title="t('tree.childCount', { count: node.childCount })"
+      >{{ node.childCount }}</span>
+    </span>
+  </button>
 </template>

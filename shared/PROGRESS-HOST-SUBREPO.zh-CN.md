@@ -187,3 +187,33 @@ patch/降级逻辑。
 - 结论：跑宿主 Rust 测试用
   `RUST_MIN_STACK=33554432 cargo test --lib -p dbx-core -p dbx`，
   期望失败 6+3 例（上述环境型）。
+
+## 11. 二开：插件工作台常驻图层，消除切 tab 闪屏（2026-09-02）
+
+**背景**：SSH 插件反馈切 tab 闪屏（连接已由插件侧 reattach 保住，见
+ssh PROGRESS §8.10）。根因在宿主：`ContentArea` 由 `:key="activeTab.id"` 的
+`KeepAlive` 承载，切 tab 整树销毁重建；iframe 移出 DOM 再插回必然整页重载，
+KeepAlive 保不住 webview。
+
+**改动**（跟随 DriverStorePage/PluginCenterPage 的既有 `v-if+v-show` 常驻模式）：
+- `App.vue`：新增 `mountedPluginWorkbenchTabs` computed + KeepAlive 之后的
+  常驻插件工作台图层（`v-for` + `v-show="tab.id === activeTab.id"`），导入
+  `PluginWorkbenchTab`（defineAsyncComponent）；
+- `ContentArea.vue`：移除 `plugin-workbench` 分支（图层接管，防双挂载），
+  删除无用的 PluginWorkbenchTab 异步导入；
+- `queryStore.ts` `openPluginWorkbench`：复用已有 tab 时不再用新 context 整体
+  替换（左侧菜单每次点击 mint 新 workbenchId，替换会 deep-reload webview 并
+  使 sidecar 会话绑定失效）——重开=原样呈现；新开 tab 仍拿新 context。
+
+**验证**：`pnpm typecheck` 0 错；`queryStore.openPluginWorkbench.spec.ts`（新增
+2 例：复用保 context、异连接开新 tab）+ switchTab 14 例 + openTabsPersistence
+11 例全过。
+
+**布局修正**（首版回归，真机发现"SSH 上下分屏各占一半"）：外层容器是纵向
+flex，插件 tab 激活时 ContentArea 渲染空壳但仍占 `flex-1`，与常驻图层平分
+高度。修正：KeepAlive/ContentArea 包一层
+`v-show="activeTab.mode !== 'plugin-workbench'"` 的 flex 容器，插件 tab 激活
+时 display:none 让位，图层独占整列。typecheck 复验通过。
+
+**语义说明**：关 tab 仍销毁 webview（回存 queryStore 状态）；重开走插件侧
+reattach 恢复会话。生效需 `pnpm tauri build --debug` 重建 DBX.app。

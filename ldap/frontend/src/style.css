@@ -158,8 +158,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tree-label { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; }
 .tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-badge { flex: 0 0 auto; border-radius: 999px; padding: 0 6px; background: color-mix(in srgb, var(--muted-foreground) 22%, transparent); color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
-.tree-children { margin-left: 14px; }
 .tree-state { display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted-foreground); font-size: 12px; }
+
+/* Zero-dependency virtual scroller (VirtualList.vue): fixed row height,
+   absolutely positioned rows inside a spacer-sized inner box. Nesting depth
+   indent comes from an inline padding-left on .tree-row (was .tree-children). */
+.vlist { height: 100%; min-height: 0; overflow: auto; }
+.vlist-inner { position: relative; }
+.vlist-row { position: absolute; left: 0; right: 0; }
+.tree-vlist .vlist-row { height: 28px; }
+.tree-vlist .tree-node { display: block; height: 28px; padding: 0; }
+.tree-vlist .tree-row { height: 28px; min-height: 0; }
 .tree-error { color: var(--destructive); font-size: 11px; padding: 6px 10px; overflow-wrap: anywhere; }
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

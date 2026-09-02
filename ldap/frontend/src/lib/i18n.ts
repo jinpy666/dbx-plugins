@@ -180,6 +180,20 @@ export const messages = {
       title: "Root DSE",
       loadFailed: "Root DSE unavailable",
     },
+    audit: {
+      title: "Audit trail",
+      empty: "No audit events yet",
+      events: "{total} events",
+      deniedCount: "{denied} denied",
+      show: "Show audit trail",
+      hide: "Hide audit trail",
+      clear: "Clear audit trail",
+      result: {
+        ok: "OK",
+        denied: "Denied",
+        error: "Error",
+      },
+    },
   },
   "zh-CN": {
     hostApiUnavailable: "DBX Host API 不可用",
@@ -357,6 +371,20 @@ export const messages = {
     rootDse: {
       title: "Root DSE",
       loadFailed: "Root DSE 不可用",
+    },
+    audit: {
+      title: "审计记录",
+      empty: "暂无审计事件",
+      events: "{total} 条事件",
+      deniedCount: "{denied} 条被拒绝",
+      show: "展开审计记录",
+      hide: "收起审计记录",
+      clear: "清空审计记录",
+      result: {
+        ok: "成功",
+        denied: "已拒绝",
+        error: "错误",
+      },
     },
   },
   "zh-TW": {
@@ -536,6 +564,20 @@ export const messages = {
       title: "Root DSE",
       loadFailed: "Root DSE 不可用",
     },
+    audit: {
+      title: "稽核紀錄",
+      empty: "尚無稽核事件",
+      events: "{total} 筆事件",
+      deniedCount: "{denied} 筆被拒絕",
+      show: "展開稽核紀錄",
+      hide: "收合稽核紀錄",
+      clear: "清空稽核紀錄",
+      result: {
+        ok: "成功",
+        denied: "已拒絕",
+        error: "錯誤",
+      },
+    },
   },
   es: {
     hostApiUnavailable: "La API Host de DBX no está disponible",
@@ -713,6 +755,20 @@ export const messages = {
     rootDse: {
       title: "Root DSE",
       loadFailed: "Root DSE no disponible",
+    },
+    audit: {
+      title: "Registro de auditoría",
+      empty: "Aún no hay eventos de auditoría",
+      events: "{total} eventos",
+      deniedCount: "{denied} denegados",
+      show: "Mostrar registro de auditoría",
+      hide: "Ocultar registro de auditoría",
+      clear: "Borrar registro de auditoría",
+      result: {
+        ok: "OK",
+        denied: "Denegado",
+        error: "Error",
+      },
     },
   },
   it: {
@@ -892,6 +948,20 @@ export const messages = {
       title: "Root DSE",
       loadFailed: "Root DSE non disponibile",
     },
+    audit: {
+      title: "Registro di audit",
+      empty: "Nessun evento di audit",
+      events: "{total} eventi",
+      deniedCount: "{denied} negati",
+      show: "Mostra registro di audit",
+      hide: "Nascondi registro di audit",
+      clear: "Svuota registro di audit",
+      result: {
+        ok: "OK",
+        denied: "Negato",
+        error: "Errore",
+      },
+    },
   },
   ja: {
     hostApiUnavailable: "DBX Host API を利用できません",
@@ -1070,6 +1140,20 @@ export const messages = {
       title: "Root DSE",
       loadFailed: "Root DSE を利用できません",
     },
+    audit: {
+      title: "監査ログ",
+      empty: "監査イベントはまだありません",
+      events: "{total} 件のイベント",
+      deniedCount: "{denied} 件が拒否",
+      show: "監査ログを表示",
+      hide: "監査ログを非表示",
+      clear: "監査ログをクリア",
+      result: {
+        ok: "成功",
+        denied: "拒否",
+        error: "エラー",
+      },
+    },
   },
   "pt-BR": {
     hostApiUnavailable: "API Host do DBX indisponível",
@@ -1247,6 +1331,20 @@ export const messages = {
     rootDse: {
       title: "Root DSE",
       loadFailed: "Root DSE indisponível",
+    },
+    audit: {
+      title: "Registro de auditoria",
+      empty: "Nenhum evento de auditoria ainda",
+      events: "{total} eventos",
+      deniedCount: "{denied} negados",
+      show: "Mostrar registro de auditoria",
+      hide: "Ocultar registro de auditoria",
+      clear: "Limpar registro de auditoria",
+      result: {
+        ok: "OK",
+        denied: "Negado",
+        error: "Erro",
+      },
     },
   },
 } as const;

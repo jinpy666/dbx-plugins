@@ -217,3 +217,51 @@ flex，插件 tab 激活时 ContentArea 渲染空壳但仍占 `flex-1`，与常�
 
 **语义说明**：关 tab 仍销毁 webview（回存 queryStore 状态）；重开走插件侧
 reattach 恢复会话。生效需 `pnpm tauri build --debug` 重建 DBX.app。
+
+## 12. 同步/发版脚本合并策略改为 manual（2026-09-03/04）
+
+- main 前进 94 提交（`ee731a335..b1fc9b15b`），manual 冲突 4 文件，全部双侧
+  语义解决后合并 `7289b438a`：`queryStore.ts`（import 并集：Nacos viewport +
+  currentLocale）、`AppTabBar.vue`（pluginCenterOpen + data-main-tab-bar/detach
+  ring 并集）、`connection.rs`（PluginConnection arm + main 新 Redis 真实健康
+  检查并集；`clone_pool_kind` 收敛为 main 的 `pool.clone()`，随 PoolKind 上
+  Clone derive；`remove_mysql_pool_if_current` 随上游删除）、
+  `ConnectionDialog.vue`（本地重构版为准 + 手工补回 main 的 etcd API 版本切换
+  块/`switchEtcdApiVersion`，共 17 行）。
+- **框架分支重写后首次合并**：上游把 `dev/plugin-framework-current` 重做在最新
+  main 上（旧 `6c8e18863`/`4853bcbe6` → squash 版 `7e990c619`/`e5aeb18c0`，内
+  容几乎不变），并新增 5 个特性提交：插件查询结果视图（result-view）、网络权
+  限 + 原生右键菜单（context-menu）、主题令牌桥接 + 官方 sandbox UI kit、上下
+  文/二进制免重载推送、tab 关闭守卫统一。合并 `f30907736`（32 文件冲突）。
+- **AA（双边新增）文件的解法**：平台文件两边"各自新增"但内容同源。以旧平台
+  快照 `6c8e18863` 为文件级 base：内容与 v1 完全一致的文件直接取本地版
+  （=v1+二开），再把上游 `6c8e18863..c26ff3f6d` 增量 `git apply --3way` 叠加
+  （pluginHostBridge.ts +228、manifest.rs +151 等），冲突为零，5 特性全保留。
+- **build.rs 设计冲突（重要教训）**：本地 v1 遗留在 build.rs 硬编码
+  `DatabaseType::Plugin` variant（"不走 YAML"），上游 v2 改为
+  `plugins/connection-types/plugin.yaml` 描述符。合并两者并存 → 生成枚举出现
+  两个 `Plugin` variant（E0428），并连锁出 7 个 E0004"Plugin not covered"
+  （源码 arm 只覆盖其一）。按上游为主删除 build.rs 硬编码、保留 plugin.yaml
+  后全绿。**经验：生成式 enum 的重复 variant 会让不相关 match 全部报
+  non-exhaustive，先查生成源头。**
+- 其余 UU 冲突：i18n 九语（并集：上游 openResultView + 本地 SSH 密钥选择器文
+  案）、`types/database.ts`（PluginFieldCondition/visible_when/required_when
+  保留 + 上游 context-menu/result-view 贡献类型并集）、`queryStore.ts` 全取本
+  地（§11 会话绑定语义 + 短标题）、`ContentArea.vue` 取本地（常驻图层，删自动
+  并入的 PluginWorkbenchTab import）、`App.vue`/`lib.rs`（上游 close guard +
+  本地 plugin_trace 诊断命令）、`commands/plugins.rs`（保留二开 plugin-trace
+  日志）、测试夹具 `InstalledPlugin::new(manifest, path, app_version)` 三参形
+  式取上游（匹配合并后构造签名）。另清理自动合并产生的重复：`App.vue`
+  closeActiveSurface 事件双注册、`ConnectionDialog.vue` runPluginConnectionAction
+  双定义、`query.rs` PoolKind::PluginConnection 双 arm。
+- 合并后 pre-commit 钩子（oxfmt/rustfmt）自动格式化并入合并提交。
+- 首轮合并验证通过后 origin/main 又前进 5 提交（zen-mode 扩展到 nacos 等），
+  第二轮 sync 仅 `App.vue` 一个冲突：本地 §11 常驻图层包裹结构（v-show
+  wrapper + workbench 图层）为骨架，并集进 main 的
+  `:zen-mode="isZenMode"` / `@toggle-zen-mode="toggleZenMode"` 两个绑定，合并
+  `af9ae2d24`。typecheck 复验通过。
+- 最终验证：`cargo check -p dbx --lib --bins --tests`（rustup 1.97.1 前置）通
+  过；`pnpm typecheck` 0 错；`RUST_MIN_STACK=33554432 cargo test --lib -p
+  dbx-core` 5923 全绿（§10 的 3 例 external driver 失败已消失，上游修复）；
+  `-p dbx` 293 过 / 6 败——仍是 §8 记录的 macOS /tmp symlink pnpm shim 环境
+  失败（上游未修，Linux CI 不受影响），与期望基线一致。

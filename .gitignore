@@ -35,3 +35,6 @@ scroll-stress-result.json
 !.env.example
 .dbx-repository-signing-key.env
 /.zcode/
+
+# goal 巡检状态（agent 心跳，不入库）
+.goal-state/

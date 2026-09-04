@@ -1,7 +1,8 @@
 # DBX 插件族工作区（dbx-plugins）
 
 tiny-rdm（`~/GolandProjects/tiny-rdm`）能力向 DBX 插件迁移的统一工作区。
-**聚焦三插件，不做任何新插件**（决策存档见 `shared/CAPABILITY_CANDIDATES.zh-CN.md`）。
+**聚焦四插件，不做任何新插件**（决策存档见 `shared/CAPABILITY_CANDIDATES.zh-CN.md`；
+2026-09-05 经用户决策新增 kafka 插件，见 `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md`）。
 
 ## 目录结构
 
@@ -11,7 +12,7 @@ dbx-plugins/
 ├── AGENTS.md          # 工作区规约（硬性规则、文档入口、skills 索引）
 ├── .agents/skills/    # 触发式工程 skills：dbx-plugin-dev / dbx-host-e2e /
 │                      #   dbx-ldap-dev / dbx-files-dev / dbx-web-docker
-├── shared/            # 公共目录：跨插件方案与基线文档（三插件共同遵循）
+├── shared/            # 公共目录：跨插件方案与基线文档（插件族共同遵循）
 │   ├── PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md   # 总提案（定稿，含全部决策记录）
 │   ├── IMPL_PLAN_M0_COMMON.zh-CN.md           # M0 公共基线（SDK 契约/lifecycle/审计/测试基建/roadmap）
 │   ├── CAPABILITY_CANDIDATES.zh-CN.md         # 能力盘点（聚焦版：三插件边界 + 不迁移清单）
@@ -25,18 +26,22 @@ dbx-plugins/
 ├── ldap/              # 插件 2：io.dbx.ldap（Go sidecar）
 │   ├── README.md
 │   └── docs/IMPL_PLAN_DBX_LDAP.zh-CN.md       # 实施文档（M1/M3/M4 任务表）
-└── files/             # 插件 3：io.dbx.files（Rust + Apache OpenDAL）
+├── files/             # 插件 3：io.dbx.files（Rust + Apache OpenDAL）
+│   ├── README.md
+│   └── docs/IMPL_PLAN_DBX_FILES.zh-CN.md      # 实施文档（M2/M3/M4 任务表）
+└── kafka/             # 插件 4：io.dbx.kafka（Go sidecar + franz-go）
     ├── README.md
-    └── docs/IMPL_PLAN_DBX_FILES.zh-CN.md      # 实施文档（M2/M3/M4 任务表）
+    └── docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md      # 实施文档（Phase 1，2026-09 新增）
 ```
 
-## 三插件一览
+## 插件一览
 
 | 插件 | ID | sidecar | 状态 | 实施文档 |
 |---|---|---|---|---|
 | ssh | `io.dbx.ssh` | Rust（russh，stdio-framed + 二进制帧） | **已上线 v0.2.x**，按自身对标清单增强 | 仓内 `docs/FEATURE_PARITY*.zh-CN.md` |
 | ldap | `io.dbx.ldap` | Go（go-ldap + gokrb5，官方 Go SDK，stdio-jsonl） | 待实施（M0→M1→M3→M4） | `ldap/docs/IMPL_PLAN_DBX_LDAP.zh-CN.md` |
 | files | `io.dbx.files` | Rust（opendal 0.58.x，dbx-plugin-sdk，stdio-framed + 二进制帧） | 待实施（M0→M2→M3→M4） | `files/docs/IMPL_PLAN_DBX_FILES.zh-CN.md` |
+| kafka | `io.dbx.kafka` | Go（franz-go + kadm，官方 Go SDK，stdio-jsonl） | Phase 1 实施中（2026-09-05 新增） | `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md` |
 
 ## 实施入口（给实施 agent）
 

@@ -27,7 +27,10 @@ scripts/perf_files_test.py   # 传输性能基线
 scripts/sidecar_client.py    # stdio-framed 协议客户端（与 ssh 插件同款，勿手搓帧）
 ```
 
-- 容器段冒烟需设置对应 MinIO/sftp 环境变量（见 smoke_test.py 头注释），否则 SKIP。
+- 容器段冒烟：`scripts/container_smoke.sh` 一键起全部测试容器（MinIO/s3、
+  OpenSSH/sftp+sftp-native 密码段、Samba/smb、mod_dav/webdav、pyftpdlib/ftp，
+  凭据运行时随机）跑满七协议冒烟；单容器段调试可按 smoke_test.py 头注释设
+  `DBX_FILES_*` 环境变量，缺省相应段 SKIP。
 - OpenDAL 服务映射与危险路径判定在前端 `src/lib/opendalServices.ts` /
   `dangerousPaths.ts`，改动须同步对应 `*.spec.ts`。
 
@@ -39,3 +42,13 @@ scripts/sidecar_client.py    # stdio-framed 协议客户端（与 ssh 插件同�
 - 传输走异步 job：`transfer/*` 方法族，job id + 进度事件 + 取消；复用
   ssh 插件 `sftp/upload|download/*` 帧语义。
 - 凭据 Builder 全内存（无 obscure 层/无配置文件/不进环境变量），secret 由宿主 binding 管理。
+
+## 前端 binary 事件（files/download/ 分块流）
+
+宿主桥 b15281024 起 binary 事件为 `{ channel, data: Uint8Array }`（旧桥为
+`dataBase64`）。`App.vue` 的 `handleBinary` 必须经
+**`shared/frontend/binaryEvent.ts`**（公共适配层，勿在插件内另抄）的
+`bridgeBinaryBytes` 双形状归一化；`env.d.ts` 两字段 optional；`lib/mockHost.ts`
+镜像真实桥当前形状。`lib/binaryEvent.spec.ts` 保留为引用 shared 模块的薄
+spec（证明本插件工具链下解析/打包/行为成立）。背景与故障特征见 skill
+`dbx-plugin-dev` 的"宿主契约监察"与故障速查。

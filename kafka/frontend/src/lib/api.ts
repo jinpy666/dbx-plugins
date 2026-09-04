@@ -32,6 +32,17 @@ export interface KafkaMessage {
   committed?: boolean;
   decodeError?: string;
   truncated?: boolean;
+  /** SR 解码挂载信息（consume/stream 附带；produce 挂载后回填）。 */
+  schemaId?: number;
+  schemaSubject?: string;
+  schemaVersion?: number;
+}
+
+/** Schema Registry 解码挂载（consume/stream/produce 共用；version 省略 = latest）。 */
+export interface SchemaAttach {
+  subject: string;
+  version?: number;
+  format: "avro" | "json";
 }
 
 export interface FieldFilter {
@@ -67,6 +78,8 @@ export interface ConsumeParams {
   offsetTo?: number;
   decode?: DecodeMode;
   decompression?: Decompression;
+  /** SR 解码挂载（Phase 2；与 decode 内层解码可叠加，后端先 SR 再内层）。 */
+  schema?: SchemaAttach;
 }
 
 export interface ConsumeResult {
@@ -83,6 +96,12 @@ export interface KafkaBroker {
   host: string;
   port: number;
   rack?: string;
+}
+
+/** `kafka/brokers/list` 顶层返回；ZK 模式下带 `connectionSource=zookeeper`。 */
+export interface BrokersListResult {
+  brokers: KafkaBroker[];
+  connectionSource?: "kafka" | "zookeeper" | string;
 }
 
 export interface ConfigEntry {
@@ -182,8 +201,22 @@ export interface StreamStatus {
 export interface KafkaPreset {
   id: string;
   name: string;
-  /** 序列化的 ConsumeParams（不含 topic，应用时回填当前选中 topic）。 */
-  params: ConsumeParams;
+  /**
+   * 消费预设：序列化的 ConsumeParams（不含 topic，应用时回填当前选中 topic）。
+   * 监控预设：附加 `type:"monitor"` 与 `monitor` 载荷（Phase 2，同一 store 复用）。
+   */
+  params: ConsumeParams & {
+    type?: "consume" | "monitor";
+    monitor?: MonitorPresetParams;
+  };
+}
+
+/** MonitorPanel 监控方案（走 kafka/presets/*，type=monitor）。 */
+export interface MonitorPresetParams {
+  group: string;
+  topics: string[];
+  intervalSec: number;
+  threshold: number;
 }
 
 export interface KafkaConnectionStatus {

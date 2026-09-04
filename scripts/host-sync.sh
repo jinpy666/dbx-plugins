@@ -20,6 +20,11 @@
 #                                        #   dropped). ours explicitly opts into a
 #                                        #   -X ours retry: main-side edits in
 #                                        #   conflicted hunks are DROPPED.
+#   scripts/host-sync.sh contract        # snapshot the plugin-facing host
+#                                        #   contract (bridge SDK shapes); run
+#                                        #   after every sync / DBX.app update
+#                                        #   and align the plugins (see
+#                                        #   AGENTS.md 宿主异动跟进 rule)
 #
 # NOTE: local commits are not pushed anywhere; the submodule pointer in this
 # repo records them. Never run `git submodule update --force/--checkout` in
@@ -38,7 +43,7 @@ log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 CMD=status
 while [ $# -gt 0 ]; do
   case "$1" in
-    status|init|fetch|sync) CMD="$1" ;;
+    status|init|fetch|sync|contract) CMD="$1" ;;
     --merge-policy=*) MERGE_POLICY="${1#--merge-policy=}" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -146,17 +151,64 @@ sync_upstream() {
     exit 1
   fi
   fetch_upstream
+  local PRE_SYNC_HEAD
+  PRE_SYNC_HEAD="$(git rev-parse HEAD)"
   merge_ref "$UPSTREAM_MAIN"
   merge_ref "$UPSTREAM_BRANCH"
   echo
   echo "synced. submodule pointer changed — commit it in the plugins repo:"
   echo "  (cd $ROOT && git add host && git commit -m 'chore(host): track upstream <date>')"
+  echo
+  contract_watch "$PRE_SYNC_HEAD"
+}
+
+# Plugin-facing contract surfaces: everything a plugin's frontend/backend is
+# allowed to depend on. A change in any of these must be mirrored by all three
+# plugins (consumers + mocks + types) before the synced host ships to users —
+# upstream b15281024 silently re-shaped binary events and killed every plugin
+# terminal/download stream against app 0.6.2.
+CONTRACT_PATHS=(
+  "apps/desktop/src/lib/plugins/pluginHostBridge.ts"
+  "apps/desktop/src/lib/plugins/pluginFieldConditions.ts"
+  "apps/desktop/src/lib/plugins/pluginAppearance.ts"
+  "apps/desktop/src/lib/plugins/pluginFilesystem.ts"
+  "apps/desktop/src/lib/plugins/frontendPlugin.ts"
+  "crates/dbx-core/src/plugins/host.rs"
+)
+
+contract_watch() {
+  local BASE="${1:-}"
+  cd "$HOST_DIR"
+  log "host contract watch"
+  if [ -n "$BASE" ]; then
+    local CHANGED
+    CHANGED="$(git diff --stat "$BASE..HEAD" -- "${CONTRACT_PATHS[@]}" || true)"
+    if [ -n "$CHANGED" ]; then
+      echo "$CHANGED"
+      echo
+      echo "plugin-facing contract changed upstream — align the shared adapter layer before use:"
+      echo "  1. binary 事件形状（forwardBinary + 沙箱 SDK 'binary' 分支；data vs dataBase64）"
+      echo "     → 单点修 shared/frontend/ 公共适配层，插件引用处自然生效（勿各插件抄一份）"
+      echo "  2. 沙箱 API 面（invoke/notify/sendBinary/fileTransfer/workbenchState/decodeBase64）"
+      echo "  3. manifest 字段与 visible_when 等条件字段（crates host.rs、pluginFieldConditions）"
+      echo "  4. 各插件 mock（mockDbxHost/mockHost）必须镜像真实桥形状，防单测脱节"
+      echo "  5. 装进真实 DBX.app 复验受影响的流（终端回显、下载分块、拖放）"
+    else
+      echo "no plugin-facing contract change in this sync"
+    fi
+    echo
+  fi
+  echo "current bridge contract snapshot (pluginHostBridge.ts):"
+  grep -n "BRIDGE_VERSION = " apps/desktop/src/lib/plugins/pluginHostBridge.ts | head -1 | sed 's/^/    /'
+  grep -n "message.type === 'binary'" -A2 apps/desktop/src/lib/plugins/pluginHostBridge.ts | sed 's/^/    /'
 }
 
 case "$CMD" in
   init) init_submodule ;;
-  fetch) host_present || { echo "host checkout not found — run: scripts/host-sync.sh init" >&2; exit 1; }
+  fetch) host_present || { echo "host checkout not found — run: scripts/host-sync.sh init" >&2; }
          (cd "$HOST_DIR" && fetch_upstream) ;;
   sync) sync_upstream ;;
+  contract) host_present || { echo "host checkout not found — run: scripts/host-sync.sh init" >&2; exit 1; }
+            contract_watch ;;
   *) show_status ;;
 esac

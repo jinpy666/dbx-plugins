@@ -265,3 +265,60 @@ reattach 恢复会话。生效需 `pnpm tauri build --debug` 重建 DBX.app。
   dbx-core` 5923 全绿（§10 的 3 例 external driver 失败已消失，上游修复）；
   `-p dbx` 293 过 / 6 败——仍是 §8 记录的 macOS /tmp symlink pnpm shim 环境
   失败（上游未修，Linux CI 不受影响），与期望基线一致。
+
+## 13. 上游契约异动警示：binary 事件形状变更（2026-09-04 记录）
+
+上游 b15281024（perf(plugins): push context updates and transfer binary
+buffers without reload，随 DBX.app 0.6.2 下发）把插件沙箱 binary 事件从
+`{ channel, dataBase64 }` 改为零拷贝 `{ channel, data: Uint8Array }`，BRIDGE_VERSION
+未变（仍为 1）。三插件所有 onBinary 消费必须双形状兼容（现成方案：各插件前端
+`lib/binaryEvent.ts` 的 `bridgeBinaryBytes`）。此事件推动建立宿主契约监察机制：
+`scripts/host-sync.sh` 新增 `contract` 子命令，sync 后自动 diff 契约面
+（pluginHostBridge/pluginFieldConditions/pluginAppearance/pluginFilesystem/
+frontendPlugin/crates host.rs）并输出跟进清单；工作区 AGENTS.md 硬性规则 7
+固化"宿主异动 → 插件对齐"流程。案例与修复：ssh PROGRESS-P-SSH §8.11、
+files PROGRESS-P-FILES §14。
+
+**§13 增补**：适配代码已收敛 `shared/frontend/` 公共层（binaryEvent 单点实现，
+插件薄 spec 引用），contract 子命令的跟进清单同步指向 shared 单点修改。
+
+## 14. manual 合并 main 70 提交：SqlEditorWorkspace 架构重构移植（2026-09-04）
+
+- main 前进 70 提交（至 `6bdfd7280`），manual 冲突 6 文件，全部双侧语义解决，
+  合并 `252f60d6a` + 随合并暴露修复 `3c475cfee`：
+- **AppTabBar 大瘦身**：main 把编辑器 tab 从 AppTabBar（1409→310 行）移入新
+  EditorGroup/SqlEditorWorkspace 多组架构，AppTabBar 只剩"特殊页 tab 条"
+  （driver store + settings）。解法：整体取 main 版，按 driver-store 同款模式
+  补回插件中心（props/emits/PlugZap 特殊 tab pill/closeSpecialRegularSurfaces/
+  closeOtherActiveTabs/菜单计数）；旧版的 special-tab scrollIntoView watch 随
+  架构删除（瘦身版无滚动按钮），不移植。
+- **App.vue 骨架更换**：main 用 `SqlEditorWorkspace`（Splitpanes 编辑器组 +
+  共享 QueryResultSurface 结果面）替换内联 AppTabBar+EditorToolbar+ContentArea
+  （EditorToolbar 移入 EditorGroup）。解法：取 main 骨架 + 移植本地三点：
+  ① 容器 v-show 加回 `!pluginCenterActive`；② §11 常驻工作台图层——
+  SqlEditorWorkspace 外包 `v-show="activeTab?.mode !== 'plugin-workbench'"`
+  wrapper，常驻图层（mountedPluginWorkbenchTabs + PluginWorkbenchTab）作兄弟
+  节点；③ WelcomeScreen 条件加 `!pluginCenterActive`。`@locate-tab`/
+  `@activate-tab` 绑定随 main 删除：SqlEditorWorkspace 接管 locate-tab，脚本侧
+  activeTabId watch 已有 `activateQuerySurface()` + `pluginCenterActive=false`
+  联动，无语义损失。
+- **query.rs**：main 把内联 match 重构为 `batch_transaction_path` 辅助函数
+  （枚举 TxPath→BatchTransactionPath，CloudflareD1/ClickHouse 归组有变），调用
+  点取 main，本地 PluginConnection→Unsupported arm 并入辅助函数。
+- **lib.rs**：tests use 并集（本地 `app_menu_close_tab_label` 保留；上游删除的
+  `linux_appimage_wayland_backend_override` 随上游删）。**新教训**：上游新增
+  Turkish LocaleFamily 后，本地二开 close_tab 菜单的 match 变成非 exhaustive
+  （E0004 卡整个 lib 编译）——二开的枚举 match 在上游扩枚举时会碎，cargo check
+  --lib 必查；补 `"Sekmeyi kapat"`（`3c475cfee`）。
+- **ContentArea.vue / QueryResultToolbarActions.vue**：绑定与 import 并集
+  （本地 `:has-result`/result-view、main 的 profile 视图 + tabId 化事件签名 +
+  Gauge 图标）。
+- 契约面 diff（`af9ae2d24..3c475cfee`）为零：BRIDGE_VERSION 仍 1、binary 形状
+  未变，插件侧无跟进项。
+- 验证：`pnpm typecheck` 0 错；`cargo check -p dbx --lib --bins --tests` 通过
+  （rustup 1.97.1 前置）；vitest 受影响面（openPluginWorkbench/switchTab/groups/
+  lib/plugins）70 例全绿。
+- **经验**：上游 main 自身的 tab 架构重构（EditorGroup 多组 + 共享结果面）与
+  框架分支插件中心/本地常驻图层叠加后，移植点从 ContentArea 上移到
+  SqlEditorWorkspace 层；此类"本地改造挂在哪个组件上"的映射关系，每次上游重构
+  后要重新定位，不能按上轮冲突文件清单惯性处理。

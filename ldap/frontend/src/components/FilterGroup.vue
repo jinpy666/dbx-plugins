@@ -18,6 +18,7 @@ const MAX_DEPTH = 1;
 
 const operatorOptions: Array<{ value: BuilderOp; labelKey: string }> = [
   { value: "equals", labelKey: "search.opEquals" },
+  { value: "notEquals", labelKey: "search.opNotEquals" },
   { value: "contains", labelKey: "search.opContains" },
   { value: "startsWith", labelKey: "search.opStartsWith" },
   { value: "endsWith", labelKey: "search.opEndsWith" },

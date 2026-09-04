@@ -199,7 +199,7 @@ export const validateQueryBuilder = (builder?: LdapQueryBuilder): QueryClauseErr
 
 // -- visual builder tree (A-LDAP): clauses + nested AND/OR groups ------------
 
-export type BuilderOp = "equals" | "contains" | "startsWith" | "endsWith" | "present" | "gte" | "lte" | "approx";
+export type BuilderOp = "equals" | "notEquals" | "contains" | "startsWith" | "endsWith" | "present" | "gte" | "lte" | "approx";
 
 export interface BuilderClause {
     kind: "clause";
@@ -249,6 +249,12 @@ export const buildBuilderClauseFilter = (clause: BuilderClause): string => {
             return buildPresenceFilter(attribute);
         case "equals":
             return buildEqualityFilter(attribute, rawValue);
+        // RFC 4515 has no inequality operator: ≠ is the negation of equality
+        // ((!(attr=value))), mirroring the tiny-rdm "notEq" clause semantics.
+        case "notEquals": {
+            const equality = buildEqualityFilter(attribute, rawValue);
+            return equality ? buildNegatedFilter(equality) : "";
+        }
         case "contains":
         case "startsWith":
         case "endsWith":
@@ -428,6 +434,12 @@ const parseFilterItem = (cursor: ParseCursor): BuilderNode | null => {
         if (!child) return null;
         if (cursor.text[cursor.position] !== ")") return null;
         cursor.position += 1;
+        // Negated equality folds into the first-class ≠ operator so the UI
+        // shows it directly; other shapes keep the negate flag (round-trip
+        // is preserved by buildNodeFilter either way).
+        if (child.kind === "clause" && child.op === "equals" && !child.negate) {
+            return { ...child, op: "notEquals", negate: undefined };
+        }
         return { ...child, negate: true };
     }
 
@@ -468,7 +480,7 @@ export const reviveBuilderNode = (value: unknown): BuilderNode | null => {
     if (!source || typeof source !== "object") return null;
     if (source.kind === "clause") {
         const op = String(source.op ?? "");
-        if (!(["equals", "contains", "startsWith", "endsWith", "present", "gte", "lte", "approx"] as const).includes(op as BuilderOp)) return null;
+        if (!(["equals", "notEquals", "contains", "startsWith", "endsWith", "present", "gte", "lte", "approx"] as const).includes(op as BuilderOp)) return null;
         return {
             kind: "clause",
             id: nextBuilderNodeId(),

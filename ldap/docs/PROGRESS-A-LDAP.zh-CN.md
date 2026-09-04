@@ -433,3 +433,92 @@ Base DN"。根因：`App.vue` 的 `contextBaseDn` 只读连接表单 `base_dn`�
 | 前端 | typecheck / build | 绿 |
 | 打包 | `scripts/build.sh` | `dist/io.dbx.ldap-0.1.22-darwin-arm64.dbxp` |
 | 真机 | `smoke_container.py` S1–S11 | **12/12 PASS**（sidecar 未改动） |
+
+## 18. 2026-09-04 追加：宿主 1.1 theme 通道主题同步
+
+宿主 `dev/plugin-framework-current`（cd3ee5a45，2026-09-03）向沙箱推送
+`PluginBridgeTheme { appearance, tokens }`：init 携带 + env 消息实时推送，tokens
+为宿主根节点解析后的 `--color-*` 设计令牌；`api.appearance` 契约在当前宿主恒
+缺失（宿主侧 `pluginAppearance` 未接线）。工作台跟随宿主明暗与调色板实时切换：
+
+- `env.d.ts`：新增 `DbxPluginTheme` 与 `DbxPluginApi.theme?`。
+- `lib/hostTheme.ts`（新）+ `hostTheme.spec.ts`：token→colors 映射、
+  `dbx-plugin-env` CustomEvent 订阅、输入校验（7 例单测）。
+- `lib/appearance.ts`：`resolveAppearance` 入参放宽为逐字段可选
+  `DbxPluginAppearanceInput`（theme 通道只带颜色令牌）。
+- `App.vue`：init 时 `api.appearance` 缺失改用 `api.theme` 初始化；宿主无
+  `onAppearanceChange` 时订阅 env 主题推送（退订入 `unsubscribeAppearance`
+  数组，随卸载统一清理）。
+- `mockDbxHost.ts`：按宿主形状镜像 `theme`（colors 反查 `--color-*` 令牌），
+  `?theme=light|dark` 浏览器走查。
+
+### 18.1 验证
+
+| 层 | 命令 | 结果 |
+| --- | --- | --- |
+| 前端 | vitest（新增 hostTheme.spec 7 用例） | 全绿（171 用例） |
+| 前端 | typecheck | 绿 |
+
+sidecar 未改动，smoke 不受影响；未重新打包（下次 `scripts/build.sh` 随 build
+重新生成 ui/）。本次无新增用户可见文案，七语无增量。
+
+## 19. 2026-09-05 修复：详情弹窗背后的 filter 文本透出
+
+### 19.1 现象与根因
+
+设置可视化 filter 条件后双击结果行打开条目详情弹窗，弹窗四周（半透明遮罩
+边缘）仍能清晰读到搜索表单区的 filter 构建器行与实时预览串
+`.qb-preview`，观感上像文本"悬浮/污染"弹窗。
+
+排查结论：层叠本身无缺陷——`.modal-backdrop` 为 `position:fixed; z-index:80`，
+`elementFromPoint` 实测遮罩正常拦截全部下层内容，插件与祖先链均无创建层叠
+上下文的属性；宿主 srcdoc 注入的 uiKit/SDK 亦不涉及层叠。根因是遮罩不透明
+度过低（亮 25% 黑 / 暗 70% 背景色），背景文字透出可辨。
+
+### 19.2 改动
+
+- `style.css`：`.modal-backdrop` 亮色 `rgb(0 0 0 / 25%)` → `rgb(0 0 0 / 50%)`；
+  暗色 `color-mix(... 70%, transparent)` → `92%, transparent`。弹窗打开时
+  背景 filter 文本不再可辨，同时保留层叠纵深感。
+
+### 19.3 验证
+
+| 层 | 方式 | 结果 |
+| --- | --- | --- |
+| 视觉 | vite dev mock.html（880×660）：构建器设条件 → 搜索 → 双击行开弹窗，前后截图对比（暗/亮两主题） | 修复前 filter 行与预览串清晰可读；修复后不可辨 |
+| 前端 | typecheck + vitest | 全绿（171 用例） |
+
+ssh/files 两插件 `.modal-backdrop` 为同款低不透明度遮罩，如需统一观感可
+随后跟进（未在本次改动范围内）。
+
+## 20. 2026-09-05 追加：ADS 追赶 M5-a（排版联动 + ≠ 运算符 + UI 测试三轨）
+
+对齐 Apache Directory Studio 的第一轮（对账表：
+`docs/ADS_GAP_ANALYSIS.zh-CN.md`，路线并入 IMPL_PLAN §9 M5/M6）。
+
+### 20.1 改动
+
+- `manifest.json`：tls_verify / tls_ca_path / tls_server_name 增加
+  `visible_when: tls_mode ∈ {starttls, ldaps}` 联动显隐，并把三个 TLS 字段
+  移到「加密方式」之后——连接表单排版对齐 ADS 的 网络→加密→认证→高级
+  分区；31 字段七语标签已全覆盖（校验过）。
+- `lib/ldapFilter.ts`：`BuilderOp` 新增 `notEquals`（`(!(attr=val))`，值走
+  RFC 4515 转义；空值返回空串）；`parseFilterItem` 的 `(!)` 分支把「否定
+  等式」折叠为一等 ≠ 运算符（其余形态保留 negate 语义，往返稳定）；
+  `reviveBuilderNode` op 白名单同步。
+- `components/FilterGroup.vue`：运算符下拉加入 ≠（紧跟 = 之后，对齐 ADS
+  顺序）。
+- `lib/i18n.ts`：七语新增 `search.opNotEquals`（en/es/it/ja/pt-BR/zh-CN/zh-TW）。
+
+### 20.2 UI 测试三轨（M5-a 交付）
+
+| 轨 | 内容 | 结果 |
+| --- | --- | --- |
+| 纯函数 | `ldapFilter.spec.ts` 新增 notEquals describe 7 用例（构建/转义/组合/校验/解析折叠/往返/revive），并更新 1 处旧表示断言（equals+negate → notEquals） | 78/78 |
+| 组件（happy-dom + @vue/test-utils，新增 devDeps） | `FilterGroup.spec.ts`（6 用例：运算符全集、v-model 双向、增删行/空组、presence 隐藏值格、disabled 门禁、嵌套上限）+ `SearchForm.spec.ts`（6 用例：空条件回退、实时预览、≠ 构建、半填拦截/放行 submit、构建↔源码往返、非法源码报错） | 12/12 |
+| 浏览器 | 新增 `scripts/ui_test.mjs`（playwright-core 惰性装于 /tmp/dbx-ldap-ui-deps 非项目依赖 + 系统 Chrome，自拉 vite dev mock.html）：预览 equals/≠、mock 搜索出行、双击开详情弹窗、**暗色遮罩 ≥90% 不透明回归断言**、elementFromPoint 遮罩拦截、构建→源码带串。已接入 `scripts/test.sh`（无 Chrome/网络时 SKIP，断言失败 exit 1） | 7/7 |
+
+### 20.3 验证
+
+pnpm typecheck 干净；vitest 全量 **190/190**（14 文件）；`pnpm build` 通过
+（ui/index.html 重新生成）；`node scripts/ui_test.mjs` 7/7。sidecar 未改动。

@@ -22,6 +22,9 @@ pnpm --dir frontend typecheck
 pnpm --dir frontend test
 pnpm --dir frontend build
 
+echo "==> UI walkthrough (headless Chrome via scripts/ui_test.mjs; SKIP without Chrome/network)"
+node scripts/ui_test.mjs || exit 1
+
 if [ -f backend/go.mod ] && command -v go >/dev/null 2>&1; then
   echo "==> backend unit tests (owned by backend path)"
   (cd backend && go vet ./... && go test ./...) || echo "WARN: backend go test failed (parallel development) — see docs/PROGRESS-C.zh-CN.md"

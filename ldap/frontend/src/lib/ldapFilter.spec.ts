@@ -315,7 +315,7 @@ describe("parseFilterStructure (table-driven)", () => {
     ["(cn=Pic\\2aard)", { kind: "clause", attribute: "cn", op: "equals", value: "Pic*ard" }],
     ["(cn=Pic\\5card)", { kind: "clause", attribute: "cn", op: "equals", value: "Pic\\ard" }],
     ["(cn=\\28x\\29)", { kind: "clause", attribute: "cn", op: "equals", value: "(x)" }],
-    ["(!(cn=x))", { kind: "clause", attribute: "cn", op: "equals", value: "x", negate: true }],
+    ["(!(cn=x))", { kind: "clause", attribute: "cn", op: "notEquals", value: "x" }],
     [
       "(&(objectClass=person)(|(cn=*jo*)(!(uid=jd*))))",
       {
@@ -476,5 +476,55 @@ describe("unescapeLdapFilterValue", () => {
   it("normalizes a single-child AND group to its leaf (documented collapse)", () => {
     const root = toBuilderRoot(parseFilterStructure("(&(cn=a))"));
     expect(buildNodeFilter(root)).toBe("(cn=a)");
+  });
+});
+
+describe("notEquals builder operator (ADS parity, M5-a)", () => {
+  it("builds a negated equality leaf", () => {
+    expect(buildBuilderClauseFilter(createBuilderClause({ attribute: "uid", op: "notEquals", value: "admin" }))).toBe("(!(uid=admin))");
+  });
+
+  it("escapes the value and drops empty clauses like other operators", () => {
+    expect(buildBuilderClauseFilter(createBuilderClause({ attribute: "cn", op: "notEquals", value: "a(b" }))).toBe("(!(cn=a\\28b))");
+    expect(buildBuilderClauseFilter(createBuilderClause({ attribute: "cn", op: "notEquals", value: "" }))).toBe("");
+    expect(buildBuilderClauseFilter(createBuilderClause({ attribute: "", op: "notEquals", value: "x" }))).toBe("");
+  });
+
+  it("composes inside groups", () => {
+    const root = createBuilderGroup({
+      children: [
+        createBuilderClause({ attribute: "cn", op: "equals", value: "a" }),
+        createBuilderClause({ attribute: "uid", op: "notEquals", value: "admin" }),
+      ],
+    });
+    expect(buildNodeFilter(root)).toBe("(&(cn=a)(!(uid=admin)))");
+  });
+
+  it("collectBuilderErrors requires a value for notEquals", () => {
+    const errors = collectBuilderErrors(createBuilderClause({ attribute: "uid", op: "notEquals", value: "" }));
+    expect(errors).toEqual([{ id: expect.any(String), code: "value_required" }]);
+  });
+
+  it("parses (!(attr=value)) into the ≠ operator and round-trips", () => {
+    const parsed = parseFilterStructure("(!(uid=admin))");
+    expect(parsed).not.toBeNull();
+    expect(parsed?.kind === "clause" && parsed.op).toBe("notEquals");
+    expect(parsed?.kind === "clause" && parsed.negate).toBeFalsy();
+    expect(buildNodeFilter(parsed)).toBe("(!(uid=admin))");
+  });
+
+  it("keeps the negate flag for negated non-equality shapes", () => {
+    const parsed = parseFilterStructure("(!(cn=a*))");
+    expect(parsed?.kind === "clause" && parsed.op).toBe("startsWith");
+    expect(parsed?.kind === "clause" && parsed.negate).toBe(true);
+    expect(buildNodeFilter(parsed)).toBe("(!(cn=a*))");
+  });
+
+  it("reviveBuilderNode accepts persisted notEquals clauses", () => {
+    const clause = createBuilderClause({ attribute: "uid", op: "notEquals", value: "admin" });
+    const revived = reviveBuilderNode(JSON.parse(JSON.stringify(clause)));
+    expect(revived).not.toBeNull();
+    expect(buildNodeFilter(revived)).toBe("(!(uid=admin))");
+    expect(reviveBuilderNode({ kind: "clause", op: "notEquals" })).not.toBeNull();
   });
 });

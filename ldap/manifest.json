@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.ldap",
   "name": "DBX LDAP",
-  "version": "0.1.24",
+  "version": "0.1.28",
   "publisher": "dbx",
   "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
   "icon": "assets/plugin.svg",
@@ -87,6 +87,49 @@
           ],
           "default": "none",
           "binding": "config"
+        },
+        {
+          "key": "tls_verify",
+          "label": "Verify TLS certificate",
+          "type": "boolean",
+          "default": true,
+          "binding": "config",
+          "visible_when": {
+            "field": "tls_mode",
+            "one_of": [
+              "starttls",
+              "ldaps"
+            ]
+          }
+        },
+        {
+          "key": "tls_ca_path",
+          "label": "TLS CA certificate path",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "tls_mode",
+            "one_of": [
+              "starttls",
+              "ldaps"
+            ]
+          }
+        },
+        {
+          "key": "tls_server_name",
+          "label": "TLS server name",
+          "type": "text",
+          "description": "Defaults to the host in the URL when empty.",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "tls_mode",
+            "one_of": [
+              "starttls",
+              "ldaps"
+            ]
+          }
         },
         {
           "key": "base_dn",
@@ -238,28 +281,6 @@
               "ntlm_hash"
             ]
           }
-        },
-        {
-          "key": "tls_verify",
-          "label": "Verify TLS certificate",
-          "type": "boolean",
-          "default": true,
-          "binding": "config"
-        },
-        {
-          "key": "tls_ca_path",
-          "label": "TLS CA certificate path",
-          "type": "text",
-          "default": "",
-          "binding": "config"
-        },
-        {
-          "key": "tls_server_name",
-          "label": "TLS server name",
-          "type": "text",
-          "description": "Defaults to the host in the URL when empty.",
-          "default": "",
-          "binding": "config"
         },
         {
           "key": "krb_credential_type",

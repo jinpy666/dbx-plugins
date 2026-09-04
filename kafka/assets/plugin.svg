@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DBX Kafka">
+  <defs>
+    <linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1f2b46"/>
+      <stop offset="1" stop-color="#2f6fb3"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)"/>
+  <ellipse cx="26" cy="19" rx="12" ry="5" fill="#fff"/>
+  <path fill="#fff" d="M14 19v24c0 2.76 5.37 5 12 5s12-2.24 12-5V19c0 2.76-5.37 5-12 5s-12-2.24-12-5Z"/>
+  <circle cx="48" cy="24" r="4" fill="#fff"/>
+  <circle cx="48" cy="38" r="4" fill="#fff"/>
+  <circle cx="48" cy="52" r="4" fill="#fff"/>
+</svg>

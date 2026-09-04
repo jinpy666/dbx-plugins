@@ -1,0 +1,796 @@
+{
+  "$schema": "https://raw.githubusercontent.com/t8y2/dbx/dev/plugin-framework-current/plugins/manifest.schema.json",
+  "manifest_version": 1,
+  "id": "io.dbx.kafka",
+  "name": "DBX Kafka",
+  "version": "0.1.0",
+  "publisher": "dbx",
+  "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
+  "icon": "assets/plugin.svg",
+  "engines": {
+    "dbx": ">=0.5.77",
+    "host_api": ">=1.0.0"
+  },
+  "permissions": [
+    "host.events",
+    "host.workbench"
+  ],
+  "entrypoints": {
+    "backend": {
+      "transport": "stdio-jsonl",
+      "executable": "bin/dbx-plugin-kafka"
+    },
+    "ui": {
+      "root": "ui",
+      "entry": "ui/index.html"
+    }
+  },
+  "contributions": [
+    {
+      "type": "connection-provider",
+      "id": "io.dbx.kafka.connection",
+      "label": "Kafka cluster",
+      "icon": "assets/plugin.svg",
+      "database_type": "kafka",
+      "description": "Apache Kafka connection over PLAINTEXT, TLS and SASL (PLAIN/SCRAM), with host-managed secrets and read-only policy.",
+      "capabilities": [
+        "test",
+        "connect",
+        "disconnect"
+      ],
+      "workbench": "io.dbx.kafka.workbench",
+      "fields": [
+        {
+          "key": "display_name",
+          "label": "Connection name",
+          "description": "Name shown in the connection list.",
+          "type": "text",
+          "default": "Kafka cluster",
+          "binding": "name",
+          "required": true
+        },
+        {
+          "key": "bootstrap_servers",
+          "label": "Bootstrap servers",
+          "description": "Comma- or newline-separated broker list (host:port).",
+          "type": "textarea",
+          "placeholder": "localhost:9092,localhost:9093",
+          "default": "",
+          "binding": "config",
+          "required": true
+        },
+        {
+          "key": "security_protocol",
+          "label": "Security protocol",
+          "description": "Protocol used to connect to the brokers.",
+          "type": "select",
+          "options": [
+            {
+              "label": "PLAINTEXT (no encryption)",
+              "value": "PLAINTEXT"
+            },
+            {
+              "label": "TLS (SSL)",
+              "value": "SSL"
+            },
+            {
+              "label": "SASL over PLAINTEXT",
+              "value": "SASL_PLAINTEXT"
+            },
+            {
+              "label": "SASL over TLS",
+              "value": "SASL_SSL"
+            }
+          ],
+          "default": "PLAINTEXT",
+          "binding": "config"
+        },
+        {
+          "key": "sasl_mechanism",
+          "label": "SASL mechanism",
+          "description": "SASL mechanism used for SASL_PLAINTEXT / SASL_SSL.",
+          "type": "select",
+          "options": [
+            {
+              "label": "PLAIN",
+              "value": "PLAIN"
+            },
+            {
+              "label": "SCRAM-SHA-256",
+              "value": "SCRAM-SHA-256"
+            },
+            {
+              "label": "SCRAM-SHA-512",
+              "value": "SCRAM-SHA-512"
+            }
+          ],
+          "default": "PLAIN",
+          "binding": "config",
+          "visible_when": {
+            "field": "security_protocol",
+            "one_of": [
+              "SASL_PLAINTEXT",
+              "SASL_SSL"
+            ]
+          }
+        },
+        {
+          "key": "sasl_username",
+          "label": "SASL username",
+          "description": "Username for the SASL mechanism.",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "security_protocol",
+            "one_of": [
+              "SASL_PLAINTEXT",
+              "SASL_SSL"
+            ]
+          }
+        },
+        {
+          "key": "sasl_password",
+          "label": "SASL password",
+          "description": "Password for the SASL mechanism; stored via host secret binding, never persisted by the plugin.",
+          "type": "password",
+          "default": "",
+          "binding": "secret",
+          "visible_when": {
+            "field": "security_protocol",
+            "one_of": [
+              "SASL_PLAINTEXT",
+              "SASL_SSL"
+            ]
+          }
+        },
+        {
+          "key": "tls_ca_cert",
+          "label": "CA certificate (PEM)",
+          "description": "PEM-encoded CA certificate used to verify broker certificates; empty uses the system roots.",
+          "type": "textarea",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "security_protocol",
+            "one_of": [
+              "SSL",
+              "SASL_SSL"
+            ]
+          }
+        },
+        {
+          "key": "tls_client_cert",
+          "label": "Client certificate (PEM)",
+          "description": "PEM-encoded client certificate for mutual TLS (mTLS).",
+          "type": "textarea",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "security_protocol",
+            "one_of": [
+              "SSL",
+              "SASL_SSL"
+            ]
+          }
+        },
+        {
+          "key": "tls_client_key",
+          "label": "Client private key (PEM)",
+          "description": "PEM-encoded client private key for mutual TLS (mTLS); stored via host secret binding.",
+          "type": "password",
+          "default": "",
+          "binding": "secret",
+          "visible_when": {
+            "field": "security_protocol",
+            "one_of": [
+              "SSL",
+              "SASL_SSL"
+            ]
+          }
+        },
+        {
+          "key": "tls_insecure_skip_verify",
+          "label": "Skip TLS verification",
+          "description": "Accept broker certificates without verification (development only).",
+          "type": "boolean",
+          "default": false,
+          "binding": "config",
+          "visible_when": {
+            "field": "security_protocol",
+            "one_of": [
+              "SSL",
+              "SASL_SSL"
+            ]
+          }
+        },
+        {
+          "key": "client_id",
+          "label": "Client ID",
+          "description": "Optional client.id reported to brokers; defaults to dbx-plugin-kafka.",
+          "type": "text",
+          "default": "",
+          "binding": "config"
+        },
+        {
+          "key": "read_only",
+          "label": "Read-only mode",
+          "description": "Reject all write operations (produce, topic create/alter/delete, group delete and offset reset, ACL writes).",
+          "type": "boolean",
+          "default": true,
+          "binding": "config"
+        },
+        {
+          "key": "allow_delete",
+          "label": "Allow delete operations",
+          "description": "Allow delete-class operations (topics/delete, groups/delete, acls/delete); has no effect while read-only is on.",
+          "type": "boolean",
+          "default": false,
+          "binding": "config"
+        }
+      ]
+    },
+    {
+      "type": "workbench",
+      "id": "io.dbx.kafka.workbench",
+      "label": "Kafka Workbench",
+      "description": "Browse topics, consume and produce messages, and manage consumer groups and ACLs.",
+      "icon": "assets/plugin.svg"
+    }
+  ],
+  "localizations": {
+    "zh-CN": {
+      "name": "DBX Kafka",
+      "description": "DBX 的 Kafka 控制台插件：topic 与分区、消息生产与消费（过滤/解码）、消费组（lag 与 offset 重置）、ACL、流式消费与导出。",
+      "contributions": {
+        "io.dbx.kafka.connection": {
+          "label": "Kafka 集群",
+          "description": "通过 PLAINTEXT、TLS 与 SASL（PLAIN/SCRAM）连接 Apache Kafka；凭据由宿主 secret binding 管理，插件不持久化。",
+          "fields": {
+            "display_name": {
+              "label": "连接名称",
+              "description": "连接列表中显示的名称。"
+            },
+            "bootstrap_servers": {
+              "label": "Bootstrap servers",
+              "description": "以逗号或换行分隔的 broker 列表（host:port）。"
+            },
+            "security_protocol": {
+              "label": "安全协议",
+              "description": "与 broker 建立连接所用的协议。",
+              "options": {
+                "PLAINTEXT": "PLAINTEXT（无加密）",
+                "SSL": "TLS（SSL）",
+                "SASL_PLAINTEXT": "SASL over PLAINTEXT",
+                "SASL_SSL": "SASL over TLS"
+              }
+            },
+            "sasl_mechanism": {
+              "label": "SASL 机制",
+              "description": "SASL_PLAINTEXT / SASL_SSL 使用的 SASL 机制。",
+              "options": {
+                "PLAIN": "PLAIN",
+                "SCRAM-SHA-256": "SCRAM-SHA-256",
+                "SCRAM-SHA-512": "SCRAM-SHA-512"
+              }
+            },
+            "sasl_username": {
+              "label": "SASL 用户名",
+              "description": "SASL 认证使用的用户名。"
+            },
+            "sasl_password": {
+              "label": "SASL 密码",
+              "description": "SASL 认证使用的密码；经宿主 secret binding 存储，插件不持久化。"
+            },
+            "tls_ca_cert": {
+              "label": "CA 证书（PEM）",
+              "description": "用于校验 broker 证书的 PEM 编码 CA 证书；留空使用系统根证书。"
+            },
+            "tls_client_cert": {
+              "label": "客户端证书（PEM）",
+              "description": "双向 TLS（mTLS）使用的 PEM 编码客户端证书。"
+            },
+            "tls_client_key": {
+              "label": "客户端私钥（PEM）",
+              "description": "双向 TLS（mTLS）使用的 PEM 编码客户端私钥；经宿主 secret binding 存储。"
+            },
+            "tls_insecure_skip_verify": {
+              "label": "跳过 TLS 校验",
+              "description": "不校验 broker 证书（仅建议开发环境使用）。"
+            },
+            "client_id": {
+              "label": "Client ID",
+              "description": "上报给 broker 的可选 client.id；缺省为 dbx-plugin-kafka。"
+            },
+            "read_only": {
+              "label": "只读模式",
+              "description": "拒绝一切写操作（生产消息、创建/变更/删除 topic、消费组删除与 offset 重置、ACL 写入）。"
+            },
+            "allow_delete": {
+              "label": "允许删除类操作",
+              "description": "允许删除类操作（topics/delete、groups/delete、acls/delete）；只读模式下本项无效。"
+            }
+          }
+        },
+        "io.dbx.kafka.workbench": {
+          "label": "Kafka 工作台",
+          "description": "浏览 topic、消费与生产消息、管理消费组与 ACL。"
+        }
+      }
+    },
+    "zh-TW": {
+      "name": "DBX Kafka",
+      "description": "DBX 的 Kafka 主控台外掛：topic 與分割區、訊息生產與消費（過濾/解碼）、消費組（lag 與 offset 重置）、ACL、串流消費與匯出。",
+      "contributions": {
+        "io.dbx.kafka.connection": {
+          "label": "Kafka 叢集",
+          "description": "透過 PLAINTEXT、TLS 與 SASL（PLAIN/SCRAM）連線 Apache Kafka；憑證由宿主 secret binding 管理，外掛不持久化。",
+          "fields": {
+            "display_name": {
+              "label": "連線名稱",
+              "description": "連線清單中顯示的名稱。"
+            },
+            "bootstrap_servers": {
+              "label": "Bootstrap 伺服器",
+              "description": "以逗號或換行分隔的 broker 清單（host:port）。"
+            },
+            "security_protocol": {
+              "label": "安全協定",
+              "description": "與 broker 建立連線所用的協定。",
+              "options": {
+                "PLAINTEXT": "PLAINTEXT（無加密）",
+                "SSL": "TLS（SSL）",
+                "SASL_PLAINTEXT": "SASL over PLAINTEXT",
+                "SASL_SSL": "SASL over TLS"
+              }
+            },
+            "sasl_mechanism": {
+              "label": "SASL 機制",
+              "description": "SASL_PLAINTEXT / SASL_SSL 使用的 SASL 機制。",
+              "options": {
+                "PLAIN": "PLAIN",
+                "SCRAM-SHA-256": "SCRAM-SHA-256",
+                "SCRAM-SHA-512": "SCRAM-SHA-512"
+              }
+            },
+            "sasl_username": {
+              "label": "SASL 使用者名稱",
+              "description": "SASL 認證使用的使用者名稱。"
+            },
+            "sasl_password": {
+              "label": "SASL 密碼",
+              "description": "SASL 認證使用的密碼；經宿主 secret binding 儲存，外掛不持久化。"
+            },
+            "tls_ca_cert": {
+              "label": "CA 憑證（PEM）",
+              "description": "用於驗證 broker 憑證的 PEM 編碼 CA 憑證；留空使用系統根憑證。"
+            },
+            "tls_client_cert": {
+              "label": "用戶端憑證（PEM）",
+              "description": "雙向 TLS（mTLS）使用的 PEM 編碼用戶端憑證。"
+            },
+            "tls_client_key": {
+              "label": "用戶端私鑰（PEM）",
+              "description": "雙向 TLS（mTLS）使用的 PEM 編碼用戶端私鑰；經宿主 secret binding 儲存。"
+            },
+            "tls_insecure_skip_verify": {
+              "label": "略過 TLS 驗證",
+              "description": "不驗證 broker 憑證（僅建議開發環境使用）。"
+            },
+            "client_id": {
+              "label": "Client ID",
+              "description": "回報給 broker 的選擇性 client.id；預設為 dbx-plugin-kafka。"
+            },
+            "read_only": {
+              "label": "唯讀模式",
+              "description": "拒絕一切寫入操作（生產訊息、建立/變更/刪除 topic、消費組刪除與 offset 重置、ACL 寫入）。"
+            },
+            "allow_delete": {
+              "label": "允許刪除類操作",
+              "description": "允許刪除類操作（topics/delete、groups/delete、acls/delete）；唯讀模式下本項無效。"
+            }
+          }
+        },
+        "io.dbx.kafka.workbench": {
+          "label": "Kafka 工作台",
+          "description": "瀏覽 topic、消費與生產訊息、管理消費組與 ACL。"
+        }
+      }
+    },
+    "en": {
+      "name": "DBX Kafka",
+      "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
+      "contributions": {
+        "io.dbx.kafka.connection": {
+          "label": "Kafka cluster",
+          "description": "Apache Kafka connection over PLAINTEXT, TLS and SASL (PLAIN/SCRAM), with host-managed secrets and read-only policy.",
+          "fields": {
+            "display_name": {
+              "label": "Connection name",
+              "description": "Name shown in the connection list."
+            },
+            "bootstrap_servers": {
+              "label": "Bootstrap servers",
+              "description": "Comma- or newline-separated broker list (host:port)."
+            },
+            "security_protocol": {
+              "label": "Security protocol",
+              "description": "Protocol used to connect to the brokers.",
+              "options": {
+                "PLAINTEXT": "PLAINTEXT (no encryption)",
+                "SSL": "TLS (SSL)",
+                "SASL_PLAINTEXT": "SASL over PLAINTEXT",
+                "SASL_SSL": "SASL over TLS"
+              }
+            },
+            "sasl_mechanism": {
+              "label": "SASL mechanism",
+              "description": "SASL mechanism used for SASL_PLAINTEXT / SASL_SSL.",
+              "options": {
+                "PLAIN": "PLAIN",
+                "SCRAM-SHA-256": "SCRAM-SHA-256",
+                "SCRAM-SHA-512": "SCRAM-SHA-512"
+              }
+            },
+            "sasl_username": {
+              "label": "SASL username",
+              "description": "Username for the SASL mechanism."
+            },
+            "sasl_password": {
+              "label": "SASL password",
+              "description": "Password for the SASL mechanism; stored via host secret binding, never persisted by the plugin."
+            },
+            "tls_ca_cert": {
+              "label": "CA certificate (PEM)",
+              "description": "PEM-encoded CA certificate used to verify broker certificates; empty uses the system roots."
+            },
+            "tls_client_cert": {
+              "label": "Client certificate (PEM)",
+              "description": "PEM-encoded client certificate for mutual TLS (mTLS)."
+            },
+            "tls_client_key": {
+              "label": "Client private key (PEM)",
+              "description": "PEM-encoded client private key for mutual TLS (mTLS); stored via host secret binding."
+            },
+            "tls_insecure_skip_verify": {
+              "label": "Skip TLS verification",
+              "description": "Accept broker certificates without verification (development only)."
+            },
+            "client_id": {
+              "label": "Client ID",
+              "description": "Optional client.id reported to brokers; defaults to dbx-plugin-kafka."
+            },
+            "read_only": {
+              "label": "Read-only mode",
+              "description": "Reject all write operations (produce, topic create/alter/delete, group delete and offset reset, ACL writes)."
+            },
+            "allow_delete": {
+              "label": "Allow delete operations",
+              "description": "Allow delete-class operations (topics/delete, groups/delete, acls/delete); has no effect while read-only is on."
+            }
+          }
+        },
+        "io.dbx.kafka.workbench": {
+          "label": "Kafka Workbench",
+          "description": "Browse topics, consume and produce messages, and manage consumer groups and ACLs."
+        }
+      }
+    },
+    "es": {
+      "name": "DBX Kafka",
+      "description": "Plugin de consola Kafka para DBX: topics y particiones, producción/consumo de mensajes con filtros y decodificación, grupos de consumidores con lag y reset de offsets, ACL, consumo en streaming y exportación.",
+      "contributions": {
+        "io.dbx.kafka.connection": {
+          "label": "Clúster Kafka",
+          "description": "Conexión a Apache Kafka mediante PLAINTEXT, TLS y SASL (PLAIN/SCRAM); credenciales gestionadas por el host mediante secret binding.",
+          "fields": {
+            "display_name": {
+              "label": "Nombre de la conexión",
+              "description": "Nombre que se muestra en la lista de conexiones."
+            },
+            "bootstrap_servers": {
+              "label": "Servidores bootstrap",
+              "description": "Lista de brokers separada por comas o saltos de línea (host:puerto)."
+            },
+            "security_protocol": {
+              "label": "Protocolo de seguridad",
+              "description": "Protocolo utilizado para conectarse a los brokers.",
+              "options": {
+                "PLAINTEXT": "PLAINTEXT (sin cifrado)",
+                "SSL": "TLS (SSL)",
+                "SASL_PLAINTEXT": "SASL sobre PLAINTEXT",
+                "SASL_SSL": "SASL sobre TLS"
+              }
+            },
+            "sasl_mechanism": {
+              "label": "Mecanismo SASL",
+              "description": "Mecanismo SASL usado para SASL_PLAINTEXT / SASL_SSL.",
+              "options": {
+                "PLAIN": "PLAIN",
+                "SCRAM-SHA-256": "SCRAM-SHA-256",
+                "SCRAM-SHA-512": "SCRAM-SHA-512"
+              }
+            },
+            "sasl_username": {
+              "label": "Usuario SASL",
+              "description": "Nombre de usuario para el mecanismo SASL."
+            },
+            "sasl_password": {
+              "label": "Contraseña SASL",
+              "description": "Contraseña para el mecanismo SASL; se guarda mediante secret binding del host, el plugin nunca la persiste."
+            },
+            "tls_ca_cert": {
+              "label": "Certificado CA (PEM)",
+              "description": "Certificado CA en formato PEM usado para verificar los certificados de los brokers; vacío usa las raíces del sistema."
+            },
+            "tls_client_cert": {
+              "label": "Certificado de cliente (PEM)",
+              "description": "Certificado de cliente en formato PEM para TLS mutuo (mTLS)."
+            },
+            "tls_client_key": {
+              "label": "Clave privada del cliente (PEM)",
+              "description": "Clave privada del cliente en formato PEM para TLS mutuo (mTLS); se guarda mediante secret binding del host."
+            },
+            "tls_insecure_skip_verify": {
+              "label": "Omitir verificación TLS",
+              "description": "Acepta los certificados de los brokers sin verificarlos (solo desarrollo)."
+            },
+            "client_id": {
+              "label": "ID de cliente",
+              "description": "client.id opcional reportado a los brokers; por defecto dbx-plugin-kafka."
+            },
+            "read_only": {
+              "label": "Modo de solo lectura",
+              "description": "Rechaza todas las operaciones de escritura (producir mensajes, crear/modificar/eliminar topics, eliminar grupos y reset de offsets, escrituras ACL)."
+            },
+            "allow_delete": {
+              "label": "Permitir operaciones de borrado",
+              "description": "Permite operaciones de borrado (topics/delete, groups/delete, acls/delete); sin efecto en modo de solo lectura."
+            }
+          }
+        },
+        "io.dbx.kafka.workbench": {
+          "label": "Banco de trabajo Kafka",
+          "description": "Explore topics, consuma y produzca mensajes y gestione grupos de consumidores y ACL."
+        }
+      }
+    },
+    "it": {
+      "name": "DBX Kafka",
+      "description": "Plugin console Kafka per DBX: topic e partizioni, produzione/consumo di messaggi con filtri e decodifica, gruppi di consumatori con lag e reset degli offset, ACL, consumo in streaming ed esportazione.",
+      "contributions": {
+        "io.dbx.kafka.connection": {
+          "label": "Cluster Kafka",
+          "description": "Connessione ad Apache Kafka tramite PLAINTEXT, TLS e SASL (PLAIN/SCRAM); credenziali gestite dall'host tramite secret binding.",
+          "fields": {
+            "display_name": {
+              "label": "Nome connessione",
+              "description": "Nome mostrato nell'elenco delle connessioni."
+            },
+            "bootstrap_servers": {
+              "label": "Server bootstrap",
+              "description": "Elenco di broker separato da virgole o a capo (host:porta)."
+            },
+            "security_protocol": {
+              "label": "Protocollo di sicurezza",
+              "description": "Protocollo usato per connettersi ai broker.",
+              "options": {
+                "PLAINTEXT": "PLAINTEXT (nessuna crittografia)",
+                "SSL": "TLS (SSL)",
+                "SASL_PLAINTEXT": "SASL su PLAINTEXT",
+                "SASL_SSL": "SASL su TLS"
+              }
+            },
+            "sasl_mechanism": {
+              "label": "Meccanismo SASL",
+              "description": "Meccanismo SASL usato per SASL_PLAINTEXT / SASL_SSL.",
+              "options": {
+                "PLAIN": "PLAIN",
+                "SCRAM-SHA-256": "SCRAM-SHA-256",
+                "SCRAM-SHA-512": "SCRAM-SHA-512"
+              }
+            },
+            "sasl_username": {
+              "label": "Nome utente SASL",
+              "description": "Nome utente per il meccanismo SASL."
+            },
+            "sasl_password": {
+              "label": "Password SASL",
+              "description": "Password per il meccanismo SASL; salvata tramite secret binding dell'host, mai persistita dal plugin."
+            },
+            "tls_ca_cert": {
+              "label": "Certificato CA (PEM)",
+              "description": "Certificato CA in formato PEM usato per verificare i certificati dei broker; vuoto usa le radici di sistema."
+            },
+            "tls_client_cert": {
+              "label": "Certificato client (PEM)",
+              "description": "Certificato client in formato PEM per TLS reciproco (mTLS)."
+            },
+            "tls_client_key": {
+              "label": "Chiave privata del client (PEM)",
+              "description": "Chiave privata del client in formato PEM per TLS reciproco (mTLS); salvata tramite secret binding dell'host."
+            },
+            "tls_insecure_skip_verify": {
+              "label": "Salta verifica TLS",
+              "description": "Accetta i certificati dei broker senza verificarli (solo sviluppo)."
+            },
+            "client_id": {
+              "label": "ID client",
+              "description": "client.id facoltativo riportato ai broker; predefinito dbx-plugin-kafka."
+            },
+            "read_only": {
+              "label": "Modalità sola lettura",
+              "description": "Rifiuta tutte le operazioni di scrittura (produzione messaggi, creazione/modifica/eliminazione topic, eliminazione gruppi e reset offset, scritture ACL)."
+            },
+            "allow_delete": {
+              "label": "Consenti operazioni di eliminazione",
+              "description": "Consente le operazioni di eliminazione (topics/delete, groups/delete, acls/delete); senza effetto in modalità sola lettura."
+            }
+          }
+        },
+        "io.dbx.kafka.workbench": {
+          "label": "Banco di lavoro Kafka",
+          "description": "Sfoglia i topic, consuma e produci messaggi e gestisci gruppi di consumatori e ACL."
+        }
+      }
+    },
+    "ja": {
+      "name": "DBX Kafka",
+      "description": "DBX 用 Kafka コンソールプラグイン: トピックとパーティション、フィルタリング/デコード付きメッセージ送受信、コンシューマーグループ（ラグと offset リセット）、ACL、ストリーミング消費とエクスポート。",
+      "contributions": {
+        "io.dbx.kafka.connection": {
+          "label": "Kafka クラスター",
+          "description": "PLAINTEXT・TLS・SASL（PLAIN/SCRAM）で Apache Kafka に接続。認証情報はホストの secret binding で管理され、プラグインは永続化しません。",
+          "fields": {
+            "display_name": {
+              "label": "接続名",
+              "description": "接続一覧に表示される名前。"
+            },
+            "bootstrap_servers": {
+              "label": "Bootstrap サーバー",
+              "description": "カンマまたは改行区切りのブローカーリスト（host:port）。"
+            },
+            "security_protocol": {
+              "label": "セキュリティプロトコル",
+              "description": "ブローカーとの接続に使用するプロトコル。",
+              "options": {
+                "PLAINTEXT": "PLAINTEXT（暗号化なし）",
+                "SSL": "TLS（SSL）",
+                "SASL_PLAINTEXT": "SASL over PLAINTEXT",
+                "SASL_SSL": "SASL over TLS"
+              }
+            },
+            "sasl_mechanism": {
+              "label": "SASL メカニズム",
+              "description": "SASL_PLAINTEXT / SASL_SSL で使用する SASL メカニズム。",
+              "options": {
+                "PLAIN": "PLAIN",
+                "SCRAM-SHA-256": "SCRAM-SHA-256",
+                "SCRAM-SHA-512": "SCRAM-SHA-512"
+              }
+            },
+            "sasl_username": {
+              "label": "SASL ユーザー名",
+              "description": "SASL 認証に使用するユーザー名。"
+            },
+            "sasl_password": {
+              "label": "SASL パスワード",
+              "description": "SASL 認証に使用するパスワード。ホストの secret binding で保存され、プラグインは永続化しません。"
+            },
+            "tls_ca_cert": {
+              "label": "CA 証明書（PEM）",
+              "description": "ブローカー証明書の検証に使う PEM 形式の CA 証明書。空の場合はシステムのルート証明書を使用します。"
+            },
+            "tls_client_cert": {
+              "label": "クライアント証明書（PEM）",
+              "description": "相互 TLS（mTLS）に使う PEM 形式のクライアント証明書。"
+            },
+            "tls_client_key": {
+              "label": "クライアント秘密鍵（PEM）",
+              "description": "相互 TLS（mTLS）に使う PEM 形式のクライアント秘密鍵。ホストの secret binding で保存されます。"
+            },
+            "tls_insecure_skip_verify": {
+              "label": "TLS 検証をスキップ",
+              "description": "ブローカー証明書を検証せずに受け入れます（開発環境向け）。"
+            },
+            "client_id": {
+              "label": "クライアント ID",
+              "description": "ブローカーに報告される任意の client.id。既定は dbx-plugin-kafka。"
+            },
+            "read_only": {
+              "label": "読み取り専用",
+              "description": "すべての書き込み操作を拒否します（メッセージ送信、トピックの作成/変更/削除、コンシューマーグループ削除と offset リセット、ACL 書き込み）。"
+            },
+            "allow_delete": {
+              "label": "削除系操作を許可",
+              "description": "削除系操作（topics/delete、groups/delete、acls/delete）を許可します。読み取り専用では無効です。"
+            }
+          }
+        },
+        "io.dbx.kafka.workbench": {
+          "label": "Kafka ワークベンチ",
+          "description": "トピックの閲覧、メッセージの送受信、コンシューマーグループと ACL の管理。"
+        }
+      }
+    },
+    "pt-BR": {
+      "name": "DBX Kafka",
+      "description": "Plugin de console Kafka para o DBX: tópicos e partições, produção/consumo de mensagens com filtros e decodificação, grupos de consumidores com lag e redefinição de offsets, ACLs, consumo em streaming e exportação.",
+      "contributions": {
+        "io.dbx.kafka.connection": {
+          "label": "Cluster Kafka",
+          "description": "Conexão ao Apache Kafka via PLAINTEXT, TLS e SASL (PLAIN/SCRAM); credenciais gerenciadas pelo host via secret binding.",
+          "fields": {
+            "display_name": {
+              "label": "Nome da conexão",
+              "description": "Nome exibido na lista de conexões."
+            },
+            "bootstrap_servers": {
+              "label": "Servidores bootstrap",
+              "description": "Lista de brokers separada por vírgulas ou quebras de linha (host:porta)."
+            },
+            "security_protocol": {
+              "label": "Protocolo de segurança",
+              "description": "Protocolo usado para conectar aos brokers.",
+              "options": {
+                "PLAINTEXT": "PLAINTEXT (sem criptografia)",
+                "SSL": "TLS (SSL)",
+                "SASL_PLAINTEXT": "SASL sobre PLAINTEXT",
+                "SASL_SSL": "SASL sobre TLS"
+              }
+            },
+            "sasl_mechanism": {
+              "label": "Mecanismo SASL",
+              "description": "Mecanismo SASL usado para SASL_PLAINTEXT / SASL_SSL.",
+              "options": {
+                "PLAIN": "PLAIN",
+                "SCRAM-SHA-256": "SCRAM-SHA-256",
+                "SCRAM-SHA-512": "SCRAM-SHA-512"
+              }
+            },
+            "sasl_username": {
+              "label": "Usuário SASL",
+              "description": "Nome de usuário para o mecanismo SASL."
+            },
+            "sasl_password": {
+              "label": "Senha SASL",
+              "description": "Senha para o mecanismo SASL; armazenada via secret binding do host, nunca persistida pelo plugin."
+            },
+            "tls_ca_cert": {
+              "label": "Certificado CA (PEM)",
+              "description": "Certificado CA em formato PEM usado para verificar os certificados dos brokers; vazio usa as raízes do sistema."
+            },
+            "tls_client_cert": {
+              "label": "Certificado do cliente (PEM)",
+              "description": "Certificado do cliente em formato PEM para TLS mútuo (mTLS)."
+            },
+            "tls_client_key": {
+              "label": "Chave privada do cliente (PEM)",
+              "description": "Chave privada do cliente em formato PEM para TLS mútuo (mTLS); armazenada via secret binding do host."
+            },
+            "tls_insecure_skip_verify": {
+              "label": "Ignorar verificação TLS",
+              "description": "Aceita os certificados dos brokers sem verificar (apenas desenvolvimento)."
+            },
+            "client_id": {
+              "label": "ID do cliente",
+              "description": "client.id opcional informado aos brokers; padrão dbx-plugin-kafka."
+            },
+            "read_only": {
+              "label": "Modo somente leitura",
+              "description": "Rejeita todas as operações de escrita (produzir mensagens, criar/alterar/excluir topics, excluir grupos e redefinir offsets, escritas de ACL)."
+            },
+            "allow_delete": {
+              "label": "Permitir operações de exclusão",
+              "description": "Permite operações de exclusão (topics/delete, groups/delete, acls/delete); sem efeito no modo somente leitura."
+            }
+          }
+        },
+        "io.dbx.kafka.workbench": {
+          "label": "Bancada de trabalho Kafka",
+          "description": "Navegue por tópicos, consuma e produza mensagens e gerencie grupos de consumidores e ACLs."
+        }
+      }
+    }
+  }
+}

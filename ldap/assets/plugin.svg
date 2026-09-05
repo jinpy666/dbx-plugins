@@ -1,14 +1,7 @@
 <!-- Original DBX LDAP workbench icon. Licensed under the repository Apache-2.0 license. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DBX LDAP">
-  <defs>
-    <linearGradient id="ldap-bg" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#6d5dfc"/>
-      <stop offset="1" stop-color="#2cc9a7"/>
-    </linearGradient>
-  </defs>
-  <rect width="64" height="64" rx="14" fill="url(#ldap-bg)"/>
-  <rect x="24" y="14" width="16" height="10" rx="3" fill="#fff"/>
-  <path d="M32 26v8M32 34h-13v6M32 34h13v6" fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="2.5" stroke-linecap="round"/>
-  <rect x="15" y="40" width="14" height="10" rx="3" fill="#fff" fill-opacity="0.95"/>
-  <rect x="35" y="40" width="14" height="10" rx="3" fill="#fff" fill-opacity="0.95"/>
+  <rect x="21" y="4" width="22" height="16" rx="5" fill="#6d5dfc"/>
+  <path d="M32 20v8M14 28v8M50 28v8M14 28h36" fill="none" stroke="#6d5dfc" stroke-width="4.5" stroke-linecap="round"/>
+  <rect x="4" y="36" width="20" height="16" rx="5" fill="#6d5dfc"/>
+  <rect x="40" y="36" width="20" height="16" rx="5" fill="#6d5dfc"/>
 </svg>

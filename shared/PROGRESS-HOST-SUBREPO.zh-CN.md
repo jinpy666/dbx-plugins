@@ -390,3 +390,93 @@ files PROGRESS-P-FILES §14。
 - **构建环境注意**：`pnpm tauri build --debug` 需
   `PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.97.1-aarch64-apple-darwin`，
   否则 /usr/local/bin/cargo(1.69) 报 lock file v4 / rustc 版本不足。
+
+## 17. 插件 tab 激活后 tab 条整体消失（复现 + 根因 + 修复）（2026-09-05）
+
+- **症状**：四插件（ssh/ldap/files/kafka）点击连接后，右侧出现插件 workbench
+  但**没有任何 tab 条**，插件区占满整个右列，无法看到/切换其他 tab。
+- **根因（定位）**：merge `252f60d6ad`（2026-09-04 引入上游 SqlEditorWorkspace
+  分栏布局）后，常规 tab 条从 AppTabBar（合并前常驻、含 plugin-workbench
+  分支）迁移到 `SqlEditorWorkspace → EditorGroup → EditorGroupTabBar`；而本地
+  always-mounted 插件图层（保 iframe 会话）激活时把整个 SqlEditorWorkspace
+  `display:none`（App.vue `v-show="activeTab?.mode !== 'plugin-workbench'"`），
+  **连带隐藏 tab 条**——插件 tab 一激活，全列只剩插件 iframe，无从切换。
+- **与第 16 节结论的关系**：16 节 host-e2e"点击路径正常"只验证了 tab 创建与
+  终端可用，未检查 tab 条可见性；视觉回归在当前构建（含 a1c682147）即可复现，
+  非旧版应用问题。
+- **修复（host/ 3 文件 + 2 spec）**：
+  - `EditorGroup.vue`：新增 `contentSuppressed` prop——隐藏工具栏+内容列
+    （v-show，iframe 等内容不进 DOM 移动），保留 tab 条；根节点高度由
+    `h-full` 切换为 suppressed 时 `h-auto`（收成条状）。
+  - `SqlEditorWorkspace.vue`：新增 `contentSuppressed` 分支——suppressed 时
+    跳过 Splitpanes/共享结果面，直接按组渲染 `EditorGroup`（仅 tab 条，
+    事件绑定与正常模式一致，多组分栏也各留一条）。
+  - `App.vue`：外层 wrapper 不再 v-show 隐藏，改为
+    `:class="plugin-workbench 激活 ? 'flex-none' : 'flex-1'"` +
+    `:content-suppressed="..."`；插件图层保持 flex-1 常驻，tab 条可见可切换。
+  - `SqlEditorWorkspace.mount.spec.ts`：新增 suppressed 契约用例（无
+    Splitpanes/结果面、组条仍在且带 content-suppressed）。
+  - `appContentSurfaces.contract.spec.ts`：守卫断言同步
+    `pluginCenterActive`（此前合并插件中心时就已过期失败），并新增"插件
+    tab 激活必须收条而非整体隐藏"反回归断言（禁止
+    `activeTab?.mode !== 'plugin-workbench'` 的 v-show 复活）。
+- **验证**：`pnpm typecheck` 0 错；`vitest run src/components/layout` 22 文件
+  153 用例全绿；全仓 vitest 与基线（stash 前后对比）失败集合完全一致
+  （10 个存量失败：ConnectionDialog/GBase/docs-export/app-tests 工具栏与
+  侧栏预算等，与本次无关）。**待真机复验**：重建 DBX.app 后点击四插件
+  连接，确认 tab 条可见、插件区不再占满、tab 切换正常。
+- **遗留**：上游无插件框架（origin/main 无 plugin-workbench 处理），该
+  always-mounted 层与 SqlEditorWorkspace 的适配属于本地补丁，后续每次
+  host-sync 后需跑本节 contract spec 防回归。
+
+## 18. 本地二开补丁：启动恢复插件 tab 自动重放连接生命周期（2026-09-05）
+
+- **现象**：DBX 启动后上次的插件会话 tab 自动恢复打开，但连接信息已丢失
+  （sidecar 重启后内存连接注册表为空），终端/工作台报
+  `Connection is not active`，必须关闭 tab 再从左侧连接点击才能用。
+- **根因**：启动恢复路径（`App.vue initApp → queryStore.initOpenTabs`）只
+  还原 tab 元数据（含旧 `pluginWorkbench.context`）并重建插件 webview，
+  **从不重放连接生命周期**；手动点击连接走
+  `openPluginConnection → ensureConnected → connection/connect` 才把含凭据
+  的 ConnectionConfig 注入 sidecar。两条路径的关键差异即
+  `ensureConnected` 的缺失。
+- **修复（host/ 2 文件 + 1 spec）**：
+  - `queryStore.ts` 新增 `reconnectRestoredPluginTabs()`：收集恢复的
+    `plugin-workbench` / `plugin-filesystem` tab 的去重 connectionId
+    （active tab 的连接优先），逐个 `ensureConnected(id, { activate:false })`
+    重放连接（activate:false 避免覆盖 `restoreActiveConnectionContext`
+    选定的活动连接）；单连接失败仅 console.warn 不中断其余重放。
+  - `App.vue initApp`：恢复 barrier 完成后立即 fire-and-forget 调用，
+    抢在插件 webview 首次 `session/open` 之前；不阻塞启动（交互式密码
+    弹窗 / sidecar 冷启动都不会卡启动链）。
+  - `queryStore.reconnectRestoredPluginTabs.spec.ts`：去重/优先级/
+    activate:false/单连接失败不中断/无插件 tab 不重放 共 3 用例。
+- **配套（ssh 插件，frontend 1 文件）**：ssh `openSession` 此前把
+  `Connection is not active` 判为"重试永不可能成功"立即失败（见
+  PROGRESS-P-SSH 0.4.1 轮）。宿主重放 connect 后该假设仅在**非 boot**
+  路径成立：`openSession` 增加 `bootRestore` 参数，boot 恢复路径下
+  inactive 错误与其它快失败一起走原有 3 次（2/4/6s）有界重试，窗口内
+  自愈；重试耗尽仍回落七语 `connectionInactive` 指引。手动重连路径
+  保持立即失败不变。无新增用户可见文案（七语无改动）。
+- **验证**：host `vue-tsc` 0 错；`vitest run src/stores/__tests__`
+  73 文件 733 用例全绿。ssh 前端 `vue-tsc` 0 错、`vitest run` 12 文件
+  119 用例全绿。**待真机复验**：重建 DBX.app → 打开 ssh 连接 → 退出
+  重启 DBX，确认恢复的插件 tab 自动重连成功（保存凭据场景免交互）；
+  未存凭据场景预期弹密码框，取消后 tab 内仍显示 connectionInactive
+  指引。
+- **17a. 补遗（同日第二根因）：侧栏点击打开的插件 tab 不入分组、条上不显示**
+  - **症状**：上一修复后，自动/恢复打开的插件连接 tab 条正常，但**点击左侧
+    连接**新开的插件 tab 仍不上条（条有占位、tab 缺席）。
+  - **根因**：`openPluginWorkbench` / `openPluginFilesystem` 用裸
+    `tabs.push + activeTabId` 创建 tab，未走 `registerOpenTab` ——分栏布局下
+    tab 条按 `groups[].tabIds` 渲染，无主 tab 永远不显示（store 注释明确
+    "no post-flush watcher repairing"；恢复路径因走 `normalizeGroups()` 收养
+    无主 tab 才显得"自动打开正常"）。该缺陷与 suppressed 无关，正常模式下
+    同样不上条。
+  - **修复**：两函数改走 `registerOpenTab(tab)`（进 focused 组并激活）；
+    复用已有 tab 时若其无主（旧版本遗留）先 `ensureTabInWorkspace` 收养再
+    `switchTab`（保持不替换 context 的防深重载规则）。
+  - **测试**：`queryStore.openPluginWorkbench.spec.ts` 新增 2 用例（新 tab
+    必须入 focused 组且为组活跃 tab；无主遗留 tab 重开时收养且 context 不变），
+    先失败后实现；`vitest run src/stores src/components/layout` 95 文件 888
+    用例全绿；`pnpm typecheck` 0 错。

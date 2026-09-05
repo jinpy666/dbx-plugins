@@ -38,6 +38,11 @@
 #                                               #   edits in conflicted hunks are
 #                                               #   DROPPED). Default manual: stop
 #                                               #   and leave the merge in progress.
+#   scripts/release-local.sh --no-gc           # skip the post-release workspace
+#                                               #   garbage collection (Rust build
+#                                               #   caches, .mimosa agent sessions,
+#                                               #   old logs); scripts/gc.sh can
+#                                               #   also be run standalone
 # Fingerprints/logs live in .release-state/ (gitignored) — delete it to reset.
 set -euo pipefail
 
@@ -65,7 +70,7 @@ mkdir -p "$STATE_DIR/logs"
 T0="$(date +%s)"
 
 SYNC_HOST=0; SKIP_HOST=0; SKIP_PLUGINS=0; FORCE_HOST=0; FORCE_PLUGINS=0
-SKIP_BUMP=0; NO_LAUNCH=0; REINSTALL_PLUGINS=0; MERGE_POLICY=manual
+SKIP_BUMP=0; NO_LAUNCH=0; REINSTALL_PLUGINS=0; MERGE_POLICY=manual; NO_GC=0
 PLUGIN_SEL=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -77,6 +82,7 @@ while [ $# -gt 0 ]; do
     --force-plugins) FORCE_PLUGINS=1 ;;
     --no-bump) SKIP_BUMP=1 ;;
     --no-launch) NO_LAUNCH=1 ;;
+    --no-gc) NO_GC=1 ;;
     --isolated) APP_DATA="$ROOT/shared/host-e2e/app-data" ;;
     --reinstall-plugins) REINSTALL_PLUGINS=1 ;;
     --merge-policy=*) MERGE_POLICY="${1#--merge-policy=}" ;;
@@ -177,7 +183,7 @@ host_fingerprint() {
 }
 
 # ---------------------------------------------------------------------------
-log "step 1/5: host worktree ($HOST_WORKTREE)"
+log "step 1/6: host worktree ($HOST_WORKTREE)"
 cd "$HOST_WORKTREE"
 [ -d .git ] || { echo "host worktree not found: $HOST_WORKTREE" >&2; exit 1; }
 if [ "$SYNC_HOST" = 1 ]; then
@@ -231,7 +237,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-log "step 2/5: plan plugin builds (parallel, skip unchanged)"
+log "step 2/6: plan plugin builds (parallel, skip unchanged)"
 TO_BUILD=()
 if [ "$SKIP_PLUGINS" = 0 ]; then
   for P in "${PLUGINS[@]}"; do
@@ -274,7 +280,7 @@ if [ "${#TO_BUILD[@]}" -gt 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-log "step 3/5: build host DBX.app (debug bundle, skip if unchanged)"
+log "step 3/6: build host DBX.app (debug bundle, skip if unchanged)"
 HOST_APP="$HOST_WORKTREE/target/debug/bundle/macos/DBX.app"
 HOST_FP="$(host_fingerprint)"
 STORED_HOST_FP="$(cat "$STATE_DIR/host.fp" 2>/dev/null || true)"
@@ -324,7 +330,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-log "step 4/5: wait for plugin builds"
+log "step 4/6: wait for plugin builds"
 if [ "${#BUILD_PIDS[@]}" -eq 0 ]; then
   echo "nothing to wait for"
 else
@@ -345,7 +351,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-log "step 5/5: install plugins -> $APP_DATA/plugins"
+log "step 5/6: install plugins -> $APP_DATA/plugins"
 cd "$ROOT"
 for P in "${PLUGINS[@]}"; do
   ID_VER="$(python3 - "$ROOT/$P/manifest.json" <<'PY'
@@ -369,6 +375,14 @@ for pid in sorted(p.name for p in store.iterdir() if p.is_dir()):
     versions = sorted((store / pid / "versions").glob("*")) if (store / pid / "versions").is_dir() else []
     print(f"  {pid}: {[v.name for v in versions]}")
 PY
+
+# ---------------------------------------------------------------------------
+if [ "$NO_GC" = 0 ]; then
+  log "step 6/6: garbage collection"
+  "$ROOT/scripts/gc.sh" || echo "WARN: garbage collection failed — release is still complete" >&2
+else
+  echo "skip garbage collection (--no-gc)"
+fi
 
 # ---------------------------------------------------------------------------
 if [ "$NO_LAUNCH" = 0 ]; then

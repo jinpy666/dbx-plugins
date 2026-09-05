@@ -1,17 +1,18 @@
 ---
 name: dbx-plugin-dev
-description: DBX 插件族（ssh / ldap / files）通用开发规范与构建、测试、打包、安装全流程。当用户要求开发、构建、测试、打包或安装任一插件，排查 sidecar / 打包 / 安装问题，或需要确认插件工程硬性约定（七语、完成定义四件套、协议命名、安全红线）时使用。
+description: DBX 插件族（ssh / ldap / files / kafka）通用开发规范与构建、测试、打包、安装全流程。当用户要求开发、构建、测试、打包或安装任一插件，排查 sidecar / 打包 / 安装问题，或需要确认插件工程硬性约定（七语、完成定义四件套、协议命名、安全红线）时使用。
 ---
 
 # DBX 插件族通用开发规范
 
-工作区 `~/btroot/dbx-plugins` 聚焦三插件：`ssh/`（Rust，已上线）、
-`ldap/`（Go，stdio-jsonl）、`files/`（Rust + OpenDAL，stdio-framed）。
+工作区 `~/btroot/dbx-plugins` 聚焦四插件：`ssh/`（Rust，已上线）、
+`ldap/`（Go，stdio-jsonl）、`files/`（Rust + OpenDAL，stdio-framed）、
+`kafka/`（Go + franz-go，stdio-jsonl）。
 每个插件结构统一：`manifest.json` + `dbx-plugin.toml` + `frontend/`（Vue/Vite）
 + `backend/`（sidecar）+ `scripts/`（自动化）+ `docs/`。
 
-各插件专项入口见 skills：`dbx-ssh-dev`（用户级）、`dbx-ldap-dev`、
-`dbx-files-dev`、`dbx-host-e2e`。
+各插件专项入口见 skills：`dbx-ssh-sftp-dev`（用户级）、`dbx-ldap-dev`、
+`dbx-files-dev`、`dbx-kafka-dev`、`dbx-host-e2e`。
 
 ## 环境准备（一次性）
 
@@ -24,7 +25,7 @@ npm install -g @dbx-app/plugin-cli @dbx-app/cli @dbx-app/mcp-server
 # 旧相邻路径 ~/btroot/dbx-plugin-host-worktree 为指向 host/ 的符号链接）
 ```
 
-## 硬性约定（三插件共同遵守）
+## 硬性约定（四插件共同遵守）
 
 1. **协议命名**：sidecar 方法 `<域>/<动作>`；参数/返回字段 camelCase；同族方法
    参数保持一致。新增方法必须同步该插件 `docs/` 下的协议文档。

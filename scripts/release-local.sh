@@ -177,9 +177,18 @@ plugin_fingerprint() {
   printf '%s %s\n' "$rest" "$ver"
 }
 host_fingerprint() {
+  # Hash dirty-file CONTENTS too: a porcelain-only list can't see edits to
+  # already-modified files, which silently skipped host rebuilds after
+  # in-place frontend fixes (the "no effect" bug of 2026-09-05).
+  local status diff untracked
+  status="$(git -C "$HOST_WORKTREE" status --porcelain | shasum -a 256 | cut -d' ' -f1)"
+  diff="$(git -C "$HOST_WORKTREE" diff HEAD | shasum -a 256 | cut -d' ' -f1)"
+  untracked="$(git -C "$HOST_WORKTREE" ls-files --others --exclude-standard -z \
+    | xargs -0 -n1 -I{} shasum -a 256 -- "$HOST_WORKTREE/{}" 2>/dev/null \
+    | shasum -a 256 | cut -d' ' -f1)"
   printf '%s %s\n' \
     "$(git -C "$HOST_WORKTREE" rev-parse HEAD)" \
-    "$(git -C "$HOST_WORKTREE" status --porcelain | shasum -a 256 | cut -d' ' -f1)"
+    "$(printf '%s\n%s\n%s\n' "$status" "$diff" "$untracked" | shasum -a 256 | cut -d' ' -f1)"
 }
 
 # ---------------------------------------------------------------------------

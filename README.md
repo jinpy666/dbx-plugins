@@ -11,7 +11,7 @@ dbx-plugins/
 ├── README.md          # 本文件（结构说明 + 实施入口）
 ├── AGENTS.md          # 工作区规约（硬性规则、文档入口、skills 索引）
 ├── .agents/skills/    # 触发式工程 skills：dbx-plugin-dev / dbx-host-e2e /
-│                      #   dbx-ldap-dev / dbx-files-dev / dbx-web-docker
+│                      #   dbx-ldap-dev / dbx-files-dev / dbx-kafka-dev / dbx-web-docker
 ├── shared/            # 公共目录：跨插件方案与基线文档（插件族共同遵循）
 │   ├── PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md   # 总提案（定稿，含全部决策记录）
 │   ├── IMPL_PLAN_M0_COMMON.zh-CN.md           # M0 公共基线（SDK 契约/lifecycle/审计/测试基建/roadmap）
@@ -20,7 +20,7 @@ dbx-plugins/
 ├── scripts/           # 工作区级脚本：release-local / release-docker / host-sync
 ├── host/              # DBX 宿主子仓库（git submodule → t8y2/dbx，插件框架分支 + 本地二开提交）
 ├── deploy/web/        # DBX web Docker 发版（Dockerfile + entrypoint + compose，
-│                      #   三插件 Linux .dbxp 烤进镜像，容器首启自动安装）
+│                      #   四插件 Linux .dbxp 烤进镜像，容器首启自动安装）
 ├── ssh/          # 插件 1：io.dbx.ssh（Rust）
 │   └── docs/          # 本插件对标清单/协议/测试矩阵（含 batch-send 等增强跟踪）
 ├── ldap/              # 插件 2：io.dbx.ldap（Go sidecar）
@@ -61,15 +61,16 @@ dbx-plugins/
   旧相邻路径 `~/btroot/dbx-plugin-host-worktree` 保留为指向 `host/` 的符号链接，
   兼容历史文档与外部引用。
 - 参照源：`~/GolandProjects/tiny-rdm`（能力来源，只读）。
-- ssh 开发规范 skill：`dbx-ssh-dev`（构建/测试/安装全流程，环境准备同源适用）。
+- ssh 专项 skill：`dbx-ssh-sftp-dev`（用户级，构建/测试/安装全流程，环境
+  准备同源适用）。
 
 ## 发版
 
 - **日常跟上游**：`scripts/host-sync.sh sync`（宿主子仓库拉取并合并上游，
   保留本地二开提交；完成后在父仓库提交 submodule 指针）。
 - **本地 macOS 应用**：`scripts/release-local.sh`（指纹比对，host/插件无变更
-  自动跳过；三插件并发构建；默认不再拉上游，`--sync-host` 手动同步；完成后
+  自动跳过；四插件并发构建；默认不再拉上游，`--sync-host` 手动同步；完成后
   发布 `/Applications` → 安装有变更的插件 → 拉起）。
-- **服务器 web 访问**：`scripts/release-docker.sh`（构建含三插件 Linux .dbxp 的
+- **服务器 web 访问**：`scripts/release-docker.sh`（构建含四插件 Linux .dbxp 的
   dbx-web 镜像，容器首启自动安装；机制与部署见 skill `dbx-web-docker` 与
   `deploy/web/`）。

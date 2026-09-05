@@ -27,6 +27,7 @@ kafka 插件，见 `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md`）。
 | `dbx-host-e2e` | shared/host-e2e 宿主端到端验证（隔离 app-data 安装） |
 | `dbx-ldap-dev` | LDAP 插件专项（Go、stdio-jsonl、认证矩阵、测试容器） |
 | `dbx-files-dev` | Files 插件专项（OpenDAL、二进制通道、异步 job 传输） |
+| `dbx-kafka-dev` | Kafka 插件专项（Go + franz-go、stdio-jsonl、dev 测试集群、Schema Registry） |
 | `dbx-web-docker` | web Docker 发版（deploy/web 镜像构建、插件自动安装、服务器部署） |
 | `dbx-ssh-sftp-dev`（用户级） | ssh 插件专项（russh、sudo/sftp_ext、宿主 worktree 细节） |
 

@@ -6,7 +6,7 @@ description: 用 shared/host-e2e 做宿主端到端验证：把插件 .dbxp 安�
 # DBX 宿主端到端验证（shared/host-e2e）
 
 `shared/host-e2e/install.sh` 封装宿主 worktree 的官方 PluginPackageInstaller
-（checksum + 兼容性校验），对三插件通用；默认使用隔离 app-data，**绝不触碰
+（checksum + 兼容性校验），对四插件通用；默认使用隔离 app-data，**绝不触碰
 用户真实 DBX 数据目录**。
 
 ## 前置

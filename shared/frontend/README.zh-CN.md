@@ -30,3 +30,4 @@ import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
 | 模块 | 用途 | 接入方 |
 | --- | --- | --- |
 | `binaryEvent.ts` | 宿主桥 binary 事件双形状归一化（`data: Uint8Array` / 旧 `dataBase64`） | ssh（终端输出帧、SFTP 下载分块）、files（files/download 分块） |
+| `themeSync.ts` | 宿主主题令牌 → 插件 CSS 变量桥（`themeBridgeCss` / `installHostThemeBridge`）：把 `--background` 等插件变量声明为宿主 `--color-*`/`--radius-*`/`--font-*` 令牌的引用，首绘即命中宿主主题、主题变化经 SDK 令牌更新自动跟随；含 `data-dbx-theme` color-scheme 同步。宿主无令牌时回退暗色规范值（optional 降级） | ssh / ldap / files / kafka（`main.ts` 挂载前 `installHostThemeBridge()`，各带薄 spec） |

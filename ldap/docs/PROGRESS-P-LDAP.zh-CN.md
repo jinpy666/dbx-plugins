@@ -303,3 +303,12 @@ dnTree 5）；build 过；后端未动。浏览器实测（5182 fixture，截图
 **剩余风险**：固定行高假设（行高 28px 由 CSS 常量约定，改样式需同步
 TREE_ROW_HEIGHT）；键盘导航（上下键）沿用以 DOM focus 为准，依赖窗口内
 渲染行为未单测；预设持久化候选沿袭下轮。
+
+## 主题令牌桥（2026-09-05）
+
+- 接入 `shared/frontend/themeSync.ts`：`main.ts` 挂载前 `installHostThemeBridge()`，
+  插件变量桥接宿主 `--color-*` 令牌——首绘即命中宿主主题（不再等 init 后 JS 回写），
+  主题切换自动跟随，primary/radius/字体纳入同步面。宿主无令牌（mock/旧宿主）回退
+  暗色规范值，行为不变。
+- 验证：`vue-tsc` 0 错；`vitest run` 15 文件 193 用例全绿（含新增
+  `themeSync.spec.ts` 薄 spec）；v0.1.32 发版。

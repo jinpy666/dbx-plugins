@@ -480,3 +480,110 @@ files PROGRESS-P-FILES §14。
     必须入 focused 组且为组活跃 tab；无主遗留 tab 重开时收养且 context 不变），
     先失败后实现；`vitest run src/stores src/components/layout` 95 文件 888
     用例全绿；`pnpm typecheck` 0 错。
+- **17b. 补遗（连接状态同步）：关闭最后一个插件 tab 自动断开插件连接**
+  - **症状**：关闭插件 workbench/SFTP tab 后，侧栏连接仍显示"连接中"绿点，
+    sidecar 会话与连接池也持续占用。
+  - **根因**：`closeTab` / `closeTabsWhere` 对 plugin-workbench /
+    plugin-filesystem tab 没有任何连接生命周期清理；后端核心其实已支持
+    插件连接断开（`PoolKind::PluginConnection → handle.disconnect()`），前端
+    只是没触发。ssh 会话死亡事件（`ssh/session/state disconnected`）仅
+    `markConnectionOffline` 翻侧栏状态、不做资源清理，且只有 ssh 上报事件。
+  - **修复（queryStore + connectionStore）**：
+    - `queryStore.releasePluginConnectionsAfterClose(closedTabs)`：关 tab 后
+      对每个受影响 connectionId，若已无任何插件 tab 挂在其上则 fire-and-forget
+      调 `connectionStore.disconnect`（走后端连接池断开 → 插件
+      `connection/disconnect` → sidecar 会话清理）。挂点：`closeTab`（覆盖
+      单关与批量关，批量最终循环 closeTab）与 `closeTabsWhere`（覆盖侧栏
+      按设置关 tab）。工作台 + 文件系统 tab 共用同一连接时以最后一个为准。
+    - 防御：`pluginReleaseInFlight` 去重合并；microtask 后复查（同 tick 重开
+      连接胜出，不误杀新会话）；connectionStore 新增导出
+      `hasDisconnectInFlight`，用户主动断开引发的关 tab 不再叠加二次断开。
+  - **测试**：新增 `queryStore.pluginTabCloseDisconnect.spec.ts` 3 用例
+    （最后 tab 关闭触发 disconnect；同连接另一插件 tab 存活时不触发；普通
+    tab 关闭不触发），先失败后实现；stores+layout 95 文件 891 用例全绿；
+    `pnpm typecheck` 0 错；全仓 vitest 失败集与基线一致（11 个存量）。
+  - **待真机复验**：关闭插件 tab → 侧栏绿点熄灭；同连接 workbench+SFTP 双
+    tab 关一个不断开；关闭后从侧栏重开可正常重连。
+
+## 19. 本地二开补丁：插件 iframe 打开白屏闪烁（2026-09-05）
+
+- **现象**：打开/重建插件工作台时 iframe 区域闪白（暗色宿主下明显），
+  随后才变成正确主题色。
+- **根因**：宿主把插件 UI 写进 `srcdoc` 后**首绘即发生**，而
+  `--color-*` 主题令牌要等 iframe `load` 事件 → `onFrameLoad → sendInit`
+  → 插件内 SDK `applyTheme` 才落到 `documentElement`。此窗口内注入的
+  uiKit CSS `body { background: var(--color-background, #ffffff) }` 因令牌
+  缺失兜底成纯白 → 白闪。插件自身 CSS（如 ssh `:root` 暗色默认）改不了
+  `body` 上这条规则，且任何插件侧方案都拿不到"init 之前"的主题信息。
+- **修复（host/ 2 文件 + 1 spec，均本地补丁）**：
+  - `pluginHostBridge.ts`：`pluginSandboxDocument(html, permissions, theme?)`
+    新增第三参，调用 `pluginBootThemeCss(theme)` 生成 boot 样式
+    `:root{color-scheme:<scheme>;--color-*:...}`，**排在 uiKit 之后注入**
+    （保证 boot 的 `color-scheme` 在级联中胜出，SDK `applyTheme` 的 inline
+    tokens 之后到达时值一致、无二次重绘）。token 名沿用 SDK 的
+    `^--[a-z0-9-]+$` 校验，值过滤 `{}<>"`/分号防逃逸出 style 元素。
+    theme 缺省时行为与旧版完全一致（向后兼容）。
+  - `PluginWorkbenchHost.vue`：`loadWorkbench` 生成 srcdoc 时传入
+    `currentBridgeTheme()`（该值此刻已在宿主侧现成可用）。
+  - `pluginHostBridge.spec.ts`：新增 2 用例（暗色 boot 种子注入且位于
+    uiKit 之后；恶意/非法 token 值被丢弃且不产生额外 script）。
+- **验证**：`vitest run pluginHostBridge.spec.ts` 14/14 绿；
+  `pnpm typecheck` 0 错；用 esbuild 打包真实桥模块 + ssh `ui/index.html`
+  生成沙箱文档，Playwright 实测首绘
+  `body bg = rgb(19 20 22)`、`color-scheme: dark`、令牌就位（修复前此处
+  为 `#ffffff` 兜底）。桥协议零变更（init/env 消息形状不变），不触发
+  宿主契约监察。
+- **备注**：插件 tab 间切换无此问题（§11 常驻图层 `v-show` 不重建
+  iframe）；本补丁只覆盖 iframe 首次创建与插件身份变更重建两条路径。
+- **19a. 复盘（用户复测"还是闪"）与第二层修复（2026-09-05 同日）**：
+  - **发版脚本指纹缺陷（真正的"没效果"根因）**：`release-local.sh` 的
+    `host_fingerprint` 只哈希 `git status --porcelain` 的**路径列表**，
+    不含文件内容——已脏文件的后续改动不触发重建，宿主一直复用旧前端。
+    已修为哈希 `git diff HEAD` 内容 + 未跟踪文件内容；修正后首次
+    `--force-host` 重建确认 boot 主题模板进入产物 chunk
+    （`color-scheme: ${e.appearance}` 字符串实证）。
+  - **遮罩死锁（自查发现，随第二层修复一并入库）**：第一层方案想把主题
+    遮罩保留到 iframe 首绘之后，但把遮罩条件写成
+    `loading || !frameReady` 且 iframe 仍在 `v-else` 分支——遮罩不消失
+    iframe 就不挂载，`load` 永不触发，`frameReady` 永不为 true，工作台
+    永久停在"正在加载"（真机复现并确认）。修正为：`!loading` 后 iframe
+    **立即挂载**（藏在遮罩下），遮罩作为独立覆盖层由 `onFrameLoad` 的
+    双 rAF（WKWebView load 可早于实际首绘）+ 400ms 定时器兜底（后台/
+    遮挡窗口 rAF 会暂停）撤除，回调带 loadGeneration 防陈旧。
+  - **真机验证**：重建发布 `/Applications/DBX.app`（15:25/后续重建）后
+    启动，自动恢复的 ssh 工作台完整加载：终端连接成功、遮罩正常撤除、
+    无白屏；连接失败的连接按主题化错误态展示。瞬时闪白无法用截图往返
+    可靠捕获，以产物字符串实证 + 遮罩覆盖逻辑 + 真机加载链路通过作结。
+  - **教训**：(1) 前端内嵌资产类修复必须以"产物 chunk 字符串实证"确认
+    进包，而非假设构建链路可靠；(2) 条件渲染里"等待事件才能前进"的
+    遮罩必须保证事件源已挂载，防死锁。
+- **19b. 残余微闪的加载过程打磨（2026-09-05 同日第三轮）**：用户复测
+  仍有一次"颜色相近但可感知"的跳变。定位为遮罩撤除是硬切：旧遮罩为
+  `bg-background/80 + backdrop-blur-sm` 半透明模糊，撤除瞬间模糊层与
+  半透明度一次性消失。改为：遮罩**完全不透明**（`bg-background`，盖住
+  阶段与宿主背景逐像素一致，iframe boot 主题色又与宿主令牌同源），
+  撤除改为 `transition-opacity 150ms ease-out` **淡出**（frameReady 后
+  置 `pointer-events-none opacity-0`，元素留 DOM 不阻断交互）。真机
+  复验工作台加载/遮罩撤除正常。若仍有可感知的跳变，下一层手段是让
+  插件挂载完成后主动上报"内容就绪"再开始淡出（需扩 SDK 契约 +
+  shared/frontend 收敛，见 §19a 遮罩时序）。
+
+## 20. 主题切换不实时同步插件（2026-09-05）
+
+- **现象**：开着插件工作台切换主题（含暗/亮与主题色板），插件 UI 不跟随，
+  重开 tab/重启才生效。
+- **根因**：`PluginWorkbenchHost` 只 `watch([isDark, activeCustomUiColors])`
+  重推桥 `env` 主题。但主题变更的本质是 `useTheme.applyTheme()` 对 DOM 的
+  同步改写（dark 类、色板类、自定义色 inline vars）——**色板切换/自定义色
+  编辑根本不经过这两个响应源**（isDark 不变、activeCustomUiColors 是同一
+  对象引用），watch 不触发 → 插件收不到新令牌。
+- **修复（host/ 2 文件）**：`useTheme` 新增 `themeRevision` ref，
+  `applyTheme()` 末尾自增（所有主题变更路径的唯一出口）；宿主改为
+  `watch(themeRevision, () => bridge?.updateTheme(currentBridgeTheme()))`。
+  此后任何主题 DOM 变更（含未来新增路径）都会重推令牌，桥/插件侧无需
+  再关心变更来源。
+- **验证**：`vue-tsc` 0 错；已重建发布 /Applications/DBX.app。下游链路
+  （SDK applyTheme → 令牌桥 CSS var() 引用 + 插件 applyAppearance）已由
+  首绘同步实证；**待真机复验**：开着工作台切暗/亮与色板，插件应即时跟随。
+- **关联**：插件侧令牌接收面见 §19/§19b（shared/frontend/themeSync.ts，
+  四插件已接入；primary/radius/字体也纳入同步面）。

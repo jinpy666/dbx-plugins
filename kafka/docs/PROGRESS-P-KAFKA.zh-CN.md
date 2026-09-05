@@ -561,3 +561,12 @@ PROGRESS 主线合并）：
   下一轮）；Monitor 采样在面板内部降频未做（App 层已背压 stream 事件侧）；
   App 层缓冲丢弃为静默计数；P2-2 错误横幅遮挡 tab 栏、P2-11 light 工具栏泛红、
   P2-13 窄视口死空间（均在 App.vue/style.css，待小修轮）。
+
+## 主题令牌桥（2026-09-05）
+
+- 接入 `shared/frontend/themeSync.ts`：`main.ts` 挂载前 `installHostThemeBridge()`，
+  插件变量桥接宿主 `--color-*` 令牌——首绘即命中宿主主题（不再等 init 后 JS 回写），
+  主题切换自动跟随，primary/radius/字体纳入同步面。宿主无令牌（mock/旧宿主）回退
+  暗色规范值，行为不变。
+- 验证：`vue-tsc` 0 错；`vitest run` 8 文件 82 用例全绿（含新增
+  `themeSync.spec.ts` 薄 spec）；v0.1.4 发版。

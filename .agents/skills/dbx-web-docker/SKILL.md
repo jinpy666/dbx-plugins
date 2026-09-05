@@ -1,12 +1,12 @@
 ---
 name: dbx-web-docker
-description: 把三插件打进 DBX web Docker 镜像并发布到服务器的全流程：deploy/web 的镜像构建、插件自动安装机制、服务器部署与排障。当用户要求 docker/web 方式发版插件、部署到服务器 web 访问、或排查镜像构建/容器内插件安装问题时使用。
+description: 把四插件打进 DBX web Docker 镜像并发布到服务器的全流程：deploy/web 的镜像构建、插件自动安装机制、服务器部署与排障。当用户要求 docker/web 方式发版插件、部署到服务器 web 访问、或排查镜像构建/容器内插件安装问题时使用。
 ---
 
 # DBX web Docker 发版（deploy/web）
 
-把工作区三插件打进 DBX web 官方镜像模式（参考宿主 `deploy/Dockerfile`），
-镜像内置 dbx-web + 三插件 Linux .dbxp，容器首次启动自动安装插件，
+把工作区四插件打进 DBX web 官方镜像模式（参考宿主 `deploy/Dockerfile`），
+镜像内置 dbx-web + 四插件 Linux .dbxp，容器首次启动自动安装插件，
 浏览器访问 `:4224` 即用。
 
 ## 机制（先懂再改）
@@ -19,8 +19,8 @@ description: 把三插件打进 DBX web Docker 镜像并发布到服务器的全
   的架构 = 打包产物的架构；amd64 服务器镜像需 `--platform linux/amd64`
   （QEMU 模拟，慢）或直接在 amd64 机器上构建。
 - Rust sidecar 经 PATH 包装器把 CLI 裸调的 `cargo build` 转成
-  `cargo zigbuild --target ...` 交叉编译；Go（ldap）走 `GOOS/GOARCH`
-  原生交叉，无需包装。
+  `cargo zigbuild --target ...` 交叉编译；Go 插件（ldap、kafka）走
+  `GOOS/GOARCH` 原生交叉，无需包装。
 - 构建 = 两个上下文：`.`（本工作区）+ 命名上下文 `host=`（精简后的宿主
   子仓库 `host/`，`scripts/release-docker.sh` 会 rsync 剔除 target/node_modules/.git）。
   插件 `[patch.crates-io]` 的相对路径 `../../host`
@@ -46,11 +46,11 @@ plugins.tsv、entrypoint 安装结果、HTTP 200，随后清理。
 ```bash
 # 镜像导入/推送后：
 docker compose -f deploy/web/docker-compose.yml up -d
-# 浏览器 http://<host>:4224，用 DBX_PASSWORD 登录；插件中心应看到三插件。
+# 浏览器 http://<host>:4224，用 DBX_PASSWORD 登录；插件中心应看到四插件。
 ```
 
 - 暴露到公网前必须改 `DBX_PASSWORD`；数据在 `dbx-data` 卷。
-- 验证插件：插件中心列表 → 新建连接（SSH/LDAP/Files 表单）→ 工作台可用。
+- 验证插件：插件中心列表 → 新建连接（SSH/LDAP/Files/Kafka 表单）→ 工作台可用。
   web 模式没有宿主 fileTransfer，上传走浏览器 File API 兜底（插件已内置）。
 
 ## 排障速查

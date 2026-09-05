@@ -56,7 +56,10 @@ fi
 }
 APP_DATA="${DBX_APP_DATA:-$HOME/Library/Application Support/com.dbx.app}"
 INSTALLED_APP="/Applications/DBX.app"
-PLUGINS=(ssh ldap files)
+# kafka (Go, like ldap) rides the same generic loop: bump_version's Cargo.toml
+# handling and plugin_fingerprint's ver hash are guarded for Go plugins, and
+# the build/install steps only assume <plugin>/scripts/build.sh + manifest.json.
+PLUGINS=(ssh ldap files kafka)
 STATE_DIR="$ROOT/.release-state"
 mkdir -p "$STATE_DIR/logs"
 T0="$(date +%s)"

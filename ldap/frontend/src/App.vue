@@ -4,7 +4,8 @@
 // connectionId；所有 ldap/* 调用经 lib/api.ts 注入 connectionId。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { Database, Download, Info, Loader2, Network, RefreshCw } from "@lucide/vue";
-import { DBX_POPOVER, resolveAppearance } from "./lib/appearance";
+import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
+import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
 import { setWorkbenchLocale, t, workbenchLocale } from "./lib/i18n";
 import { getLdapConnectionId, ldapApi, setLdapConnectionId, type LdapEntry } from "./lib/api";
 import { inferBaseDnFromProfile, pickBaseDnFromRootDse } from "./lib/baseDn";
@@ -117,7 +118,8 @@ const toolbarStyle = computed(() => {
   return { backgroundColor: colorWithAlpha(color, 0.1), boxShadow: `inset 0 1px 0 ${colorWithAlpha(color, 0.18)}` };
 });
 
-function applyAppearance(next?: Partial<DbxPluginAppearance> | null) {
+function applyAppearance(next?: DbxPluginAppearanceInput | null) {
+  // 宿主可能缺字段（1.0 部分下发、1.1 theme 通道只带颜色令牌），按 DBX 规范色板补齐。
   const resolved = resolveAppearance(next);
   appearance.value = resolved;
   const root = document.documentElement;
@@ -394,7 +396,10 @@ async function initialize() {
   ]);
   setWorkbenchLocale(api.locale || "zh-CN");
   if (api.appearance) applyAppearance(api.appearance);
+  else if (isDbxPluginTheme(api.theme)) applyAppearance(themeToAppearance(api.theme));
   if (api.onAppearanceChange) unsubscribeAppearance.push(api.onAppearanceChange(applyAppearance));
+  // appearance 契约缺失（当前 1.1 桥只推 theme）时订阅 env 主题推送，两套不同时挂。
+  else unsubscribeAppearance.push(onHostThemeChange((theme) => applyAppearance(themeToAppearance(theme))));
   if (api.onLocaleChange) unsubscribeLocale.push(api.onLocaleChange((next) => setWorkbenchLocale(next || "zh-CN")));
   if (api.onContextChange) unsubscribeContext.push(api.onContextChange((context) => {
     hostContext.value = context;

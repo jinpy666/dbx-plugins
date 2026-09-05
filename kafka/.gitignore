@@ -1,0 +1,8 @@
+/dist/
+/backend/bin/
+/dbx-plugin-kafka
+node_modules/
+frontend/dist/
+__pycache__/
+.DS_Store
+*.log

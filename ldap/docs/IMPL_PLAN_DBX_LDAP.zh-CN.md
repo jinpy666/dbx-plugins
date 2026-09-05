@@ -261,6 +261,14 @@ tools_ldap.go）、`mcp/call`（lifecycle payload 转发 + connectionId 池化�
 ssh-sftp mcp.rs 语义）、`mcp/settings/get|set`（写白名单策略）；敏感属性
 脱敏（ldap_redaction.go 移植）进工具返回。DoD：`scripts/smoke_mcp.py` 同款。
 
+### M5/M6（ADS 追赶）
+
+对账表：`docs/ADS_GAP_ANALYSIS.zh-CN.md`（唯一路线来源，落地一项更新一项）。
+M5-a：TLS 字段联动显隐 + 连接字段排版重排；filter 构建器 ≠ 运算符；
+UI 测试双轨（vitest 组件测试 + `scripts/ui_test.mjs` 浏览器走查入 test.sh）。
+M5-b：NOT 组 UI、`ldap/check` 分级连接检查、搜索历史、LDIF 编辑生效。
+M6：LDIF 导入、结果批量操作、新条目 objectClass 模板、二进制属性查看器。
+
 ## 10. 风险与备注
 
 - ~~`url` 绑定 `host` 的表单形态待 M0-T6 确认~~ → v0.1.19 已切换为

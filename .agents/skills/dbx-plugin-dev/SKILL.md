@@ -31,6 +31,14 @@ npm install -g @dbx-app/plugin-cli @dbx-app/cli @dbx-app/mcp-server
 2. **兼容基线**：目标 Host API 1.0（`engines.host_api: ">=1.0.0"`）。宿主 1.1
    特性（appearance/locale、fileTransfer、workbenchState）一律 optional 降级，
    缺失时功能可降但不可死；能用宿主能力（如 `visible_when`）就不自己造。
+   **binary 事件双形状**：宿主桥 b15281024（随 DBX.app 0.6.2）把沙箱 binary
+   事件从 `{ channel, dataBase64 }` 改为零拷贝 `{ channel, data: Uint8Array }`，
+   `dataBase64` 字段已不存在。插件 onBinary 消费必须经
+   **`shared/frontend/binaryEvent.ts`** 的 `bridgeBinaryBytes` 归一化（优先
+   `data`，回退 base64；宿主适配公共代码一律进 `shared/frontend/` 单点维护，
+   插件相对引用，见其 README，禁止各插件抄一份）；`env.d.ts` 两字段都要
+   optional；插件自带 mockDbxHost/mockHost 必须镜像真实桥当前形状，否则单测
+   全绿照样翻车。
 3. **不重复宿主**：隧道/代理/传输走 DBX 传输层（sidecar 经 `runtime.host:port`
    拨号）；凭据走宿主 secret binding，插件不持久化；禁止新增与宿主重叠的表单字段。
 4. **安全红线**：写操作过只读策略（ensure_writable / DN 白名单 / 屏蔽属性）；
@@ -64,6 +72,25 @@ shared/host-e2e/install.sh <plugin-dir> --no-restart # 不拉起测试 DBX.app
 
 详见 skill `dbx-host-e2e`。
 
+## 宿主契约监察（每次 host sync / DBX.app 更新后必做）
+
+宿主是上游权威（host/ 子模块随 origin/main 演进），**插件面对的宿主契约可能
+在任意一次同步中变更**。每次 `scripts/host-sync.sh sync` 或正式版 DBX.app
+更新后：
+
+```bash
+scripts/host-sync.sh contract   # 契约文件 diff + 当前桥形状快照 + 跟进清单
+```
+
+监察面（脚本内 CONTRACT_PATHS）：pluginHostBridge（桥/沙箱 SDK）、
+pluginFieldConditions（visible_when 等）、pluginAppearance、pluginFilesystem、
+frontendPlugin、crates/dbx-core/src/plugins/host.rs（manifest/生命周期）。
+有 diff 就在 **`shared/frontend/` 公共适配层单点修改**（含接入新插件的
+onBinary 消费方），同步各插件 `env.d.ts` 类型与 mock 镜像、真机复验受影响
+流（终端回显、下载分块、拖放）。案例：b15281024 静默改 binary 事件形状，0.6.2
+上所有插件终端/下载流全灭（修复与收敛记录 ssh/docs/PROGRESS-P-SSH.zh-CN.md
+§8.11、shared/frontend/README.zh-CN.md）。
+
 ## 常见故障速查
 
 | 症状 | 根因 |
@@ -74,6 +101,7 @@ shared/host-e2e/install.sh <plugin-dir> --no-restart # 不拉起测试 DBX.app
 | Go 插件打包报 go.work 与模块 go 版本冲突 | env 残留 DBX_PLUGIN_SDK_ROOT；`env -u DBX_PLUGIN_SDK_ROOT` 直调 plugin-cli 二进制 |
 | dbx-plugin: command not found | nvm PATH 未加载 |
 | 工作台永停"正在连接" | 宿主桥 DataCloneError（Vue Proxy 不可 structuredClone）或 sidecar 未注册该方法 |
+| 连接成功但终端/下载流零数据（invoke 类正常） | 宿主桥 binary 事件契约变更（data vs dataBase64）：插件 onBinary 消费没走 `shared/frontend/binaryEvent.ts` 的 `bridgeBinaryBytes` 双形状归一化；对装好的 sidecar 跑 smoke 可确认后端帧正常，问题在前端桥层 |
 
 ## 仓库规约
 

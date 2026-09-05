@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # =============================================================================
-# DBX web 镜像（含本工作区三插件 io.dbx.ssh / io.dbx.ldap / io.dbx.files）
+# DBX web 镜像（含本工作区四插件 io.dbx.ssh / io.dbx.ldap / io.dbx.files /
+# io.dbx.kafka；插件清单硬编码于下方 Stage 2/3 的 COPY 与 for 循环）
 #
 # 参考官方 deploy/Dockerfile 的构建方式（frontend + zigbuild 交叉 backend +
 # debian-slim 运行时），在其上增加插件层：
@@ -39,14 +40,15 @@ WORKDIR /build
 COPY ssh/frontend/ ssh/frontend/
 COPY files/frontend/ files/frontend/
 COPY ldap/frontend/ ldap/frontend/
+COPY kafka/frontend/ kafka/frontend/
 RUN npm i -g pnpm \
-    && for p in ssh files ldap; do \
+    && for p in ssh files ldap kafka; do \
          cd "/build/$p/frontend" \
          && (pnpm install --frozen-lockfile || pnpm install) \
          && pnpm build || exit 1; \
        done \
     && mkdir -p /out/overlay \
-    && for p in ssh files ldap; do mkdir -p "/out/overlay/$p" && cp -R "/build/$p/ui" "/out/overlay/$p/ui"; done
+    && for p in ssh files ldap kafka; do mkdir -p "/out/overlay/$p" && cp -R "/build/$p/ui" "/out/overlay/$p/ui"; done
 
 # ---- Stage 3: 交叉编译 dbx-web/install_plugin + 打包 Linux .dbxp --------------
 FROM --platform=$BUILDPLATFORM rust:1-bookworm AS backend
@@ -61,6 +63,7 @@ COPY --from=host . /build/host/
 COPY ssh/ ssh/
 COPY files/ files/
 COPY ldap/ ldap/
+COPY kafka/ kafka/
 # 覆盖插件 UI 构建产物（frontend build 生成 ui/index.html）
 COPY --from=plugin-ui /out/overlay/ ./
 
@@ -120,12 +123,14 @@ RUN RUST_TARGET="$(cat /tmp/rust_target)" \
               NO_COLOR=1 "$CLI" package . \
          && cp dist/*.dbxp /out/plugins/ || exit 1; \
        done \
-    && cd /build/ws/ldap \
-    && env -u DBX_PLUGIN_SDK_ROOT GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 \
-         NO_COLOR=1 "$CLI" package . \
-    && cp dist/*.dbxp /out/plugins/ \
+    && for p in ldap kafka; do \
+         cd "/build/ws/$p" \
+         && env -u DBX_PLUGIN_SDK_ROOT GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 \
+              NO_COLOR=1 "$CLI" package . \
+         && cp dist/*.dbxp /out/plugins/ || exit 1; \
+       done \
     && : > /out/plugins.tsv \
-    && for p in ssh ldap files; do \
+    && for p in ssh ldap files kafka; do \
          id="$(python3 -c "import json;print(json.load(open('/build/ws/$p/manifest.json'))['id'])")"; \
          ver="$(python3 -c "import json;print(json.load(open('/build/ws/$p/manifest.json'))['version'])")"; \
          f="$(ls /out/plugins/ | grep "^$id-")"; \

@@ -46,6 +46,14 @@ const appearance: DbxPluginAppearance = {
   terminal: { fontFamily: "Cascadia Mono, Consolas, monospace", fontSize: 13 },
 };
 
+// 镜像宿主 1.1 theme 通道形状（colors 反查 --color-* 令牌），与真实宿主一致。
+const theme: DbxPluginTheme = {
+  appearance: appearance.colorScheme,
+  tokens: Object.fromEntries(
+    Object.entries(appearance.colors).map(([key, value]) => [`--color-${key.replace(/([A-Z])/g, (c) => `-${c.toLowerCase()}`)}`, value]),
+  ),
+};
+
 // -- in-memory directory ------------------------------------------------------
 
 interface MockEntry {
@@ -354,6 +362,7 @@ window.dbxPlugin = {
   ready: Promise.resolve(context),
   context,
   appearance,
+  theme,
   locale: params.get("locale") || "zh-CN",
   request,
   invoke,

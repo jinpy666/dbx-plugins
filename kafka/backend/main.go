@@ -12,6 +12,10 @@
 //	kafka/stream/start | stop | pause | resume | status | messages
 //	kafka/presets/list | save | remove
 //	kafka/connections/statuses
+//	kafka/schema/test | subjects/list | versions/list | get |
+//	  versions/compare | compatibility/get | compatibility/set |
+//	  compatibility/check | register | delete | delete/version  （Phase 2；
+//	  Phase 3 起全部支持可选 registry:"confluent"|"glue"）
 //
 // 公共约定：参数/返回 camelCase；领域方法必填 connectionId
 // （kafka/connections/statuses 为全局视图可省）；参数错 -32602、业务错
@@ -21,6 +25,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -163,6 +168,31 @@ func (h *pluginHandler) Handle(
 	case "kafka/connections/statuses":
 		return h.connectionStatuses()
 
+	// --- Phase 2/3：schema registry（Confluent 兼容 REST + AWS Glue，
+	// registry 参数显式选择后端，缺省自动探测） ---
+	case "kafka/schema/test":
+		return h.schemaTest(params)
+	case "kafka/schema/subjects/list":
+		return h.schemaSubjectsList(params)
+	case "kafka/schema/versions/list":
+		return h.schemaVersionsList(params)
+	case "kafka/schema/get":
+		return h.schemaGet(params)
+	case "kafka/schema/versions/compare":
+		return h.schemaVersionsCompare(params)
+	case "kafka/schema/compatibility/get":
+		return h.schemaCompatibilityGet(params)
+	case "kafka/schema/compatibility/set":
+		return h.schemaCompatibilitySet(params)
+	case "kafka/schema/compatibility/check":
+		return h.schemaCompatibilityCheck(params)
+	case "kafka/schema/register":
+		return h.schemaRegister(params)
+	case "kafka/schema/delete":
+		return h.schemaDelete(params)
+	case "kafka/schema/delete/version":
+		return h.schemaDeleteVersion(params)
+
 	default:
 		return nil, dbxpluginsdk.MethodNotFound(method)
 	}
@@ -174,6 +204,9 @@ func (h *pluginHandler) connectionTest(params json.RawMessage) (any, *dbxplugins
 	parsed, err := lifecycle.Parse(params)
 	if err != nil {
 		return nil, invalidParams(err)
+	}
+	if parsed.ConnectionID() == "" {
+		return nil, dbxpluginsdk.NewError(-32602, "Missing connection.id")
 	}
 	message, err := h.svc.Test(getContext(), parsed)
 	if err != nil {
@@ -595,6 +628,164 @@ func (h *pluginHandler) connectionStatuses() (any, *dbxpluginsdk.PluginError) {
 	return map[string]any{"statuses": h.svc.SnapshotStatuses()}, nil
 }
 
+// --- Phase 2：schema registry 方法臂（kafka/schema/*） ---
+
+func (h *pluginHandler) schemaTest(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req struct {
+		ConnectionID string `json:"connectionId"`
+		Registry     string `json:"registry,omitempty"`
+	}
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.TestSchema(getContext(), req.ConnectionID, req.Registry)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaSubjectsList(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req struct {
+		ConnectionID string `json:"connectionId"`
+		Registry     string `json:"registry,omitempty"`
+	}
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.ListSchemaSubjects(getContext(), req.ConnectionID, req.Registry)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaVersionsList(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req struct {
+		ConnectionID string `json:"connectionId"`
+		Subject      string `json:"subject"`
+		Registry     string `json:"registry,omitempty"`
+	}
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.ListSchemaVersions(getContext(), req.ConnectionID, req.Subject, req.Registry)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaGet(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req struct {
+		ConnectionID string `json:"connectionId"`
+		Subject      string `json:"subject"`
+		Version      int64  `json:"version,omitempty"`
+		Registry     string `json:"registry,omitempty"`
+	}
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.GetSchema(getContext(), req.ConnectionID, req.Subject, req.Version, req.Registry)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaVersionsCompare(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req kafkaconn.SchemaVersionsCompareRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.CompareSchemaVersions(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaCompatibilityGet(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req struct {
+		ConnectionID string `json:"connectionId"`
+		Subject      string `json:"subject,omitempty"`
+		Registry     string `json:"registry,omitempty"`
+	}
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.GetSchemaCompatibility(getContext(), req.ConnectionID, req.Subject, req.Registry)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaCompatibilitySet(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req kafkaconn.SchemaCompatibilityRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.SetSchemaCompatibility(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaCompatibilityCheck(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req kafkaconn.SchemaCompatibilityCheckRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.CheckSchemaCompatibility(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaRegister(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req kafkaconn.SchemaRegisterRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.RegisterSchema(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+func (h *pluginHandler) schemaDelete(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req kafkaconn.SchemaDeleteRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.DeleteSchema(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+// schemaDeleteVersion 与 schemaDelete 同一服务方法：version>0 走
+// /versions/<v> 删除臂（critical 门禁一致）。
+func (h *pluginHandler) schemaDeleteVersion(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req kafkaconn.SchemaDeleteRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	if req.Version <= 0 {
+		return nil, dbxpluginsdk.NewError(-32602, "version is required")
+	}
+	result, err := h.svc.DeleteSchema(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
 // --- StreamEmitter 适配（kafka/stream/messages、kafka/stream/error） ---
 
 // EmitStreamMessages 实现 kafkaconn.StreamEmitter。
@@ -705,8 +896,13 @@ func invalidParams(err error) *dbxpluginsdk.PluginError {
 	return dbxpluginsdk.NewError(-32602, err.Error())
 }
 
-// bizError 业务错误统一 -32000（blocked 语义，对齐 ssh-sftp / ldap）。
+// bizError 业务错误统一 -32000（blocked 语义，对齐 ssh-sftp / ldap）；
+// InvalidParamsError（如 schema registry 参数歧义/未知 registry）映射 -32602。
 func bizError(err error) *dbxpluginsdk.PluginError {
+	var paramErr *kafkaconn.InvalidParamsError
+	if errors.As(err, &paramErr) {
+		return dbxpluginsdk.NewError(-32602, err.Error())
+	}
 	return dbxpluginsdk.NewError(-32000, err.Error())
 }
 

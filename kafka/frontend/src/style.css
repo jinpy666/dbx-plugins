@@ -102,6 +102,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   stroke-width: 1.7;
 }
 .icon-neutral { color: var(--muted-foreground); }
+/* 小尺寸图标（TopicTree 树行 / 过滤框等行内 13px 场景，替代 inline style）。 */
+.icon-13 { width: 13px; height: 13px; flex: 0 0 13px; }
 .icon-emerald { color: #10b981; }
 .icon-amber { color: #d97706; }
 .icon-cyan { color: #0891b2; }
@@ -131,8 +133,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .divider { position: relative; z-index: 4; width: 1px; flex: 0 0 1px; background: var(--border); cursor: col-resize; }
 .divider:hover { background: color-mix(in srgb, var(--foreground) 38%, var(--border)); }
 
-/* Left: DN tree pane */
-.tree-pane { position: relative; display: flex; height: 100%; width: 30%; min-width: 220px; max-width: 45%; flex: 0 0 auto; flex-direction: column; background: var(--background); }
+/* Left: DN tree pane（宽度由 TopicTree 组件经 --tree-pane-width 注入，180–480px，
+   折叠态收成 40px 竖条，见文件尾「侧栏收空间」块） */
+.tree-pane { position: relative; display: flex; height: 100%; width: var(--tree-pane-width, 240px); min-width: 180px; max-width: 480px; flex: 0 0 auto; flex-direction: column; background: var(--background); }
 .panel-header { height: 34px; min-height: 34px; justify-content: space-between; gap: 6px; border-bottom: 1px solid var(--border); padding: 0 8px; font-size: 12px; font-weight: 600; }
 .panel-header .panel-title { display: flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .panel-header svg { width: 14px; height: 14px; flex: 0 0 14px; }
@@ -367,8 +370,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* Kafka 表单（grid 字段 + compact 输入） */
 .kafka-form { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: flex-end; border-bottom: 1px solid var(--border); padding: 8px; }
-.kafka-form .field { display: flex; min-width: 0; flex-direction: column; gap: 3px; font-size: 10px; color: var(--muted-foreground); }
-.kafka-form input, .kafka-form select, .kafka-form textarea {
+/* 详情抽屉内嵌的本地二次解码表单：去外框贴紧排版（替代 inline style）。 */
+.kafka-form--bare { border-bottom: 0; padding: 0; }
+.kafka-form .field, .consume-groups .field { display: flex; min-width: 0; flex-direction: column; gap: 3px; font-size: 10px; color: var(--muted-foreground); }
+.kafka-form input, .kafka-form select, .kafka-form textarea,
+.consume-groups input, .consume-groups select {
   min-width: 0; height: 26px;
   border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px;
   outline: none;
@@ -376,20 +382,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   color: var(--foreground); font-size: 12px;
 }
 .kafka-form textarea { height: auto; min-height: 52px; resize: vertical; font-family: var(--mono-font-family); }
-.kafka-form input:focus, .kafka-form select:focus, .kafka-form textarea:focus { border-color: color-mix(in srgb, var(--primary) 70%, var(--border)); }
-.kafka-form .checkbox { display: flex; height: 26px; align-items: center; gap: 4px; color: var(--foreground); font-size: 12px; }
-.kafka-form .checkbox input { width: 13px; height: 13px; }
+.kafka-form input:focus, .kafka-form select:focus, .kafka-form textarea:focus,
+.consume-groups input:focus, .consume-groups select:focus { border-color: color-mix(in srgb, var(--primary) 70%, var(--border)); }
+.kafka-form .checkbox, .consume-groups .checkbox { display: flex; height: 26px; align-items: center; gap: 4px; color: var(--foreground); font-size: 12px; }
+.kafka-form .checkbox input, .consume-groups .checkbox input { width: 13px; height: 13px; }
 .kafka-form .field input[type="checkbox"] { height: auto; }
 .kafka-form-errors { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 6px; }
 .primary-button.compact { min-height: 26px; }
 
-/* 字段条件编辑器（fieldFilters） */
+/* 字段条件编辑器（fieldFilters）：行式卡片（source/operator/path/value + 启用 + 删除） */
 .field-filters { display: flex; flex-direction: column; gap: 4px; width: 100%; }
-.field-filter-row { display: grid; grid-template-columns: 110px minmax(70px, 130px) 120px minmax(90px, 1fr) 26px 26px; gap: 4px; align-items: center; }
+.field-filter-row { display: grid; grid-template-columns: minmax(96px, 130px) minmax(70px, 1fr) minmax(96px, 130px) minmax(80px, 1.2fr) auto auto; gap: 4px; align-items: center; border: 1px solid var(--border); border-radius: 4px; padding: 6px; background: color-mix(in srgb, var(--muted) 25%, transparent); }
+.field-filter-row.is-invalid { border-color: color-mix(in srgb, var(--destructive) 60%, var(--border)); }
+.field-filter-row.is-invalid input, .field-filter-row.is-invalid select { border-color: color-mix(in srgb, var(--destructive) 60%, var(--border)); }
 .field-filter-row input, .field-filter-row select { height: 24px; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; background: var(--background); color: var(--foreground); font-size: 12px; }
+.field-filter-row .checkbox { display: inline-flex; height: 24px; align-items: center; justify-content: center; }
+.field-filter-row .checkbox input { width: 13px; height: 13px; }
 .field-filter-row .row-remove { display: inline-grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--muted-foreground); cursor: pointer; }
 .field-filter-row .row-remove:hover { background: color-mix(in srgb, var(--destructive) 16%, transparent); color: var(--destructive); }
 .field-filter-row svg { width: 12px; height: 12px; }
+.field-filter-error { grid-column: 1 / -1; margin: 0; color: var(--destructive); font-size: 10px; }
 
 /* 详情抽屉 */
 .drawer-backdrop { position: fixed; z-index: 70; inset: 0; background: rgb(0 0 0 / 35%); }
@@ -430,3 +442,121 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .inline-actions { display: inline-flex; align-items: center; gap: 4px; }
 .subpanel-title { margin: 0; padding: 8px 10px 2px; font-size: 12px; font-weight: 600; }
 .section-block { display: flex; flex-direction: column; min-height: 0; }
+
+/* ag-grid 容器（Phase 2）：DbxAgGrid 需确定高度；fill 变体占满剩余空间 */
+.grid-box { position: relative; display: flex; flex: 0 0 auto; overflow: hidden; border: 1px solid var(--border); border-radius: 4px; margin: 0 8px; background: var(--background); }
+.grid-box--fill { flex: 1 1 0; min-height: 180px; margin: 0; }
+
+/* === ag-grid → DBX 令牌对齐（Phase 2，Theming API CSS 变量覆盖） ============= */
+/* .dbx-grid 与运行时注入的 .ag-theme-quartz 同元素双类，特异性高于注入样式，
+   令牌全部走 DBX 变量 → 宿主 data-theme 切换时 light/dark 同时成立。 */
+.dbx-grid.ag-theme-quartz {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  font-size: 11px;
+  --ag-font-size: 11.5px;
+  --ag-font-family: var(--ui-font-family);
+  --ag-background-color: var(--background);
+  --ag-foreground-color: var(--foreground);
+  --ag-border-color: var(--border);
+  --ag-borders: solid 1px var(--border);
+  --ag-header-background-color: color-mix(in srgb, var(--background) 96%, var(--muted));
+  --ag-header-foreground-color: var(--muted-foreground);
+  --ag-header-column-resize-handle-color: var(--border);
+  --ag-odd-row-background-color: color-mix(in srgb, var(--muted) 30%, var(--background));
+  --ag-row-hover-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  --ag-selected-row-background-color: var(--accent);
+  --ag-row-border-color: color-mix(in srgb, var(--border) 45%, transparent);
+  --ag-row-border-style: solid;
+  --ag-control-panel-background-color: var(--popover);
+  --ag-subtree-background-color: var(--background);
+  --ag-dialog-border-color: var(--border);
+  --ag-input-border-color: var(--border);
+  --ag-input-focus-border-color: color-mix(in srgb, var(--primary) 70%, var(--border));
+  --ag-checkbox-accent-color: var(--primary);
+  --ag-selected-tab-underline-color: var(--primary);
+  --ag-header-cell-hover-background-color: transparent;
+  --ag-header-cell-moving-background-color: color-mix(in srgb, var(--accent) 80%, transparent);
+}
+/* 行内单元格/行级状态（健康列、Monitor 阈值告警行高亮） */
+.dbx-cell-ok { color: #10b981; }
+.dbx-cell-bad { color: var(--destructive); }
+.dbx-grid .ag-row.dbx-row-alert,
+.dbx-grid .ag-row.dbx-row-alert.ag-row-hover,
+.dbx-grid .ag-row.dbx-row-alert.ag-row-odd {
+  background: color-mix(in srgb, var(--destructive) 14%, var(--background));
+}
+.dbx-grid .ag-row.dbx-row-warn,
+.dbx-grid .ag-row.dbx-row-warn.ag-row-hover,
+.dbx-grid .ag-row.dbx-row-warn.ag-row-odd {
+  background: color-mix(in srgb, #d97706 12%, var(--background));
+}
+
+/* === 侧栏收空间（Phase P-M）：折叠竖条 + 拖宽 resizer + 计数徽章 ============= */
+.tree-pane.is-collapsed { width: 40px; min-width: 40px; max-width: 40px; }
+.tree-pane.is-resizing { cursor: col-resize; user-select: none; }
+.tree-resizer { position: absolute; top: 0; right: -2px; z-index: 6; width: 4px; height: 100%; cursor: col-resize; touch-action: none; }
+.tree-resizer:hover, .tree-resizer.active { background: color-mix(in srgb, var(--primary) 45%, transparent); }
+.tree-rail { display: flex; height: 100%; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0; }
+.tree-rail-toggle { display: inline-grid; width: 26px; height: 26px; flex: 0 0 26px; place-items: center; border: 0; border-radius: 4px; padding: 0; background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.tree-rail-toggle:hover { background: var(--accent); color: var(--foreground); }
+.tree-rail-toggle svg { width: 15px; height: 15px; }
+.tree-rail-label { overflow: hidden; writing-mode: vertical-rl; color: var(--muted-foreground); font-size: 11px; letter-spacing: .14em; white-space: nowrap; }
+.tree-count { flex: 0 0 auto; font-size: 10px; font-variant-numeric: tabular-nums; }
+
+/* === 消费表单分组卡片（Phase P-M）：基础/定位/时间与范围/过滤/解码 ============ */
+.consume-groups { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); container-type: inline-size; }
+.filter-group { border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.filter-group:last-child { border-bottom: 0; }
+.filter-group-head { display: flex; width: 100%; min-height: 28px; align-items: center; gap: 6px; border: 0; padding: 4px 8px; background: transparent; color: var(--foreground); font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
+.filter-group-head:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.filter-group-head .chev { width: 13px; height: 13px; flex: 0 0 13px; color: var(--muted-foreground); transition: transform .12s ease; }
+.filter-group-head .chev.folded { transform: rotate(-90deg); }
+.filter-group-head .group-summary { margin-left: auto; overflow: hidden; color: var(--muted-foreground); font-size: 10px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.filter-group-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 8px 8px; }
+.group-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; align-items: end; }
+.group-grid .field--wide { grid-column: 1 / -1; }
+@container (max-width: 560px) {
+  .group-grid { grid-template-columns: 1fr; }
+  .field-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* 时间选择器行：datetime-local（秒级）+ 「现在」+ 模式切换 */
+.time-input-row { display: flex; min-width: 0; align-items: center; gap: 4px; }
+.time-input-row input { min-width: 0; flex: 1; }
+.mini-button { display: inline-flex; min-height: 24px; flex: 0 0 auto; align-items: center; border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; background: var(--background); color: var(--muted-foreground); font-size: 10px; cursor: pointer; }
+.mini-button:hover:not(:disabled) { background: var(--accent); color: var(--foreground); }
+.field.is-invalid input, .field.is-invalid select { border-color: color-mix(in srgb, var(--destructive) 65%, var(--border)); }
+.field-error { margin: 0; color: var(--destructive); font-size: 10px; }
+
+/* 表单尾部固定 actions：主按钮右侧、大号主色 */
+.form-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-bottom: 1px solid var(--border); padding: 8px; }
+.form-footer .footer-spacer { flex: 1; }
+.form-footer .form-error { max-width: 70%; }
+.primary-button--lg { min-height: 30px; gap: 6px; padding: 4px 16px; font-size: 12px; font-weight: 600; }
+.primary-button--lg svg { width: 13px; height: 13px; }
+
+/* === 消息页布局压缩（R 路）：收起态一行摘要条 + 大数据量防护提示 ============= */
+/* 收起态摘要条：chips 一行概括消费条件，尾部「展开条件」；横向溢出可滚。 */
+.msg-summary-bar { display: flex; min-height: 34px; align-items: center; gap: 5px; border-bottom: 1px solid var(--border); padding: 4px 8px; overflow-x: auto; }
+.msg-summary-bar .mini-button { min-height: 24px; }
+.msg-chip { display: inline-flex; max-width: 240px; flex: 0 0 auto; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; overflow: hidden; color: var(--muted-foreground); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.msg-chip--active { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); color: var(--primary); }
+.msg-summary-spacer { flex: 1 1 0; }
+
+/* 窄视口：侧栏恢复上下分栏占位，resizer 关闭（拖宽仅桌面横向布局有意义） */
+@media (max-width: 900px) {
+  .tree-pane, .tree-pane.is-collapsed { width: 100%; min-width: 0; max-width: none; height: 42%; }
+  .tree-rail { flex-direction: row; padding: 0 8px; }
+  .tree-rail-label { writing-mode: horizontal-tb; }
+  .tree-resizer { display: none; }
+}
+
+/* P1-1：消息面板首屏平衡——面板自身成为纵向滚动容器（表单组区随内容自然展开，
+   结果区保底可视高度），消费成功后组件 scrollIntoView 到结果区统计行；
+   空态无结果区时表单仍为主内容（不滚动）。 */
+.messages-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+.messages-panel .grid-box--fill { min-height: 220px; }
+/* 有结果时表单组区上限高度（内部自滚），把首屏让给结果区：meta + 表格稳定可见。 */
+.messages-panel.has-result .consume-groups { max-height: 46%; overflow-y: auto; }

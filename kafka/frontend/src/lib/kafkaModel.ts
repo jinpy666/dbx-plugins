@@ -3,9 +3,14 @@
  * topic business ranking, group lag aggregation, JSON/CSV export
  * serialization and Confluent properties parsing. No sidecar calls, no
  * framework imports — everything here is unit-testable in isolation.
- * 对标 tinyrdm ConvertValue/kafkaNormalize，重写为无重依赖版本
- * （GZip 用浏览器 DecompressionStream；lz4/zstd/snappy 标注降级）。
+ * 对标 tinyrdm ConvertValue/kafkaNormalize，重写为纯函数管线。解压支持
+ * gzip/lz4/zstd/snappy 全四种：gzip 用浏览器 DecompressionStream，
+ * zstd= fzstd、snappy = snappyjs、lz4 = lz4js（轻量纯 JS、MIT/ISC，
+ * Phase P 引入补齐 Phase 1 的降级标注）。
  */
+import { decompress as fzstdDecompress } from "fzstd";
+import { decompress as lz4Decompress } from "lz4js";
+import { uncompress as snappyUncompress } from "snappyjs";
 import type { KafkaMessage, MatchMode } from "./api";
 
 // -- byte helpers -------------------------------------------------------------
@@ -98,16 +103,57 @@ export function formatBitSet(text: string): string | null {
   return bits.join("").replace(/\B(?=(\d{4})+(?!\d))/g, " ");
 }
 
-const UNSUPPORTED_DECOMPRESSION: Record<string, string> = {
-  lz4: "lz4 decompression is not available in the web UI",
-  zstd: "zstd decompression is not available in the web UI",
-  snappy: "snappy decompression is not available in the web UI",
-};
+const DECOMPRESSION_LABELS: Record<string, string> = { gzip: "gzip", lz4: "lz4", zstd: "zstd", snappy: "snappy" };
+
+function decompressError(algorithm: string, cause: unknown): string {
+  return `${DECOMPRESSION_LABELS[algorithm] ?? algorithm}: ${cause instanceof Error ? cause.message : String(cause)}`;
+}
+
+// zstd 解压：fzstd（纯 JS、MIT；仅解码，与生产端 zstd 帧格式兼容）。
+export function inflateZstd(bytes: Uint8Array): { bytes: Uint8Array; error?: string } {
+  try {
+    return { bytes: fzstdDecompress(bytes) };
+  } catch (cause) {
+    return { bytes, error: decompressError("zstd", cause) };
+  }
+}
+
+// snappy 解压：snappyjs（纯 JS、MIT，含 Hadoop 变体外的标准 framing）。
+export function inflateSnappy(bytes: Uint8Array): { bytes: Uint8Array; error?: string } {
+  try {
+    return { bytes: snappyUncompress(bytes) };
+  } catch (cause) {
+    return { bytes, error: decompressError("snappy", cause) };
+  }
+}
+
+// lz4 解压：lz4js（纯 JS、ISC，frame 格式，与 Kafka lz4 块兼容）。
+export function inflateLz4(bytes: Uint8Array): { bytes: Uint8Array; error?: string } {
+  try {
+    return { bytes: new Uint8Array(lz4Decompress(bytes)) };
+  } catch (cause) {
+    return { bytes, error: decompressError("lz4", cause) };
+  }
+}
+
+/** 单步解压分发（算法不存在时返回原字节 + error，不抛异常）。 */
+export function inflateDecompression(algorithm: Decompression, bytes: Uint8Array): { bytes: Uint8Array; error?: string } {
+  switch (algorithm) {
+    case "zstd":
+      return inflateZstd(bytes);
+    case "snappy":
+      return inflateSnappy(bytes);
+    case "lz4":
+      return inflateLz4(bytes);
+    default:
+      return { bytes, error: `decompression "${algorithm}" is not supported` };
+  }
+}
 
 /**
  * 消息 value 二次解码/格式化（详情抽屉主流程）：
- * valueBase64（保真字节）→ [可选 base64 再解] → [可选 gzip 解压] → 格式化。
- * 返回 { text, error? }；error 表示管线中不可恢复的一步（展示而非抛出）。
+ * valueBase64（保真字节）→ [可选 base64 再解] → [可选 gzip/lz4/zstd/snappy 解压]
+ * → 格式化。返回 { text, error? }；error 表示管线中不可恢复的一步（展示而非抛出）。
  */
 export async function formatMessageValue(message: KafkaMessage, options: ValueFormatOptions): Promise<DecodedValue> {
   const encoded = message.valueBase64 ?? "";
@@ -128,13 +174,10 @@ export async function formatMessageValue(message: KafkaMessage, options: ValueFo
   }
   if (options.decompression !== "none" && !error) {
     const algorithm = options.decompression;
-    if (algorithm === "gzip") {
-      const inflated = await inflateGzip(bytes);
-      bytes = inflated.bytes;
-      error = inflated.error;
-    } else {
-      error = UNSUPPORTED_DECOMPRESSION[algorithm];
-    }
+    // gzip 走浏览器 DecompressionStream，其余走纯 JS 解压器（均为同步）。
+    const inflated = algorithm === "gzip" ? await inflateGzip(bytes) : inflateDecompression(algorithm, bytes);
+    bytes = inflated.bytes;
+    error = inflated.error;
   }
   const text = bytesToUtf8(bytes);
   switch (options.format) {
@@ -288,6 +331,29 @@ export function parsePartitionList(text: string): number[] {
   return [...seen].sort((left, right) => left - right);
 }
 
+/** 组级 reset 位点目标：`topic:0=100`（显式 topic）或 `0=100`（套用唯一 topic）→ {topic:{partition:offset}}。 */
+export function parseGroupOffsetTargetsText(
+  text: string,
+  topics: string[],
+): { targets: Record<string, Record<string, number>>; invalid: string[] } {
+  const targets: Record<string, Record<string, number>> = {};
+  const invalid: string[] = [];
+  const fallback = topics.length === 1 ? topics[0] : null;
+  for (const line of text.split(/[,，\n]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    const explicit = line.match(/^(.+?)\s*[:：](\d+)\s*[=:]\s*(\d+)$/);
+    const plain = line.match(/^(\d+)\s*[=:]\s*(\d+)$/);
+    if (explicit) {
+      const topic = explicit[1].trim();
+      (targets[topic] ??= {})[explicit[2]] = Number.parseInt(explicit[3], 10);
+    } else if (plain && fallback) {
+      (targets[fallback] ??= {})[plain[1]] = Number.parseInt(plain[2], 10);
+    } else {
+      invalid.push(line);
+    }
+  }
+  return { targets, invalid };
+}
+
 /** "0=100,1:200"（= 或 :，逗号/换行分隔）→ {partition:offset}；非法片段忽略。 */
 export function parsePartitionOffsetsText(text: string): Record<string, number> {
   const result: Record<string, number> = {};
@@ -319,6 +385,64 @@ export function offsetTimeToParam(text: string): string | number | null {
   // 已是 RFC3339 / 其他可解析时间串 → 校验后透传。
   const parsed = new Date(trimmed);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+/**
+ * 时间输入 → unix ms 数字（timestampFrom/To 提交用，ConsumeParams 为 number）：
+ * 复用 offsetTimeToParam（datetime-local → RFC3339、unix ms 透传），再归一到 ms。
+ * 留空或不可解析返回 null。
+ */
+export function offsetTimeToUnixMs(text: string): number | null {
+  const param = offsetTimeToParam(text);
+  if (param === null) return null;
+  if (typeof param === "number") return param;
+  const parsed = Date.parse(param);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/** unix ms → 本地时区 datetime-local 字符串（秒级精度，`YYYY-MM-DDTHH:mm:ss`）。 */
+export function unixMsToDatetimeLocal(ms: number): string {
+  if (!Number.isFinite(ms)) return "";
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/** 当前时间 → datetime-local 字符串（「现在」按钮用）。 */
+export function nowDatetimeLocal(): string {
+  return unixMsToDatetimeLocal(Date.now());
+}
+
+/**
+ * 时间输入模式切换（datetime-local ↔ unix ms 文本）：能解析就转换，
+ * 解析不了原样保留（不打断用户正在输入的草稿）。
+ */
+export function switchTimeInputMode(text: string, toMode: "datetime" | "unix"): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  if (toMode === "unix") {
+    const ms = offsetTimeToUnixMs(trimmed);
+    return ms === null ? text : String(ms);
+  }
+  const ms = offsetTimeToUnixMs(trimmed);
+  return ms === null ? text : unixMsToDatetimeLocal(ms);
+}
+
+/** 起止范围校验：两侧都有值且 from > to 时非法（等于合法，后端语义 from ≤ to）。 */
+export function isRangeReversed(fromMs: number | null, toMs: number | null): boolean {
+  return fromMs !== null && toMs !== null && fromMs > toMs;
+}
+
+/**
+ * fieldFilters 行级校验：数值比较 operator（gt/gte/lt/lte）要求 value 可转数字。
+ * 返回 i18n key 片段（messages.fieldValueNumeric）或 null（通过/不适用）。
+ */
+export function fieldFilterIssue(row: { operator: string; value: string }): string | null {
+  if (!["gt", "gte", "lt", "lte"].includes(row.operator)) return null;
+  const trimmed = row.value.trim();
+  if (!trimmed) return null; // 空值行不参与载荷，交给「启用 + 有值」过滤
+  return Number.isFinite(Number(trimmed)) ? null : "fieldValueNumeric";
 }
 
 export interface ConsumeFormValidationIssue {
@@ -399,6 +523,156 @@ export function parseHeadersJson(text: string): { headers: Record<string, string
     headers[key] = value;
   }
   return { headers };
+}
+
+/**
+ * 定位 JSON 首个语法错误所在行（1-based）。合法 JSON、空/纯空白文本返回 null
+ * （空态不算错——编辑器 linter 语义）。不解析 JSON.parse 的报错文案：V8 新版
+ * 对不少输入不再携带 position、WebKit/Firefox 格式各异，改用内置最小 JSON
+ * 扫描器，跨引擎（Electron/Chromium、CI Node）行为一致。
+ */
+export function jsonErrorLine(text: string): number | null {
+  const src = String(text ?? "");
+  if (!src.trim()) return null;
+  const length = src.length;
+  let pos = 0;
+  let line = 1;
+
+  function skipWs(): void {
+    while (pos < length) {
+      const ch = src[pos];
+      if (ch === "\n") {
+        pos += 1;
+        line += 1;
+      } else if (ch === " " || ch === "\t" || ch === "\r") {
+        pos += 1;
+      } else {
+        break;
+      }
+    }
+  }
+
+  function matchKeyword(word: string): boolean {
+    if (src.startsWith(word, pos)) {
+      pos += word.length;
+      return true;
+    }
+    return false;
+  }
+
+  function scanString(): boolean {
+    pos += 1; // 开引号
+    while (pos < length) {
+      const ch = src[pos];
+      if (ch === '"') {
+        pos += 1;
+        return true;
+      }
+      if (ch === "\\") {
+        const esc = src[pos + 1];
+        if (esc === "u") {
+          if (!/^[0-9a-fA-F]{4}$/.test(src.slice(pos + 2, pos + 6))) return false;
+          pos += 6;
+          continue;
+        }
+        if (esc === undefined || !"\"\\/bfnrt".includes(esc)) return false;
+        pos += 2;
+        continue;
+      }
+      // JSON 字符串内不允许字面控制字符（含裸换行），在此处报错。
+      if (ch < " ") return false;
+      pos += 1;
+    }
+    return false; // 未闭合
+  }
+
+  function scanNumber(): boolean {
+    if (src[pos] === "-") pos += 1;
+    if (src[pos] === "0") {
+      pos += 1;
+    } else if (src[pos]! >= "1" && src[pos]! <= "9") {
+      while (pos < length && src[pos] >= "0" && src[pos] <= "9") pos += 1;
+    } else {
+      return false;
+    }
+    if (src[pos] === ".") {
+      pos += 1;
+      if (!(pos < length && src[pos] >= "0" && src[pos] <= "9")) return false;
+      while (pos < length && src[pos] >= "0" && src[pos] <= "9") pos += 1;
+    }
+    if (src[pos] === "e" || src[pos] === "E") {
+      pos += 1;
+      if (src[pos] === "+" || src[pos] === "-") pos += 1;
+      if (!(pos < length && src[pos] >= "0" && src[pos] <= "9")) return false;
+      while (pos < length && src[pos] >= "0" && src[pos] <= "9") pos += 1;
+    }
+    return true;
+  }
+
+  function scanObject(): boolean {
+    pos += 1; // {
+    skipWs();
+    if (src[pos] === "}") {
+      pos += 1;
+      return true;
+    }
+    for (;;) {
+      skipWs();
+      if (src[pos] !== '"') return false;
+      if (!scanString()) return false;
+      skipWs();
+      if (src[pos] !== ":") return false;
+      pos += 1;
+      if (!scanValue()) return false;
+      skipWs();
+      if (src[pos] === ",") {
+        pos += 1;
+        continue;
+      }
+      if (src[pos] === "}") {
+        pos += 1;
+        return true;
+      }
+      return false;
+    }
+  }
+
+  function scanArray(): boolean {
+    pos += 1; // [
+    skipWs();
+    if (src[pos] === "]") {
+      pos += 1;
+      return true;
+    }
+    for (;;) {
+      if (!scanValue()) return false;
+      skipWs();
+      if (src[pos] === ",") {
+        pos += 1;
+        continue;
+      }
+      if (src[pos] === "]") {
+        pos += 1;
+        return true;
+      }
+      return false;
+    }
+  }
+
+  function scanValue(): boolean {
+    skipWs();
+    if (pos >= length) return false;
+    const ch = src[pos];
+    if (ch === "{") return scanObject();
+    if (ch === "[") return scanArray();
+    if (ch === '"') return scanString();
+    if (ch === "-" || (ch >= "0" && ch <= "9")) return scanNumber();
+    return matchKeyword("true") || matchKeyword("false") || matchKeyword("null");
+  }
+
+  if (!scanValue()) return line;
+  skipWs();
+  return pos < length ? line : null; // 尾部还有非空白内容 = 多余 token
 }
 
 export interface ConfluentProperties {
@@ -513,6 +787,46 @@ export function previewText(text: string | undefined, maxLength = 120): string {
   return singleLine.length > maxLength ? `${singleLine.slice(0, maxLength)}…` : singleLine;
 }
 
+// -- message table cap（消息页大数据量防护）------------------------------------------
+
+/**
+ * 消息表内存行上限：一次性 consume 大批量结果只保留最新 N 条，超出裁掉头部
+ * （较早的），防大表 ag-grid 全量行 + 深响应爆内存。StreamPanel 有独立的
+ * STREAM_ROWS_MAX（流式环形缓冲），两者语义不同不共用。
+ */
+export const MESSAGE_ROWS_MAX = 10000;
+
+/** 裁剪结果：rows 为保留的最新行、total 为裁剪前行数、dropped 为裁掉数量。 */
+export interface CappedRows<T> {
+  rows: T[];
+  total: number;
+  dropped: number;
+}
+
+/**
+ * 行数据上限裁剪（纯函数）：rows 语义为时间正序（新消息在尾部），保留最新
+ * max 条、裁掉头部。未超限返回原数组引用（零拷贝）；超限 slice 裁头部。
+ */
+export function capRows<T>(rows: T[], max: number = MESSAGE_ROWS_MAX): CappedRows<T> {
+  if (rows.length <= max) return { rows, total: rows.length, dropped: 0 };
+  const dropped = rows.length - max;
+  return { rows: rows.slice(dropped), total: rows.length, dropped };
+}
+
+/** 详情抽屉 value 预览上限（字符）：大 value（如 512KB base64）不整段塞 DOM 文本节点。 */
+export const DETAIL_VALUE_PREVIEW_MAX = 16384;
+
+/**
+ * 大 value 截断预览（纯函数）：保留头 80% + 尾 400 字符（头尾可判别格式/内容），
+ * 中间以语言中性的省略标记连接（数字+chars）。未超限原样返回（零拷贝语义）。
+ */
+export function truncatedValuePreview(text: string, previewMax = DETAIL_VALUE_PREVIEW_MAX): { text: string; truncated: boolean } {
+  if (text.length <= previewMax) return { text, truncated: false };
+  const head = Math.max(previewMax - 400, 0);
+  const hidden = text.length - head - 400;
+  return { text: `${text.slice(0, head)}\n⋯ ${hidden} chars ⋯\n${text.slice(-400)}`, truncated: true };
+}
+
 // -- stream buffer ----------------------------------------------------------------
 
 /** 流式面板展示上限（超出丢最旧并累计 dropped，防长会话 OOM）。 */
@@ -537,4 +851,99 @@ export function headersPreview(headers: Record<string, string> | undefined): str
   const entries = Object.entries(headers);
   const head = entries.slice(0, 2).map(([key, value]) => `${key}=${value}`).join(", ");
   return entries.length > 2 ? `${head}, …` : head;
+}
+
+// -- Confluent properties 导入助手（Phase 2，只读映射展示，不回填不持久化）---------
+
+export const PROPERTY_MASKED_PLACEHOLDER = "••••••";
+
+export interface PropertyMappingRow {
+  /** properties 原始键（或带提取标注的子键）。 */
+  property: string;
+  /** 解析出的值；敏感值以掩码占位，不携带明文。 */
+  value: string;
+  masked: boolean;
+  /** 对应宿主连接表单字段（manifest 连接字段名）。 */
+  formField: string;
+}
+
+/**
+ * Confluent properties → 只读键值映射（Phase 2 导入助手展示用）：
+ * bootstrap.servers / security.protocol / sasl.mechanism（含 GSSAPI 提示）/
+ * sasl.jaas.config（username/password/principal/keyTab 提取）/
+ * schema.registry.url / schema.registry.basic.auth.user.info。
+ * 敏感值（密码/secret）一律以掩码占位；纯函数，不触碰 localStorage。
+ */
+export function buildPropertyMappings(properties: ConfluentProperties): PropertyMappingRow[] {
+  const rows: PropertyMappingRow[] = [];
+  const push = (property: string, value: string, formField: string, masked = false) => {
+    if (value) rows.push({ property, value, masked, formField });
+  };
+  push("bootstrap.servers", properties["bootstrap.servers"] ?? "", "bootstrap_servers");
+  push("security.protocol", (properties["security.protocol"] ?? "").toUpperCase(), "security_protocol");
+  const mechanism = (properties["sasl.mechanism"] ?? "").toUpperCase();
+  if (mechanism) {
+    push("sasl.mechanism", mechanism, mechanism === "GSSAPI" ? "sasl_mechanism (GSSAPI) + kerberos_*" : "sasl_mechanism");
+  }
+  const jaas = properties["sasl.jaas.config"] ?? "";
+  if (jaas) {
+    const username = jaas.match(/(?:^|\s)username\s*=\s*"([^"]*)"/)?.[1] ?? "";
+    const password = jaas.match(/(?:^|\s)password\s*=\s*"([^"]*)"/)?.[1] ?? "";
+    const principal = jaas.match(/(?:^|\s)principal\s*=\s*"([^"]*)"/)?.[1] ?? "";
+    const keytab = jaas.match(/(?:^|\s)keyTab\s*=\s*"([^"]*)"/)?.[1] ?? "";
+    if (username) push("sasl.jaas.config → username", username, "sasl_username");
+    if (password) push("sasl.jaas.config → password", PROPERTY_MASKED_PLACEHOLDER, "sasl_password", true);
+    if (principal) push("sasl.jaas.config → principal", principal, "kerberos_principal");
+    if (keytab) push("sasl.jaas.config → keyTab", keytab, "kerberos_keytab_path");
+  }
+  push("sasl.kerberos.service.name", properties["sasl.kerberos.service.name"] ?? "", "kerberos_service_name");
+  push("schema.registry.url", properties["schema.registry.url"] ?? "", "sr_url");
+  const srAuth = properties["schema.registry.basic.auth.user.info"] ?? "";
+  if (srAuth) {
+    const separatorIndex = srAuth.indexOf(":");
+    if (separatorIndex > 0) {
+      push("schema.registry.basic.auth.user.info → user", srAuth.slice(0, separatorIndex), "sr_username");
+      push("schema.registry.basic.auth.user.info → secret", PROPERTY_MASKED_PLACEHOLDER, "sr_password", true);
+    }
+  }
+  return rows;
+}
+
+// -- 弹层交互纯逻辑（P1-2/P1-3：Esc 关闭 + Tab 焦点陷阱）------------------------
+// DOM 接线在各弹层组件（消息详情抽屉 / 连接弹窗），本节只放可单测的决策逻辑。
+
+/** 容器内可聚焦元素选择器（disabled / hidden input / tabindex=-1 除外）。 */
+export const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  'input:not([disabled]):not([type="hidden"])',
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+/** 容器内文档顺序的可聚焦元素列表。 */
+export function focusableElements(root: ParentNode): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+}
+
+/** Tab 焦点陷阱回绕：无焦点/越界时按方向取首/尾，否则循环步进；空容器返回 -1。 */
+export function nextFocusIndex(count: number, currentIndex: number, shift: boolean): number {
+  if (count <= 0) return -1;
+  if (currentIndex < 0 || currentIndex >= count) return shift ? count - 1 : 0;
+  return (currentIndex + (shift ? -1 : 1) + count) % count;
+}
+
+/** 弹层 keydown 决策：Esc → close；Tab → focus 回绕目标下标；其余 → none。 */
+export type ModalKeydownDecision = { kind: "none" } | { kind: "close" } | { kind: "focus"; index: number };
+
+export function decideModalKeydown(
+  key: string,
+  shiftKey: boolean,
+  focusableCount: number,
+  currentIndex: number,
+): ModalKeydownDecision {
+  if (key === "Escape") return { kind: "close" };
+  if (key !== "Tab" || focusableCount <= 0) return { kind: "none" };
+  return { kind: "focus", index: nextFocusIndex(focusableCount, currentIndex, shiftKey) };
 }

@@ -33,9 +33,20 @@ else
 fi
 
 echo "==> package .dbxp (only when manifest.json exists)"
-if [ -f manifest.json ] && command -v dbx-plugin >/dev/null 2>&1; then
+if [ -f manifest.json ]; then
   unset DBX_PLUGIN_SDK_ROOT
-  NO_COLOR=1 dbx-plugin package . || echo "WARN: dbx-plugin package failed (backend under parallel development)"
+  # Same native-CLI direct call as build.sh: the npm wrapper injects
+  # DBX_PLUGIN_SDK_ROOT whose bundled go.work is pinned to go 1.22 and breaks
+  # modules requiring >=1.24.
+  CLI_PKG="$(npm root -g 2>/dev/null)/@dbx-app/plugin-cli"
+  NATIVE_CLI="$CLI_PKG/node_modules/@dbx-app/plugin-cli-darwin-arm64/bin/dbx-plugin"
+  if [ -x "$NATIVE_CLI" ]; then
+    env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 "$NATIVE_CLI" package .
+  elif command -v dbx-plugin >/dev/null 2>&1; then
+    env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 dbx-plugin package .
+  else
+    echo "SKIP: dbx-plugin CLI not available"
+  fi
 else
   echo "SKIP: manifest.json/dbx-plugin CLI not ready yet; frontend artifacts are in ui/"
 fi

@@ -6,8 +6,24 @@
 //   confirmTopic 确认文本（§6 门禁，后端同样校验）
 import { computed, ref, watch } from "vue";
 import { Plus, RefreshCw, Trash2, TrendingUp, Wrench } from "@lucide/vue";
+import type { ColDef } from "ag-grid-community";
+import DbxAgGrid from "./DbxAgGrid.vue";
 import { kafkaApi, type ConfigEntry, type KafkaTopic, type TopicOffsetRow, type TopicPartitionInfo } from "../lib/api";
-import { formatTimestamp, offsetTimeToParam, parseHeadersJson } from "../lib/kafkaModel";
+import {
+  MINIMAL_PARTITION_FIELDS,
+  MINIMAL_TOPIC_FIELDS,
+  MINIMAL_TOPIC_OFFSET_FIELDS,
+  partitionColumns,
+  toPartitionRows,
+  toTopicOffsetRows,
+  toTopicRows,
+  topicColumns,
+  topicOffsetColumns,
+  type PartitionVm,
+  type TopicOffsetVm,
+  type TopicVm,
+} from "../lib/kafkaColumns";
+import { offsetTimeToParam, parseHeadersJson, sortTopics } from "../lib/kafkaModel";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -45,9 +61,19 @@ const deleteConfirmText = ref("");
 const expandOpen = ref(false);
 const expandCount = ref("");
 
-// offsets form
-const offsetTimeMode = ref<"earliest" | "latest" | "custom">("latest");
+// offsets form（Phase 2：策略全量 earliest/latest/max-timestamp/log-start/custom）
+type OffsetTimeMode = "earliest" | "latest" | "max-timestamp" | "log-start" | "custom";
+const offsetTimeMode = ref<OffsetTimeMode>("latest");
 const offsetCustomTime = ref("");
+
+// P2-3：与侧栏 TopicTree 同源排序（sortTopics：internal 沉底 + 业务评分），
+// 修复管理表默认顺序与侧栏树不一致。
+const topicGridRows = computed(() => toTopicRows(sortTopics(props.topics)));
+const topicGridCols = computed(() => topicColumns() as ColDef<TopicVm>[]);
+const partitionGridRows = computed(() => toPartitionRows(partitions.value));
+const partitionGridCols = computed(() => partitionColumns() as ColDef<PartitionVm>[]);
+const offsetGridRows = computed(() => toTopicOffsetRows(offsetRows.value));
+const offsetGridCols = computed(() => topicOffsetColumns() as ColDef<TopicOffsetVm>[]);
 
 // config editor
 const configOpen = ref(false);
@@ -56,7 +82,7 @@ const configEdits = ref<Array<{ key: string; value: string; remove?: boolean }>>
 const canManage = computed(() => props.canWrite);
 const canDeleteTopic = computed(() => props.canWrite && props.canDelete);
 
-function selectTopic(topic: KafkaTopic) {
+function selectTopic(topic: KafkaTopic | null) {
   selected.value = topic;
   partitions.value = [];
   offsetRows.value = [];
@@ -111,7 +137,8 @@ async function submitCreate() {
   }
 }
 
-function askDelete(topic: KafkaTopic) {
+function askDelete(topic: KafkaTopic | null) {
+  if (!topic) return;
   deleteTarget.value = topic.name;
   deleteConfirmText.value = "";
   deleteOpen.value = true;
@@ -134,7 +161,8 @@ async function submitDelete() {
   }
 }
 
-function openExpand(topic: KafkaTopic) {
+function openExpand(topic: KafkaTopic | null) {
+  if (!topic) return;
   selected.value = topic;
   expandCount.value = String(topic.partitionCount + 1);
   expandOpen.value = true;
@@ -165,7 +193,8 @@ async function queryOffsets() {
   busy.value = true;
   emit("error", "");
   try {
-    const offsetTime = offsetTimeMode.value === "custom" ? offsetTimeToParam(offsetCustomTime.value) : offsetTimeMode.value;
+    const offsetTime =
+      offsetTimeMode.value === "custom" ? offsetTimeToParam(offsetCustomTime.value) : (offsetTimeMode.value as string);
     const response = await kafkaApi.topicsOffsetsList(
       [selected.value.name],
       offsetTime === undefined ? undefined : (offsetTime as string | number),
@@ -178,7 +207,8 @@ async function queryOffsets() {
   }
 }
 
-async function openConfig(topic: KafkaTopic) {
+async function openConfig(topic: KafkaTopic | null) {
+  if (!topic) return;
   selected.value = topic;
   busy.value = true;
   try {
@@ -220,14 +250,6 @@ async function submitConfig() {
   }
 }
 
-function partitionHealthClass(partition: TopicPartitionInfo): string {
-  return partition.isHealthy === false ? "badge-danger" : "badge-ok";
-}
-
-function healthLabel(partition: TopicPartitionInfo): string {
-  return partition.isHealthy === false ? t("topics.unhealthy") : t("topics.healthy");
-}
-
 watch(
   () => props.topics,
   (next) => {
@@ -247,85 +269,57 @@ watch(
         <button class="icon-button" :title="t('topics.refresh')" @click="emit('refresh')">
           <RefreshCw :class="{ spinning: loading }" />
         </button>
+        <button class="qb-add" type="button" :disabled="!selected" :title="t('topics.describe')" @click="describeSelected">
+          {{ t("topics.describe") }}
+        </button>
+        <button class="qb-add" type="button" :disabled="!selected" :title="t('topics.offsets')" @click="queryOffsets">
+          {{ t("topics.offsets") }}
+        </button>
+        <button class="qb-add" type="button" :disabled="!selected" :title="t('topics.configGet')" @click="selected && openConfig(selected)">
+          <Wrench aria-hidden="true" />
+        </button>
+        <button class="qb-add" type="button" :disabled="!canManage || !selected" :title="canManage ? t('topics.expand') : t('readOnly')" @click="selected && openExpand(selected)">
+          <TrendingUp aria-hidden="true" />
+        </button>
         <button class="toolbar-button" :disabled="!canManage" :title="canManage ? t('topics.create') : t('readOnly')" @click="openCreate">
           <Plus aria-hidden="true" /><span>{{ t("topics.create") }}</span>
+        </button>
+        <button
+          class="qb-add"
+          type="button"
+          :disabled="!canDeleteTopic || !selected"
+          :title="canDeleteTopic ? t('topics.delete') : canDelete ? t('readOnly') : t('noDelete')"
+          @click="selected && askDelete(selected)"
+        >
+          <Trash2 aria-hidden="true" />
         </button>
       </span>
     </div>
 
-    <div class="kafka-table">
-      <div class="kafka-table-header topics-cols">
-        <span>{{ t("topics.colTopic") }}</span>
-        <span>{{ t("topics.colPartitions") }}</span>
-        <span>{{ t("topics.colReplication") }}</span>
-        <span />
-        <span />
-      </div>
-      <div class="kafka-table-rows">
-        <p v-if="topics.length === 0" class="empty compact">{{ t("topics.empty") }}</p>
-        <div v-for="topic in topics" :key="topic.name" class="kafka-table-row topics-cols" style="cursor: default" @click="selectTopic(topic)">
-          <span class="mono-s">
-            {{ topic.name }}
-            <span v-if="topic.isInternal || topic.name.startsWith('_')" class="badge badge-internal">{{ t("topics.colInternal") }}</span>
-          </span>
-          <span class="mono-s">{{ topic.partitionCount }}</span>
-          <span class="mono-s">{{ topic.replicationFactor }}</span>
-          <span class="inline-actions">
-            <button class="qb-add" type="button" :title="t('topics.describe')" @click.stop="selectTopic(topic); describeSelected()">
-              {{ t("topics.describe") }}
-            </button>
-            <button class="qb-add" type="button" :title="t('topics.offsets')" @click.stop="selectTopic(topic); queryOffsets()">
-              {{ t("topics.offsets") }}
-            </button>
-            <button class="qb-add" type="button" :title="t('topics.configGet')" @click.stop="openConfig(topic)">
-              <Wrench aria-hidden="true" />
-            </button>
-          </span>
-          <span class="inline-actions">
-            <button
-              class="qb-add"
-              type="button"
-              :disabled="!canManage"
-              :title="canManage ? t('topics.expand') : t('readOnly')"
-              @click.stop="openExpand(topic)"
-            >
-              <TrendingUp aria-hidden="true" />
-            </button>
-            <button
-              class="qb-add"
-              type="button"
-              :disabled="!canDeleteTopic"
-              :title="canDeleteTopic ? t('topics.delete') : canDelete ? t('readOnly') : t('noDelete')"
-              @click.stop="askDelete(topic)"
-            >
-              <Trash2 aria-hidden="true" />
-            </button>
-          </span>
-        </div>
-      </div>
+    <div class="grid-box grid-box--fill">
+      <p v-if="topics.length === 0" class="empty compact">{{ t("topics.empty") }}</p>
+      <DbxAgGrid
+        v-else
+        table-key="topics"
+        :row-data="topicGridRows"
+        :column-defs="topicGridCols"
+        :compact-fields="MINIMAL_TOPIC_FIELDS"
+        row-selection="single"
+        @selection-changed="(row: unknown) => selectTopic((row as TopicVm | null)?.raw ?? null)"
+      />
     </div>
 
     <div v-if="selected && partitions.length > 0">
       <p class="subpanel-title">{{ t("topics.describeTitle", { topic: selected.name }) }}</p>
-      <div class="kafka-table" style="max-height: 200px">
-        <div class="kafka-table-header partitions-cols">
-          <span>#</span>
-          <span>{{ t("topics.colLeader") }}</span>
-          <span>{{ t("topics.colReplicas") }}</span>
-          <span>{{ t("topics.colIsr") }}</span>
-          <span>{{ t("topics.colOffline") }}</span>
-          <span>{{ t("topics.colHealthy") }}</span>
-        </div>
-        <div class="kafka-table-rows">
-          <div v-for="partition in partitions" :key="partition.partition" class="kafka-table-row partitions-cols" style="cursor: default">
-            <span class="mono-s">{{ partition.partition }}</span>
-            <span class="mono-s">{{ partition.leader }}</span>
-            <span class="mono-s">{{ partition.replicas.join(",") }}</span>
-            <span class="mono-s">{{ partition.isr.join(",") }}</span>
-            <span class="mono-s">{{ partition.offlineReplicas.length > 0 ? partition.offlineReplicas.join(",") : "—" }}</span>
-            <span><span class="badge" :class="partitionHealthClass(partition)">{{ healthLabel(partition) }}</span></span>
-          </div>
-        </div>
+      <div class="grid-box" style="height: 180px">
+        <DbxAgGrid
+          table-key="topic-partitions"
+          :row-data="partitionGridRows"
+          :column-defs="partitionGridCols"
+          :compact-fields="MINIMAL_PARTITION_FIELDS"
+          :row-selection="false"
+          :emit-row-click="false"
+        />
       </div>
     </div>
 
@@ -337,6 +331,8 @@ watch(
           <select v-model="offsetTimeMode">
             <option value="earliest">{{ t("topics.timeEarliest") }}</option>
             <option value="latest">{{ t("topics.timeLatest") }}</option>
+            <option value="max-timestamp">{{ t("topics.timeMaxTimestamp") }}</option>
+            <option value="log-start">{{ t("topics.timeLogStart") }}</option>
             <option value="custom">{{ t("topics.timeCustom") }}</option>
           </select>
         </label>
@@ -346,22 +342,15 @@ watch(
         </label>
         <button class="primary-button compact" type="button" :disabled="busy" @click="queryOffsets">{{ t("acls.filterRun") }}</button>
       </div>
-      <div class="kafka-table" style="max-height: 200px">
-        <div class="kafka-table-header offsets-cols">
-          <span>#</span>
-          <span>Offset</span>
-          <span>{{ t("messages.colTimestamp") }}</span>
-          <span>Epoch</span>
-        </div>
-        <div class="kafka-table-rows">
-          <p v-if="offsetRows.length === 0" class="empty compact">{{ t("topics.offsetsEmpty") }}</p>
-          <div v-for="row in offsetRows" :key="row.partition" class="kafka-table-row offsets-cols" style="cursor: default">
-            <span class="mono-s">{{ row.partition }}</span>
-            <span class="mono-s">{{ row.offset }}</span>
-            <span class="mono-s">{{ formatTimestamp(row.timestamp) }}</span>
-            <span class="mono-s">{{ row.leaderEpoch ?? "—" }}</span>
-          </div>
-        </div>
+      <div class="grid-box" style="height: 180px">
+        <DbxAgGrid
+          table-key="topic-offsets"
+          :row-data="offsetGridRows"
+          :column-defs="offsetGridCols"
+          :compact-fields="MINIMAL_TOPIC_OFFSET_FIELDS"
+          :row-selection="false"
+          :emit-row-click="false"
+        />
       </div>
     </div>
 
@@ -488,15 +477,6 @@ watch(
 </template>
 
 <style scoped>
-.topics-cols {
-  grid-template-columns: minmax(140px, 2fr) 70px 50px minmax(200px, 2fr) auto;
-}
-.partitions-cols {
-  grid-template-columns: 40px 70px minmax(90px, 1fr) minmax(90px, 1fr) 70px 80px;
-}
-.offsets-cols {
-  grid-template-columns: 40px minmax(80px, 1fr) minmax(140px, 1fr) 70px;
-}
 .config-table {
   width: 100%;
   border-collapse: collapse;
@@ -512,5 +492,14 @@ watch(
 .config-table th {
   color: var(--muted-foreground);
   font-weight: 600;
+}
+/* P2 统一禁用态：只读下创建/扩分区/删除等按钮弱对比补强（cursor + 去饱和）。 */
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+button:disabled {
+  filter: grayscale(0.4);
 }
 </style>

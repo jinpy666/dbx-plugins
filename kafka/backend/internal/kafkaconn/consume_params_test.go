@@ -4,6 +4,8 @@ package kafkaconn
 // 纯解析不连网）。
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -281,4 +283,58 @@ func TestValidateConsumeParamsTimestampRange(t *testing.T) {
 func isolationNone() kgo.IsolationLevel {
 	level, _ := isolationLevelValue("")
 	return level
+}
+
+// --- Phase 2：offsets 全策略与 produce 载荷二选一 ---
+
+func TestParseOffsetTimeModesPhase2(t *testing.T) {
+	for input, want := range map[string]string{
+		"max-timestamp": "max-timestamp",
+		"MAX_TIMESTAMP": "max-timestamp",
+		"log-start":     "log-start",
+		"log_start":     "log-start",
+	} {
+		mode, _, err := parseOffsetTime(input)
+		if err != nil || mode != want {
+			t.Errorf("parseOffsetTime(%q) = %q, %v; want %q", input, mode, err, want)
+		}
+	}
+	// 负数整数是协议保留值（-1/-2/-3/-4），拒绝而不是当时间戳。
+	if _, _, err := parseOffsetTime("-3"); err == nil {
+		t.Error("negative integer offsetTime expected error")
+	}
+	if _, _, err := parseOffsetTime("1700000000000"); err != nil {
+		t.Errorf("unix ms error = %v", err)
+	}
+}
+
+func TestProducePayloadBytesExclusive(t *testing.T) {
+	payload, err := producePayloadBytes(ProduceRequest{Value: "hello"})
+	if err != nil || string(payload) != "hello" {
+		t.Errorf("value path = %q, %v", payload, err)
+	}
+	payload, err = producePayloadBytes(ProduceRequest{ValueBase64: "aGVsbG8="})
+	if err != nil || string(payload) != "hello" {
+		t.Errorf("valueBase64 path = %q, %v", payload, err)
+	}
+	if _, err := producePayloadBytes(ProduceRequest{Value: "a", ValueBase64: "Yg=="}); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("both given error = %v", err)
+	}
+	if _, err := producePayloadBytes(ProduceRequest{}); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Errorf("none given error = %v", err)
+	}
+	if _, err := producePayloadBytes(ProduceRequest{ValueBase64: "!!not-base64!!"}); err == nil {
+		t.Error("bad base64 expected error")
+	}
+}
+
+func TestConsumeParamsSchemaRefParsing(t *testing.T) {
+	var consume ConsumeParams
+	raw := []byte(`{"connectionId":"c1","topic":"t","schema":{"subject":"s-value","version":3,"format":"avro"}}`)
+	if err := json.Unmarshal(raw, &consume); err != nil {
+		t.Fatalf("unmarshal ConsumeParams error = %v", err)
+	}
+	if consume.Schema == nil || consume.Schema.Subject != "s-value" || consume.Schema.Version != 3 || consume.Schema.Format != "avro" {
+		t.Errorf("schema = %+v", consume.Schema)
+	}
 }

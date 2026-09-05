@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.kafka",
   "name": "DBX Kafka",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "dbx",
   "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
   "icon": "assets/plugin.svg",
@@ -102,6 +102,10 @@
             {
               "label": "SCRAM-SHA-512",
               "value": "SCRAM-SHA-512"
+            },
+            {
+              "label": "GSSAPI (Kerberos)",
+              "value": "GSSAPI"
             }
           ],
           "default": "PLAIN",
@@ -117,7 +121,7 @@
         {
           "key": "sasl_username",
           "label": "SASL username",
-          "description": "Username for the SASL mechanism.",
+          "description": "Username for the SASL mechanism; required for PLAIN and SCRAM mechanisms (not needed for GSSAPI).",
           "type": "text",
           "default": "",
           "binding": "config",
@@ -127,12 +131,20 @@
               "SASL_PLAINTEXT",
               "SASL_SSL"
             ]
+          },
+          "required_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "PLAIN",
+              "SCRAM-SHA-256",
+              "SCRAM-SHA-512"
+            ]
           }
         },
         {
           "key": "sasl_password",
           "label": "SASL password",
-          "description": "Password for the SASL mechanism; stored via host secret binding, never persisted by the plugin.",
+          "description": "Password for the SASL mechanism; required for PLAIN and SCRAM mechanisms (not needed for GSSAPI); stored via host secret binding, never persisted by the plugin.",
           "type": "password",
           "default": "",
           "binding": "secret",
@@ -141,6 +153,14 @@
             "one_of": [
               "SASL_PLAINTEXT",
               "SASL_SSL"
+            ]
+          },
+          "required_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "PLAIN",
+              "SCRAM-SHA-256",
+              "SCRAM-SHA-512"
             ]
           }
         },
@@ -227,6 +247,298 @@
           "type": "boolean",
           "default": false,
           "binding": "config"
+        },
+        {
+          "key": "connection_source",
+          "label": "Connection source",
+          "description": "Where broker endpoints come from: direct bootstrap list, or discovered from ZooKeeper (zk_servers).",
+          "options": [
+            {
+              "label": "Bootstrap servers",
+              "value": "bootstrap"
+            },
+            {
+              "label": "ZooKeeper discovery",
+              "value": "zookeeper"
+            }
+          ],
+          "default": "bootstrap",
+          "type": "select",
+          "binding": "config"
+        },
+        {
+          "key": "zk_servers",
+          "label": "ZooKeeper servers",
+          "description": "Comma-separated ZooKeeper ensemble (host:port[/chroot]) used to discover brokers when the connection source is zookeeper.",
+          "placeholder": "zk1:2181,zk2:2181/chroot",
+          "type": "textarea",
+          "binding": "config",
+          "visible_when": {
+            "field": "connection_source",
+            "one_of": [
+              "zookeeper"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_service_name",
+          "label": "Kerberos service name",
+          "description": "Kafka service name used for the GSSAPI ticket (the first part of broker principal kafka/BROKER@REALM).",
+          "default": "kafka",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_realm",
+          "label": "Kerberos realm",
+          "description": "Kerberos realm; empty derives the realm from kerberos_principal (user@REALM) or krb5.conf.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_principal",
+          "label": "Kerberos principal",
+          "description": "Client principal in user@REALM form used with the keytab; required when the SASL mechanism is GSSAPI.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          },
+          "required_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_keytab_path",
+          "label": "Kerberos keytab path",
+          "description": "Path to the keytab file on this machine (file path only, never the content); required when the SASL mechanism is GSSAPI.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          },
+          "required_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_krb5_conf_path",
+          "label": "krb5.conf path",
+          "description": "Path to krb5.conf; empty falls back to $KRB5_CONFIG, then /etc/krb5.conf.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "schema_registry",
+          "label": "Schema Registry",
+          "description": "Which schema registry backend to use: none (schema features off), Confluent-compatible REST, or AWS Glue Schema Registry.",
+          "type": "select",
+          "options": [
+            {
+              "label": "None (disabled)",
+              "value": "none"
+            },
+            {
+              "label": "Confluent-compatible",
+              "value": "confluent"
+            },
+            {
+              "label": "AWS Glue",
+              "value": "aws_glue"
+            }
+          ],
+          "default": "none",
+          "binding": "config"
+        },
+        {
+          "key": "sr_url",
+          "label": "Schema Registry URL",
+          "description": "Confluent-compatible Schema Registry base URL (including Redpanda built-in registry); required when schema registry is Confluent-compatible.",
+          "placeholder": "http://localhost:8081",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "confluent"
+            ]
+          },
+          "required_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "confluent"
+            ]
+          }
+        },
+        {
+          "key": "sr_username",
+          "label": "Schema Registry username",
+          "description": "Username for Schema Registry basic auth; leave empty when the registry is unauthenticated.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "confluent"
+            ]
+          }
+        },
+        {
+          "key": "sr_password",
+          "label": "Schema Registry password",
+          "description": "Password for Schema Registry basic auth; stored via host secret binding, never persisted by the plugin.",
+          "type": "password",
+          "binding": "secret",
+          "visible_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "confluent"
+            ]
+          }
+        },
+        {
+          "key": "glue_region",
+          "label": "AWS Glue region",
+          "description": "AWS region of the Glue Schema Registry (for example us-east-1); required when schema registry is AWS Glue.",
+          "placeholder": "us-east-1",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "aws_glue"
+            ]
+          },
+          "required_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "aws_glue"
+            ]
+          }
+        },
+        {
+          "key": "glue_registry_name",
+          "label": "AWS Glue registry name",
+          "description": "Name of the AWS Glue schema registry used as the subject namespace for Glue schema management; required when schema registry is AWS Glue.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "aws_glue"
+            ]
+          },
+          "required_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "aws_glue"
+            ]
+          }
+        },
+        {
+          "key": "glue_auth_mode",
+          "label": "AWS Glue auth mode",
+          "description": "AWS credential source for Glue: default chain (environment/shared config) or static access key.",
+          "type": "select",
+          "options": [
+            {
+              "label": "AWS default credential chain",
+              "value": "default"
+            },
+            {
+              "label": "Static access key",
+              "value": "static"
+            }
+          ],
+          "default": "default",
+          "binding": "config",
+          "visible_when": {
+            "field": "schema_registry",
+            "one_of": [
+              "aws_glue"
+            ]
+          }
+        },
+        {
+          "key": "glue_access_key_id",
+          "label": "AWS access key ID",
+          "description": "Access key ID used when glue auth mode is static (required in that case); leave empty for the default credential chain.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "glue_auth_mode",
+            "one_of": [
+              "static"
+            ]
+          },
+          "required_when": {
+            "field": "glue_auth_mode",
+            "one_of": [
+              "static"
+            ]
+          }
+        },
+        {
+          "key": "glue_secret_access_key",
+          "label": "AWS secret access key",
+          "description": "Secret access key for the static AWS credentials (required when glue auth mode is static); stored via host secret binding, never persisted by the plugin.",
+          "type": "password",
+          "binding": "secret",
+          "visible_when": {
+            "field": "glue_auth_mode",
+            "one_of": [
+              "static"
+            ]
+          },
+          "required_when": {
+            "field": "glue_auth_mode",
+            "one_of": [
+              "static"
+            ]
+          }
+        },
+        {
+          "key": "glue_session_token",
+          "label": "AWS session token",
+          "description": "Optional temporary session token for the static AWS credentials (STS); leave empty for long-lived keys.",
+          "type": "password",
+          "binding": "secret",
+          "visible_when": {
+            "field": "glue_auth_mode",
+            "one_of": [
+              "static"
+            ]
+          }
         }
       ]
     },
@@ -271,16 +583,17 @@
               "options": {
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
-                "SCRAM-SHA-512": "SCRAM-SHA-512"
+                "SCRAM-SHA-512": "SCRAM-SHA-512",
+                "GSSAPI": "GSSAPI（Kerberos）"
               }
             },
             "sasl_username": {
               "label": "SASL 用户名",
-              "description": "SASL 认证使用的用户名。"
+              "description": "SASL 认证使用的用户名；PLAIN/SCRAM 机制必填（GSSAPI 不需要）。"
             },
             "sasl_password": {
               "label": "SASL 密码",
-              "description": "SASL 认证使用的密码；经宿主 secret binding 存储，插件不持久化。"
+              "description": "SASL 认证使用的密码；PLAIN/SCRAM 机制必填（GSSAPI 不需要）；经宿主 secret binding 存储，插件不持久化。"
             },
             "tls_ca_cert": {
               "label": "CA 证书（PEM）",
@@ -309,6 +622,87 @@
             "allow_delete": {
               "label": "允许删除类操作",
               "description": "允许删除类操作（topics/delete、groups/delete、acls/delete）；只读模式下本项无效。"
+            },
+            "connection_source": {
+              "label": "连接来源",
+              "description": "broker 地址来源：直连 bootstrap 列表，或经 ZooKeeper（zk_servers）发现。",
+              "options": {
+                "bootstrap": "Bootstrap 服务器列表",
+                "zookeeper": "ZooKeeper 发现"
+              }
+            },
+            "zk_servers": {
+              "label": "ZooKeeper 服务器",
+              "description": "ZooKeeper 集群地址（host:port[/chroot]，逗号分隔）；连接来源为 zookeeper 时用于发现 broker。"
+            },
+            "kerberos_service_name": {
+              "label": "Kerberos 服务名",
+              "description": "GSSAPI 票据使用的 Kafka 服务名（broker principal kafka/BROKER@REALM 的第一段）。"
+            },
+            "kerberos_realm": {
+              "label": "Kerberos realm",
+              "description": "Kerberos realm；留空时从 kerberos_principal（user@REALM）或 krb5.conf 推导。"
+            },
+            "kerberos_principal": {
+              "label": "Kerberos principal",
+              "description": "配合 keytab 使用的客户端 principal（user@REALM 形式）；GSSAPI 必填。"
+            },
+            "kerberos_keytab_path": {
+              "label": "Kerberos keytab 路径",
+              "description": "本机 keytab 文件路径（仅路径，不收文件内容）；GSSAPI 必填。"
+            },
+            "kerberos_krb5_conf_path": {
+              "label": "krb5.conf 路径",
+              "description": "krb5.conf 路径；留空依次回落 $KRB5_CONFIG、/etc/krb5.conf。"
+            },
+            "schema_registry": {
+              "label": "Schema Registry",
+              "description": "Schema Registry 后端选择：none（禁用 schema 能力）、Confluent 兼容 REST 或 AWS Glue Schema Registry。",
+              "options": {
+                "none": "不启用（禁用）",
+                "confluent": "Confluent 兼容",
+                "aws_glue": "AWS Glue"
+              }
+            },
+            "sr_url": {
+              "label": "Schema Registry URL",
+              "description": "Confluent 兼容 Schema Registry 基础 URL（含 Redpanda 内置 Registry）；schema registry 选 Confluent 兼容时必填。"
+            },
+            "sr_username": {
+              "label": "Schema Registry 用户名",
+              "description": "Schema Registry basic auth 用户名；Registry 未开启认证时留空。"
+            },
+            "sr_password": {
+              "label": "Schema Registry 密码",
+              "description": "Schema Registry basic auth 密码；经宿主 secret binding 存储，插件不持久化。"
+            },
+            "glue_region": {
+              "label": "AWS Glue 区域",
+              "description": "Glue Schema Registry 所在的 AWS 区域（如 us-east-1）；schema registry 选 AWS Glue 时必填。"
+            },
+            "glue_registry_name": {
+              "label": "AWS Glue registry 名称",
+              "description": "AWS Glue schema registry 的名称，作为 Glue schema 管理的 subject 命名空间；schema registry 选 AWS Glue 时必填。"
+            },
+            "glue_auth_mode": {
+              "label": "AWS Glue 认证模式",
+              "description": "Glue 使用的 AWS 凭据来源：默认凭据链（环境变量/共享配置）或静态访问密钥。",
+              "options": {
+                "default": "AWS 默认凭据链",
+                "static": "静态访问密钥"
+              }
+            },
+            "glue_access_key_id": {
+              "label": "AWS Access Key ID",
+              "description": "glue 认证模式为静态访问密钥时使用的 Access Key ID；静态访问密钥模式必填，默认凭据链留空。"
+            },
+            "glue_secret_access_key": {
+              "label": "AWS Secret Access Key",
+              "description": "静态 AWS 凭据的 Secret Access Key；静态访问密钥模式必填；由宿主 secret binding 保存，插件不持久化。"
+            },
+            "glue_session_token": {
+              "label": "AWS Session Token",
+              "description": "静态 AWS 凭据的可选临时会话令牌（STS）；长期密钥请留空。"
             }
           }
         },
@@ -350,16 +744,17 @@
               "options": {
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
-                "SCRAM-SHA-512": "SCRAM-SHA-512"
+                "SCRAM-SHA-512": "SCRAM-SHA-512",
+                "GSSAPI": "GSSAPI（Kerberos）"
               }
             },
             "sasl_username": {
               "label": "SASL 使用者名稱",
-              "description": "SASL 認證使用的使用者名稱。"
+              "description": "SASL 認證使用的使用者名稱；PLAIN/SCRAM 機制必填（GSSAPI 不需要）。"
             },
             "sasl_password": {
               "label": "SASL 密碼",
-              "description": "SASL 認證使用的密碼；經宿主 secret binding 儲存，外掛不持久化。"
+              "description": "SASL 認證使用的密碼；PLAIN/SCRAM 機制必填（GSSAPI 不需要）；經宿主 secret binding 儲存，外掛不持久化。"
             },
             "tls_ca_cert": {
               "label": "CA 憑證（PEM）",
@@ -388,6 +783,87 @@
             "allow_delete": {
               "label": "允許刪除類操作",
               "description": "允許刪除類操作（topics/delete、groups/delete、acls/delete）；唯讀模式下本項無效。"
+            },
+            "connection_source": {
+              "label": "連線來源",
+              "description": "broker 位址來源：直連 bootstrap 清單，或經 ZooKeeper（zk_servers）探索。",
+              "options": {
+                "bootstrap": "Bootstrap 伺服器清單",
+                "zookeeper": "ZooKeeper 探索"
+              }
+            },
+            "zk_servers": {
+              "label": "ZooKeeper 伺服器",
+              "description": "ZooKeeper 叢集位址（host:port[/chroot]，逗號分隔）；連線來源為 zookeeper 時用於探索 broker。"
+            },
+            "kerberos_service_name": {
+              "label": "Kerberos 服務名",
+              "description": "GSSAPI 票據使用的 Kafka 服務名（broker principal kafka/BROKER@REALM 的第一段）。"
+            },
+            "kerberos_realm": {
+              "label": "Kerberos realm",
+              "description": "Kerberos realm；留空時從 kerberos_principal（user@REALM）或 krb5.conf 推導。"
+            },
+            "kerberos_principal": {
+              "label": "Kerberos principal",
+              "description": "配合 keytab 使用的用戶端 principal（user@REALM 形式）；GSSAPI 必填。"
+            },
+            "kerberos_keytab_path": {
+              "label": "Kerberos keytab 路徑",
+              "description": "本機 keytab 檔案路徑（僅路徑，不收檔案內容）；GSSAPI 必填。"
+            },
+            "kerberos_krb5_conf_path": {
+              "label": "krb5.conf 路徑",
+              "description": "krb5.conf 路徑；留空依次回落 $KRB5_CONFIG、/etc/krb5.conf。"
+            },
+            "schema_registry": {
+              "label": "Schema Registry",
+              "description": "Schema Registry 後端選擇：none（停用 schema 能力）、Confluent 相容 REST 或 AWS Glue Schema Registry。",
+              "options": {
+                "none": "不啟用（停用）",
+                "confluent": "Confluent 相容",
+                "aws_glue": "AWS Glue"
+              }
+            },
+            "sr_url": {
+              "label": "Schema Registry URL",
+              "description": "Confluent 相容 Schema Registry 基礎 URL（含 Redpanda 內建 Registry）；schema registry 選 Confluent 相容時必填。"
+            },
+            "sr_username": {
+              "label": "Schema Registry 使用者名稱",
+              "description": "Schema Registry basic auth 使用者名稱；Registry 未開啟認證時留空。"
+            },
+            "sr_password": {
+              "label": "Schema Registry 密碼",
+              "description": "Schema Registry basic auth 密碼；經宿主 secret binding 儲存，外掛不持久化。"
+            },
+            "glue_region": {
+              "label": "AWS Glue 區域",
+              "description": "Glue Schema Registry 所在的 AWS 區域（如 us-east-1）；schema registry 選 AWS Glue 時必填。"
+            },
+            "glue_registry_name": {
+              "label": "AWS Glue registry 名稱",
+              "description": "AWS Glue schema registry 的名稱，作為 Glue schema 管理的 subject 命名空間；schema registry 選 AWS Glue 時必填。"
+            },
+            "glue_auth_mode": {
+              "label": "AWS Glue 驗證模式",
+              "description": "Glue 使用的 AWS 憑證來源：預設憑證鏈（環境變數/共用設定）或靜態存取金鑰。",
+              "options": {
+                "default": "AWS 預設憑證鏈",
+                "static": "靜態存取金鑰"
+              }
+            },
+            "glue_access_key_id": {
+              "label": "AWS Access Key ID",
+              "description": "glue 驗證模式為靜態存取金鑰時使用的 Access Key ID；靜態存取金鑰模式必填，預設憑證鏈留空。"
+            },
+            "glue_secret_access_key": {
+              "label": "AWS Secret Access Key",
+              "description": "靜態 AWS 憑證的 Secret Access Key；靜態存取金鑰模式必填；由宿主 secret binding 保存，外掛不持久化。"
+            },
+            "glue_session_token": {
+              "label": "AWS Session Token",
+              "description": "靜態 AWS 憑證的選用臨時工作階段權杖（STS）；長期金鑰請留空。"
             }
           }
         },
@@ -429,16 +905,17 @@
               "options": {
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
-                "SCRAM-SHA-512": "SCRAM-SHA-512"
+                "SCRAM-SHA-512": "SCRAM-SHA-512",
+                "GSSAPI": "GSSAPI (Kerberos)"
               }
             },
             "sasl_username": {
               "label": "SASL username",
-              "description": "Username for the SASL mechanism."
+              "description": "Username for the SASL mechanism; required for PLAIN and SCRAM mechanisms (not needed for GSSAPI)."
             },
             "sasl_password": {
               "label": "SASL password",
-              "description": "Password for the SASL mechanism; stored via host secret binding, never persisted by the plugin."
+              "description": "Password for the SASL mechanism; required for PLAIN and SCRAM mechanisms (not needed for GSSAPI); stored via host secret binding, never persisted by the plugin."
             },
             "tls_ca_cert": {
               "label": "CA certificate (PEM)",
@@ -467,6 +944,87 @@
             "allow_delete": {
               "label": "Allow delete operations",
               "description": "Allow delete-class operations (topics/delete, groups/delete, acls/delete); has no effect while read-only is on."
+            },
+            "connection_source": {
+              "label": "Connection source",
+              "description": "Where broker endpoints come from: direct bootstrap list, or discovered from ZooKeeper (zk_servers).",
+              "options": {
+                "bootstrap": "Bootstrap servers",
+                "zookeeper": "ZooKeeper discovery"
+              }
+            },
+            "zk_servers": {
+              "label": "ZooKeeper servers",
+              "description": "Comma-separated ZooKeeper ensemble (host:port[/chroot]) used to discover brokers when the connection source is zookeeper."
+            },
+            "kerberos_service_name": {
+              "label": "Kerberos service name",
+              "description": "Kafka service name used for the GSSAPI ticket (the first part of broker principal kafka/BROKER@REALM)."
+            },
+            "kerberos_realm": {
+              "label": "Kerberos realm",
+              "description": "Kerberos realm; empty derives the realm from kerberos_principal (user@REALM) or krb5.conf."
+            },
+            "kerberos_principal": {
+              "label": "Kerberos principal",
+              "description": "Client principal in user@REALM form used with the keytab; required when the SASL mechanism is GSSAPI."
+            },
+            "kerberos_keytab_path": {
+              "label": "Kerberos keytab path",
+              "description": "Path to the keytab file on this machine (file path only, never the content); required when the SASL mechanism is GSSAPI."
+            },
+            "kerberos_krb5_conf_path": {
+              "label": "krb5.conf path",
+              "description": "Path to krb5.conf; empty falls back to $KRB5_CONFIG, then /etc/krb5.conf."
+            },
+            "schema_registry": {
+              "label": "Schema Registry",
+              "description": "Which schema registry backend to use: none (schema features off), Confluent-compatible REST, or AWS Glue Schema Registry.",
+              "options": {
+                "none": "None (disabled)",
+                "confluent": "Confluent-compatible",
+                "aws_glue": "AWS Glue"
+              }
+            },
+            "sr_url": {
+              "label": "Schema Registry URL",
+              "description": "Confluent-compatible Schema Registry base URL (including Redpanda built-in registry); required when schema registry is Confluent-compatible."
+            },
+            "sr_username": {
+              "label": "Schema Registry username",
+              "description": "Username for Schema Registry basic auth; leave empty when the registry is unauthenticated."
+            },
+            "sr_password": {
+              "label": "Schema Registry password",
+              "description": "Password for Schema Registry basic auth; stored via host secret binding, never persisted by the plugin."
+            },
+            "glue_region": {
+              "label": "AWS Glue region",
+              "description": "AWS region of the Glue Schema Registry (for example us-east-1); required when schema registry is AWS Glue."
+            },
+            "glue_registry_name": {
+              "label": "AWS Glue registry name",
+              "description": "Name of the AWS Glue schema registry used as the subject namespace for Glue schema management; required when schema registry is AWS Glue."
+            },
+            "glue_auth_mode": {
+              "label": "AWS Glue auth mode",
+              "description": "AWS credential source for Glue: default chain (environment/shared config) or static access key.",
+              "options": {
+                "default": "AWS default credential chain",
+                "static": "Static access key"
+              }
+            },
+            "glue_access_key_id": {
+              "label": "AWS access key ID",
+              "description": "Access key ID used when glue auth mode is static (required in that case); leave empty for the default credential chain."
+            },
+            "glue_secret_access_key": {
+              "label": "AWS secret access key",
+              "description": "Secret access key for the static AWS credentials (required when glue auth mode is static); stored via host secret binding, never persisted by the plugin."
+            },
+            "glue_session_token": {
+              "label": "AWS session token",
+              "description": "Optional temporary session token for the static AWS credentials (STS); leave empty for long-lived keys."
             }
           }
         },
@@ -508,16 +1066,17 @@
               "options": {
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
-                "SCRAM-SHA-512": "SCRAM-SHA-512"
+                "SCRAM-SHA-512": "SCRAM-SHA-512",
+                "GSSAPI": "GSSAPI (Kerberos)"
               }
             },
             "sasl_username": {
               "label": "Usuario SASL",
-              "description": "Nombre de usuario para el mecanismo SASL."
+              "description": "Nombre de usuario para el mecanismo SASL; obligatorio para los mecanismos PLAIN y SCRAM (no se necesita para GSSAPI)."
             },
             "sasl_password": {
               "label": "Contraseña SASL",
-              "description": "Contraseña para el mecanismo SASL; se guarda mediante secret binding del host, el plugin nunca la persiste."
+              "description": "Contraseña para el mecanismo SASL; obligatoria para los mecanismos PLAIN y SCRAM (no se necesita para GSSAPI); se guarda mediante secret binding del host, el plugin nunca la persiste."
             },
             "tls_ca_cert": {
               "label": "Certificado CA (PEM)",
@@ -546,6 +1105,87 @@
             "allow_delete": {
               "label": "Permitir operaciones de borrado",
               "description": "Permite operaciones de borrado (topics/delete, groups/delete, acls/delete); sin efecto en modo de solo lectura."
+            },
+            "connection_source": {
+              "label": "Origen de la conexión",
+              "description": "De dónde salen las direcciones de los brokers: lista bootstrap directa o descubrimiento vía ZooKeeper (zk_servers).",
+              "options": {
+                "bootstrap": "Servidores bootstrap",
+                "zookeeper": "Descubrimiento por ZooKeeper"
+              }
+            },
+            "zk_servers": {
+              "label": "Servidores ZooKeeper",
+              "description": "Conjunto ZooKeeper separado por comas (host:puerto[/chroot]); se usa para descubrir brokers cuando el origen es zookeeper."
+            },
+            "kerberos_service_name": {
+              "label": "Nombre de servicio Kerberos",
+              "description": "Nombre de servicio Kafka usado para el ticket GSSAPI (primera parte del principal kafka/BROKER@REALM)."
+            },
+            "kerberos_realm": {
+              "label": "Realm de Kerberos",
+              "description": "Realm de Kerberos; vacío lo deduce de kerberos_principal (usuario@REALM) o de krb5.conf."
+            },
+            "kerberos_principal": {
+              "label": "Principal de Kerberos",
+              "description": "Principal del cliente en forma usuario@REALM usado con el keytab; obligatorio para GSSAPI."
+            },
+            "kerberos_keytab_path": {
+              "label": "Ruta del keytab de Kerberos",
+              "description": "Ruta del archivo keytab en esta máquina (solo la ruta, nunca el contenido); obligatorio para GSSAPI."
+            },
+            "kerberos_krb5_conf_path": {
+              "label": "Ruta de krb5.conf",
+              "description": "Ruta de krb5.conf; vacío usa $KRB5_CONFIG y luego /etc/krb5.conf."
+            },
+            "schema_registry": {
+              "label": "Schema Registry",
+              "description": "Backend de Schema Registry a utilizar: none (funciones de esquemas desactivadas), REST compatible con Confluent o AWS Glue Schema Registry.",
+              "options": {
+                "none": "Ninguno (desactivado)",
+                "confluent": "Compatible con Confluent",
+                "aws_glue": "AWS Glue"
+              }
+            },
+            "sr_url": {
+              "label": "URL de Schema Registry",
+              "description": "URL base de un Schema Registry compatible con Confluent (incluido el de Redpanda); obligatoria cuando el schema registry es compatible con Confluent."
+            },
+            "sr_username": {
+              "label": "Usuario de Schema Registry",
+              "description": "Usuario para basic auth del Schema Registry; déjelo vacío si no requiere autenticación."
+            },
+            "sr_password": {
+              "label": "Contraseña de Schema Registry",
+              "description": "Contraseña para basic auth del Schema Registry; se guarda mediante secret binding del host, el plugin nunca la persiste."
+            },
+            "glue_region": {
+              "label": "Región de AWS Glue",
+              "description": "Región de AWS del Glue Schema Registry (por ejemplo us-east-1); obligatoria cuando el schema registry es AWS Glue."
+            },
+            "glue_registry_name": {
+              "label": "Nombre del registry de AWS Glue",
+              "description": "Nombre del schema registry de AWS Glue usado como espacio de nombres de subjects para la gestión de esquemas de Glue; obligatorio cuando el schema registry es AWS Glue."
+            },
+            "glue_auth_mode": {
+              "label": "Modo de autenticación de AWS Glue",
+              "description": "Origen de credenciales de AWS para Glue: cadena predeterminada (entorno/configuración compartida) o clave de acceso estática.",
+              "options": {
+                "default": "Cadena de credenciales predeterminada de AWS",
+                "static": "Clave de acceso estática"
+              }
+            },
+            "glue_access_key_id": {
+              "label": "ID de clave de acceso de AWS",
+              "description": "ID de clave de acceso usado cuando el modo de autenticación de Glue es estático (obligatorio en ese caso); déjelo vacío para la cadena de credenciales predeterminada."
+            },
+            "glue_secret_access_key": {
+              "label": "Clave de acceso secreta de AWS",
+              "description": "Clave de acceso secreta de las credenciales estáticas de AWS (obligatoria cuando el modo de autenticación de Glue es estático); se guarda mediante secret binding del host, el complemento nunca la persiste."
+            },
+            "glue_session_token": {
+              "label": "Token de sesión de AWS",
+              "description": "Token de sesión temporal opcional para las credenciales estáticas de AWS (STS); déjelo vacío para claves de larga duración."
             }
           }
         },
@@ -587,16 +1227,17 @@
               "options": {
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
-                "SCRAM-SHA-512": "SCRAM-SHA-512"
+                "SCRAM-SHA-512": "SCRAM-SHA-512",
+                "GSSAPI": "GSSAPI (Kerberos)"
               }
             },
             "sasl_username": {
               "label": "Nome utente SASL",
-              "description": "Nome utente per il meccanismo SASL."
+              "description": "Nome utente per il meccanismo SASL; obbligatorio per i meccanismi PLAIN e SCRAM (non necessario per GSSAPI)."
             },
             "sasl_password": {
               "label": "Password SASL",
-              "description": "Password per il meccanismo SASL; salvata tramite secret binding dell'host, mai persistita dal plugin."
+              "description": "Password per il meccanismo SASL; obbligatoria per i meccanismi PLAIN e SCRAM (non necessaria per GSSAPI); salvata tramite secret binding dell'host, mai persistita dal plugin."
             },
             "tls_ca_cert": {
               "label": "Certificato CA (PEM)",
@@ -625,6 +1266,87 @@
             "allow_delete": {
               "label": "Consenti operazioni di eliminazione",
               "description": "Consente le operazioni di eliminazione (topics/delete, groups/delete, acls/delete); senza effetto in modalità sola lettura."
+            },
+            "connection_source": {
+              "label": "Origine della connessione",
+              "description": "Da dove arrivano gli indirizzi dei broker: lista bootstrap diretta oppure scoperta via ZooKeeper (zk_servers).",
+              "options": {
+                "bootstrap": "Server bootstrap",
+                "zookeeper": "Scoperta via ZooKeeper"
+              }
+            },
+            "zk_servers": {
+              "label": "Server ZooKeeper",
+              "description": "Ensemble ZooKeeper separato da virgole (host:porta[/chroot]); usato per scoprire i broker quando l'origine è zookeeper."
+            },
+            "kerberos_service_name": {
+              "label": "Nome servizio Kerberos",
+              "description": "Nome servizio Kafka usato per il ticket GSSAPI (prima parte del principal kafka/BROKER@REALM)."
+            },
+            "kerberos_realm": {
+              "label": "Realm Kerberos",
+              "description": "Realm Kerberos; vuoto lo deduce da kerberos_principal (utente@REALM) o da krb5.conf."
+            },
+            "kerberos_principal": {
+              "label": "Principal Kerberos",
+              "description": "Principal del client in forma utente@REALM usato con il keytab; obbligatorio per GSSAPI."
+            },
+            "kerberos_keytab_path": {
+              "label": "Percorso keytab Kerberos",
+              "description": "Percorso del file keytab su questa macchina (solo il percorso, mai il contenuto); obbligatorio per GSSAPI."
+            },
+            "kerberos_krb5_conf_path": {
+              "label": "Percorso krb5.conf",
+              "description": "Percorso di krb5.conf; vuoto usa $KRB5_CONFIG e poi /etc/krb5.conf."
+            },
+            "schema_registry": {
+              "label": "Schema Registry",
+              "description": "Quale backend Schema Registry usare: none (funzioni schema disattivate), REST compatibile Confluent oppure AWS Glue Schema Registry.",
+              "options": {
+                "none": "Nessuno (disattivato)",
+                "confluent": "Compatibile Confluent",
+                "aws_glue": "AWS Glue"
+              }
+            },
+            "sr_url": {
+              "label": "URL Schema Registry",
+              "description": "URL base di uno Schema Registry compatibile Confluent (incluso quello integrato di Redpanda); obbligatorio quando lo schema registry è compatibile Confluent."
+            },
+            "sr_username": {
+              "label": "Nome utente Schema Registry",
+              "description": "Nome utente per il basic auth dello Schema Registry; lasciare vuoto se non richiede autenticazione."
+            },
+            "sr_password": {
+              "label": "Password Schema Registry",
+              "description": "Password per il basic auth dello Schema Registry; salvata tramite secret binding dell'host, mai persistita dal plugin."
+            },
+            "glue_region": {
+              "label": "Regione AWS Glue",
+              "description": "Regione AWS del Glue Schema Registry (ad esempio us-east-1); obbligatoria quando lo schema registry è AWS Glue."
+            },
+            "glue_registry_name": {
+              "label": "Nome registry AWS Glue",
+              "description": "Nome dello schema registry AWS Glue usato come namespace dei subject per la gestione degli schemi Glue; obbligatorio quando lo schema registry è AWS Glue."
+            },
+            "glue_auth_mode": {
+              "label": "Modalità di autenticazione AWS Glue",
+              "description": "Origine delle credenziali AWS per Glue: catena predefinita (ambiente/configurazione condivisa) o chiave di accesso statica.",
+              "options": {
+                "default": "Catena di credenziali predefinita AWS",
+                "static": "Chiave di accesso statica"
+              }
+            },
+            "glue_access_key_id": {
+              "label": "ID chiave di accesso AWS",
+              "description": "ID della chiave di accesso usato quando la modalità di autenticazione Glue è statica (obbligatorio in quel caso); lascia vuoto per la catena di credenziali predefinita."
+            },
+            "glue_secret_access_key": {
+              "label": "Chiave di accesso segreta AWS",
+              "description": "Chiave di accesso segreta delle credenziali AWS statiche (obbligatoria quando la modalità di autenticazione Glue è statica); salvata tramite secret binding dell'host, il plugin non la persiste."
+            },
+            "glue_session_token": {
+              "label": "Token di sessione AWS",
+              "description": "Token di sessione temporaneo facoltativo per le credenziali AWS statiche (STS); lascia vuoto per chiavi di lunga durata."
             }
           }
         },
@@ -666,16 +1388,17 @@
               "options": {
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
-                "SCRAM-SHA-512": "SCRAM-SHA-512"
+                "SCRAM-SHA-512": "SCRAM-SHA-512",
+                "GSSAPI": "GSSAPI (Kerberos)"
               }
             },
             "sasl_username": {
               "label": "SASL ユーザー名",
-              "description": "SASL 認証に使用するユーザー名。"
+              "description": "SASL 認証に使用するユーザー名。PLAIN/SCRAM メカニズムでは必須（GSSAPI では不要）。"
             },
             "sasl_password": {
               "label": "SASL パスワード",
-              "description": "SASL 認証に使用するパスワード。ホストの secret binding で保存され、プラグインは永続化しません。"
+              "description": "SASL 認証に使用するパスワード。PLAIN/SCRAM メカニズムでは必須（GSSAPI では不要）。ホストの secret binding で保存され、プラグインは永続化しません。"
             },
             "tls_ca_cert": {
               "label": "CA 証明書（PEM）",
@@ -704,6 +1427,87 @@
             "allow_delete": {
               "label": "削除系操作を許可",
               "description": "削除系操作（topics/delete、groups/delete、acls/delete）を許可します。読み取り専用では無効です。"
+            },
+            "connection_source": {
+              "label": "接続ソース",
+              "description": "ブローカーアドレスの取得元：bootstrap リストへ直接、または ZooKeeper（zk_servers）から発見。",
+              "options": {
+                "bootstrap": "Bootstrap サーバー",
+                "zookeeper": "ZooKeeper 発見"
+              }
+            },
+            "zk_servers": {
+              "label": "ZooKeeper サーバー",
+              "description": "カンマ区切りの ZooKeeper アンサンブル（host:port[/chroot]）。接続ソースが zookeeper のときにブローカー発見に使用します。"
+            },
+            "kerberos_service_name": {
+              "label": "Kerberos サービス名",
+              "description": "GSSAPI チケットに使う Kafka サービス名（ブローカー principal kafka/BROKER@REALM の先頭部分）。"
+            },
+            "kerberos_realm": {
+              "label": "Kerberos レルム",
+              "description": "Kerberos レルム。空の場合は kerberos_principal（user@REALM）または krb5.conf から推測します。"
+            },
+            "kerberos_principal": {
+              "label": "Kerberos プリンシパル",
+              "description": "keytab と組み合わせて使うクライアント principal（user@REALM 形式）。GSSAPI では必須。"
+            },
+            "kerberos_keytab_path": {
+              "label": "Kerberos keytab パス",
+              "description": "このマシン上の keytab ファイルパス（パスのみで内容は不要）。GSSAPI では必須です。"
+            },
+            "kerberos_krb5_conf_path": {
+              "label": "krb5.conf パス",
+              "description": "krb5.conf のパス。空の場合は $KRB5_CONFIG、次に /etc/krb5.conf にフォールバックします。"
+            },
+            "schema_registry": {
+              "label": "Schema Registry",
+              "description": "使用する Schema Registry バックエンド: none（スキーマ機能を無効化）、Confluent 互換 REST、または AWS Glue Schema Registry。",
+              "options": {
+                "none": "なし（無効）",
+                "confluent": "Confluent 互換",
+                "aws_glue": "AWS Glue"
+              }
+            },
+            "sr_url": {
+              "label": "Schema Registry URL",
+              "description": "Confluent 互換 Schema Registry のベース URL（Redpanda 内蔵レジストリを含む）。schema registry が Confluent 互換の場合は必須。"
+            },
+            "sr_username": {
+              "label": "Schema Registry ユーザー名",
+              "description": "Schema Registry basic auth のユーザー名。認証不要のレジストリでは空にします。"
+            },
+            "sr_password": {
+              "label": "Schema Registry パスワード",
+              "description": "Schema Registry basic auth のパスワード。ホストの secret binding で保存され、プラグインは永続化しません。"
+            },
+            "glue_region": {
+              "label": "AWS Glue リージョン",
+              "description": "Glue Schema Registry の AWS リージョン（例: us-east-1）。schema registry が AWS Glue の場合は必須。"
+            },
+            "glue_registry_name": {
+              "label": "AWS Glue レジストリ名",
+              "description": "AWS Glue スキーマレジストリの名前。Glue スキーマ管理のサブジェクト名前空間として使用します。schema registry が AWS Glue の場合は必須。"
+            },
+            "glue_auth_mode": {
+              "label": "AWS Glue 認証モード",
+              "description": "Glue が使用する AWS 認証情報の取得元：デフォルトチェーン（環境変数/共有設定）または静的アクセスキー。",
+              "options": {
+                "default": "AWS デフォルト認証情報チェーン",
+                "static": "静的アクセスキー"
+              }
+            },
+            "glue_access_key_id": {
+              "label": "AWS アクセスキー ID",
+              "description": "Glue 認証モードが静的アクセスキーの場合に使用するアクセスキー ID（その場合は必須）。デフォルトチェーンを使う場合は空にします。"
+            },
+            "glue_secret_access_key": {
+              "label": "AWS シークレットアクセスキー",
+              "description": "静的 AWS 認証情報のシークレットアクセスキー（Glue 認証モードが静的アクセスキーの場合は必須）。ホストの secret binding で保存され、プラグインは永続化しません。"
+            },
+            "glue_session_token": {
+              "label": "AWS セッショントークン",
+              "description": "静的 AWS 認証情報用の任意の一時セッショントークン（STS）。長期キーの場合は空にします。"
             }
           }
         },
@@ -745,16 +1549,17 @@
               "options": {
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
-                "SCRAM-SHA-512": "SCRAM-SHA-512"
+                "SCRAM-SHA-512": "SCRAM-SHA-512",
+                "GSSAPI": "GSSAPI (Kerberos)"
               }
             },
             "sasl_username": {
               "label": "Usuário SASL",
-              "description": "Nome de usuário para o mecanismo SASL."
+              "description": "Nome de usuário para o mecanismo SASL; obrigatório para os mecanismos PLAIN e SCRAM (não é necessário para GSSAPI)."
             },
             "sasl_password": {
               "label": "Senha SASL",
-              "description": "Senha para o mecanismo SASL; armazenada via secret binding do host, nunca persistida pelo plugin."
+              "description": "Senha para o mecanismo SASL; obrigatória para os mecanismos PLAIN e SCRAM (não é necessária para GSSAPI); armazenada via secret binding do host, nunca persistida pelo plugin."
             },
             "tls_ca_cert": {
               "label": "Certificado CA (PEM)",
@@ -783,6 +1588,87 @@
             "allow_delete": {
               "label": "Permitir operações de exclusão",
               "description": "Permite operações de exclusão (topics/delete, groups/delete, acls/delete); sem efeito no modo somente leitura."
+            },
+            "connection_source": {
+              "label": "Origem da conexão",
+              "description": "De onde vêm os endereços dos brokers: lista bootstrap direta ou descoberta via ZooKeeper (zk_servers).",
+              "options": {
+                "bootstrap": "Servidores bootstrap",
+                "zookeeper": "Descoberta via ZooKeeper"
+              }
+            },
+            "zk_servers": {
+              "label": "Servidores ZooKeeper",
+              "description": "Ensemble ZooKeeper separado por vírgulas (host:porta[/chroot]); usado para descobrir brokers quando a origem é zookeeper."
+            },
+            "kerberos_service_name": {
+              "label": "Nome de serviço Kerberos",
+              "description": "Nome de serviço Kafka usado no ticket GSSAPI (primeira parte do principal kafka/BROKER@REALM)."
+            },
+            "kerberos_realm": {
+              "label": "Realm do Kerberos",
+              "description": "Realm do Kerberos; vazio deriva de kerberos_principal (usuario@REALM) ou do krb5.conf."
+            },
+            "kerberos_principal": {
+              "label": "Principal do Kerberos",
+              "description": "Principal do cliente no formato usuario@REALM usado com o keytab; obrigatório para GSSAPI."
+            },
+            "kerberos_keytab_path": {
+              "label": "Caminho do keytab Kerberos",
+              "description": "Caminho do arquivo keytab nesta máquina (apenas o caminho, nunca o conteúdo); obrigatório para GSSAPI."
+            },
+            "kerberos_krb5_conf_path": {
+              "label": "Caminho do krb5.conf",
+              "description": "Caminho do krb5.conf; vazio usa $KRB5_CONFIG e depois /etc/krb5.conf."
+            },
+            "schema_registry": {
+              "label": "Schema Registry",
+              "description": "Qual backend de Schema Registry usar: none (recursos de esquema desativados), REST compatível com Confluent ou AWS Glue Schema Registry.",
+              "options": {
+                "none": "Nenhum (desativado)",
+                "confluent": "Compatível com Confluent",
+                "aws_glue": "AWS Glue"
+              }
+            },
+            "sr_url": {
+              "label": "URL do Schema Registry",
+              "description": "URL base de um Schema Registry compatível com Confluent (incluindo o embutido do Redpanda); obrigatória quando o schema registry for compatível com Confluent."
+            },
+            "sr_username": {
+              "label": "Usuário do Schema Registry",
+              "description": "Usuário do basic auth do Schema Registry; deixe vazio se o registry não exige autenticação."
+            },
+            "sr_password": {
+              "label": "Senha do Schema Registry",
+              "description": "Senha do basic auth do Schema Registry; armazenada via secret binding do host, nunca persistida pelo plugin."
+            },
+            "glue_region": {
+              "label": "Região da AWS Glue",
+              "description": "Região da AWS do Glue Schema Registry (por exemplo us-east-1); obrigatória quando o schema registry for AWS Glue."
+            },
+            "glue_registry_name": {
+              "label": "Nome do registry da AWS Glue",
+              "description": "Nome do schema registry da AWS Glue usado como namespace de subjects para o gerenciamento de esquemas do Glue; obrigatório quando o schema registry for AWS Glue."
+            },
+            "glue_auth_mode": {
+              "label": "Modo de autenticação da AWS Glue",
+              "description": "Origem das credenciais da AWS para o Glue: cadeia padrão (ambiente/configuração compartilhada) ou chave de acesso estática.",
+              "options": {
+                "default": "Cadeia de credenciais padrão da AWS",
+                "static": "Chave de acesso estática"
+              }
+            },
+            "glue_access_key_id": {
+              "label": "ID da chave de acesso da AWS",
+              "description": "ID da chave de acesso usado quando o modo de autenticação do Glue é estático (obrigatório nesse caso); deixe vazio para a cadeia de credenciais padrão."
+            },
+            "glue_secret_access_key": {
+              "label": "Chave de acesso secreta da AWS",
+              "description": "Chave de acesso secreta das credenciais estáticas da AWS (obrigatória quando o modo de autenticação do Glue é estático); armazenada via secret binding do host, o plugin nunca a persiste."
+            },
+            "glue_session_token": {
+              "label": "Token de sessão da AWS",
+              "description": "Token de sessão temporário opcional para as credenciais estáticas da AWS (STS); deixe vazio para chaves de longa duração."
             }
           }
         },

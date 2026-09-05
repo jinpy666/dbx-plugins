@@ -11,8 +11,17 @@
  *   ?ro=1                readOnly connection（写操作先发 denied kafka/audit 事件
  *                        再抛错，镜像后端 policy.go 分支）
  *   ?nodelete=1          allowDelete=false（删除类额外拒绝）
+ *   ?glue=1              Glue-only 模式：statuses.provider=glue、仅 Glue subjects、
+ *                        confluent 探测返回 none、schema 挂载 -32000 拒绝
+ *                        （默认模式 = Confluent + Glue 双 registry 配置，可切换）
+ *   ?big=1               大数据量压测 fixture：+500 topic、+200 group、
+ *                        big-throughput topic 4 分区共 5000 条消息（纯内存生成，
+ *                        无凭据）；consume 未显式 limit 时默认取 5000。
+ *                        仅追加种子数据，不改真实桥形状与非 big 模式行为。
  */
 import "./style.css";
+import { compress as lz4Compress } from "lz4js";
+import { compress as snappyCompress } from "snappyjs";
 
 const eventListeners = new Set<(event: DbxPluginEvent) => void>();
 const appearanceListeners = new Set<(appearance: DbxPluginAppearance) => void>();
@@ -22,6 +31,10 @@ const params = new URLSearchParams(location.search);
 const readOnly = params.get("ro") === "1";
 const allowDelete = params.get("nodelete") !== "1";
 const injectError = params.get("err") === "1";
+const glueOnly = params.get("glue") === "1";
+const bigMode = params.get("big") === "1";
+// 连接默认 SR provider（无 registry 参数的 kafka/schema/* 调用落到这里）。
+const defaultSrProvider: "confluent" | "glue" = glueOnly ? "glue" : "confluent";
 
 const context: Record<string, unknown> = {
   connectionId: params.get("noconn") === "1" ? "" : "visual-connection",
@@ -35,6 +48,17 @@ const context: Record<string, unknown> = {
     color: "#e11d48",
     readOnly,
     allowDelete,
+    // Phase P：manifest glue_* 连接字段（连接摘要展示用；secret 走 binding 名单）。
+    // schema_registry 决策开关（none | confluent | aws_glue）随 glue 参数联动。
+    external_config: {
+      schema_registry: glueOnly ? "aws_glue" : "confluent",
+      glue_region: "us-east-1",
+      glue_registry_name: "dbx-kafka-registry",
+      glue_auth_mode: "access_key",
+      glue_access_key_id: "AKIAIOSFODNN7EXAMPLE",
+    },
+    // secret binding 名单：仅名字，不含值（前端据此显示「已配置」）。
+    connection_secrets: ["glue_secret_access_key"],
   },
 };
 
@@ -70,6 +94,9 @@ interface MockMessage {
   valueBase64?: string;
   headers?: Record<string, string>;
   committed?: boolean;
+  schemaId?: number;
+  schemaSubject?: string;
+  schemaVersion?: number;
 }
 
 interface MockTopic {
@@ -163,6 +190,54 @@ seedTopic("payment-gateway", 1, false, [{ key: "p-1", value: "5" }]);
 seedTopic("connect-offsets", 1, true, [{ key: "c", value: "state" }]);
 seedTopic("_schemas", 1, true, [{ key: "s-1", value: '{"schema":"x"}' }]);
 
+// Phase P：codec-lab 假 topic——四种压缩算法各一条消息（详情抽屉二次解码走查用）。
+// gzip/zstd 用固定 base64 常量（浏览器无同步 gzip 压缩器；fzstd 仅解码），
+// snappy/lz4 用各库 compress API 现场构造。
+const GZIP_N7_PAYLOAD_B64 = "H4sIAAAAAAAAE6tWylOyMq8FAPicEYIHAAAA"; // gzip('{"n":7}')
+const ZSTD_ORDER_PAYLOAD_B64 =
+  "KLUv/SQxiQEAeyJvcmRlcklkIjoiQS0xMDAxIiwiYW1vdW50Ijo0MiwiY3VycmVuY3kiOiJVU0QifbQxJQg=";
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+const codecSamples: Array<{ label: string; payloadB64: string }> = [
+  { label: "gzip", payloadB64: GZIP_N7_PAYLOAD_B64 },
+  { label: "zstd", payloadB64: ZSTD_ORDER_PAYLOAD_B64 },
+  {
+    label: "snappy",
+    payloadB64: bytesToBase64(snappyCompress(new TextEncoder().encode('{"algo":"snappy","ok":true}'))),
+  },
+  {
+    label: "lz4",
+    payloadB64: bytesToBase64(lz4Compress(new TextEncoder().encode('{"algo":"lz4","ok":true}'))),
+  },
+];
+const codecTopic: MockTopic = {
+  name: "codec-lab",
+  topicId: "id-codec-lab",
+  isInternal: false,
+  partitionCount: 1,
+  replicationFactor: 1,
+  partitions: [[]],
+};
+codecSamples.forEach((sample, index) => {
+  codecTopic.partitions[0].push({
+    topic: "codec-lab",
+    partition: 0,
+    offset: index,
+    timestamp: Date.now(),
+    leaderEpoch: 0,
+    key: sample.label,
+    keyBase64: utf8ToBase64(sample.label),
+    valueText: `(compressed payload: ${sample.label})`,
+    valueBase64: sample.payloadB64,
+  });
+});
+topics.set(codecTopic.name, codecTopic);
+
 interface MockGroup {
   group: string;
   state: string;
@@ -187,6 +262,38 @@ const orderGroup: MockGroup = {
 };
 groups.set(orderGroup.group, orderGroup);
 
+// ?big=1 大数据量压测种子：500 topic + big-throughput 5000 条消息 + 200 group。
+// 纯内存生成（无凭据），非 big 模式完全不受影响。
+function seedBigFixtures() {
+  for (let index = 1; index <= 500; index += 1) {
+    seedTopic(`bulk-topic-${String(index).padStart(4, "0")}`, index % 3 === 0 ? 2 : 1, false, []);
+  }
+  const bigTopicName = "big-throughput";
+  seedTopic(bigTopicName, 4, false, []);
+  const bigTopic = topics.get(bigTopicName)!;
+  for (let sequence = 0; sequence < 5000; sequence += 1) {
+    const partition = sequence % 4;
+    bigTopic.partitions[partition].push(
+      makeMessage(bigTopicName, partition, bigTopic.partitions[partition].length, `k-${sequence}`, JSON.stringify({ seq: sequence, payload: "x".repeat(64) }), { seq: String(sequence) }),
+    );
+  }
+  for (let index = 1; index <= 200; index += 1) {
+    const empty = index % 7 === 0;
+    const group: MockGroup = {
+      group: `bulk-consumer-${String(index).padStart(3, "0")}`,
+      state: empty ? "Empty" : "Stable",
+      protocolType: "consumer",
+      coordinator: (index % 2) + 1,
+      members: empty
+        ? []
+        : [{ memberId: `member-${index}-1`, clientId: `client-${index}`, clientHost: "/10.0.0.4", assignments: { [bigTopicName]: [0, 1] } }],
+      committed: new Map([[bigTopicName, new Map([[0, 100 + index], [1, 50 + index]])]]),
+    };
+    groups.set(group.group, group);
+  }
+}
+if (bigMode) seedBigFixtures();
+
 const acls: KafkaAclFixture[] = [
   { resourceType: "TOPIC", resourceName: "order-events", patternType: "LITERAL", principal: "User:billing", host: "*", operation: "READ", permission: "ALLOW" },
 ];
@@ -201,6 +308,132 @@ interface KafkaAclFixture {
   permission: string;
 }
 
+// -- schema registry fixture（Phase 2：SR 假数据 + schema roundtrip 假编解码）-------
+
+interface SchemaVersionFixture {
+  version: number;
+  id: number;
+  format: "avro" | "json";
+  schema: string;
+}
+
+interface SchemaSubjectFixture {
+  subject: string;
+  formats: Array<"avro" | "json">;
+  versions: SchemaVersionFixture[];
+  compatibilityLevel: string;
+  /** Phase P：subject 所属 registry（confluent | glue）。 */
+  provider: "confluent" | "glue";
+}
+
+let schemaIdSeq = 100;
+
+function makeSchemaVersion(subject: SchemaSubjectFixture, format: "avro" | "json", schema: string): SchemaVersionFixture {
+  schemaIdSeq += 1;
+  return { version: subject.versions.length + 1, id: schemaIdSeq, format, schema };
+}
+
+const schemaSubjects = new Map<string, SchemaSubjectFixture>();
+
+/** registry 参数解析：缺省落到连接默认 provider（与后端语义一致）。 */
+function resolveProvider(input: Record<string, unknown>): "confluent" | "glue" {
+  return input.registry === "glue" || input.registry === "confluent" ? input.registry : defaultSrProvider;
+}
+
+function providerSubjects(provider: "confluent" | "glue"): SchemaSubjectFixture[] {
+  return [...schemaSubjects.values()].filter((subject) => subject.provider === provider);
+}
+
+function findSubject(name: string, provider: "confluent" | "glue"): SchemaSubjectFixture | undefined {
+  const subject = schemaSubjects.get(name);
+  return subject && subject.provider === provider ? subject : undefined;
+}
+
+/** Glue 挂载拒绝（契约 2：消息编解码仅 Confluent wire format，后端 -32000 业务错）。 */
+function rejectGlueSchemaAttach(schemaParam: { subject?: string } | undefined | null) {
+  if (schemaParam?.subject && glueOnly) {
+    throw new Error(
+      "-32000: schema attach is not supported for AWS Glue Schema Registry — message codec implements the Confluent wire format only (fixture)",
+    );
+  }
+}
+
+const orderSchemaV1 = JSON.stringify({ type: "record", name: "Order", fields: [{ name: "orderId", type: "string" }, { name: "amount", type: "int" }] }, null, 2);
+const orderSchemaV2 = JSON.stringify({ type: "record", name: "Order", fields: [{ name: "orderId", type: "string" }, { name: "amount", type: "int" }, { name: "currency", type: "string", default: "USD" }] }, null, 2);
+const userSchemaV1 = JSON.stringify({ type: "object", properties: { userId: { type: "string" }, name: { type: "string" } }, required: ["userId"] }, null, 2);
+
+const orderSubject: SchemaSubjectFixture = {
+  subject: "order-events-value",
+  formats: ["avro"],
+  versions: [],
+  compatibilityLevel: "BACKWARD",
+  provider: "confluent",
+};
+orderSubject.versions.push(makeSchemaVersion(orderSubject, "avro", orderSchemaV1));
+orderSubject.versions.push(makeSchemaVersion(orderSubject, "avro", orderSchemaV2));
+schemaSubjects.set(orderSubject.subject, orderSubject);
+
+const userSubject: SchemaSubjectFixture = {
+  subject: "user-signup-value",
+  formats: ["json"],
+  versions: [],
+  compatibilityLevel: "NONE",
+  provider: "confluent",
+};
+userSubject.versions.push(makeSchemaVersion(userSubject, "json", userSchemaV1));
+schemaSubjects.set(userSubject.subject, userSubject);
+
+// Phase P：AWS Glue 假 subjects（管理面假数据；兼容性枚举为 Glue 命名）。
+const glueOrderSubject: SchemaSubjectFixture = {
+  subject: "orders-value",
+  formats: ["avro"],
+  versions: [],
+  compatibilityLevel: "BACKWARD_ALL",
+  provider: "glue",
+};
+glueOrderSubject.versions.push(makeSchemaVersion(glueOrderSubject, "avro", orderSchemaV1));
+schemaSubjects.set(glueOrderSubject.subject, glueOrderSubject);
+
+const gluePaymentSubject: SchemaSubjectFixture = {
+  subject: "payments-value",
+  formats: ["json"],
+  versions: [],
+  compatibilityLevel: "FULL_ALL",
+  provider: "glue",
+};
+gluePaymentSubject.versions.push(makeSchemaVersion(gluePaymentSubject, "json", userSchemaV1));
+schemaSubjects.set(gluePaymentSubject.subject, gluePaymentSubject);
+
+let globalCompatibility = { level: "BACKWARD", scope: "GLOBAL" };
+
+/** fixture 级版本 diff：pretty JSON 行集合对比 → hunks（与后端形状一致）。 */
+function diffSchemaVersions(subject: SchemaSubjectFixture, fromVersion: number, toVersion: number) {
+  const from = subject.versions.find((entry) => entry.version === fromVersion);
+  const to = subject.versions.find((entry) => entry.version === toVersion);
+  if (!from || !to) throw new Error("schema version not found (fixture)");
+  const beforeLines = from.schema.split("\n");
+  const afterLines = to.schema.split("\n");
+  const hunks: Array<{ op: "add" | "remove" | "modify"; path: string; before?: string; after?: string }> = [];
+  beforeLines.forEach((line, index) => {
+    if (!afterLines.includes(line)) {
+      const counterpart = afterLines[index];
+      if (counterpart !== undefined && !beforeLines.includes(counterpart)) {
+        hunks.push({ op: "modify", path: `line ${index + 1}`, before: line.trim(), after: counterpart.trim() });
+      } else {
+        hunks.push({ op: "remove", path: `line ${index + 1}`, before: line.trim() });
+      }
+    }
+  });
+  afterLines.forEach((line, index) => {
+    if (!beforeLines.includes(line)) {
+      const already = hunks.some((hunk) => hunk.op === "modify" && hunk.after === line.trim());
+      if (!already) hunks.push({ op: "add", path: `line ${index + 1}`, after: line.trim() });
+    }
+  });
+  const summary = `${subject.subject}: +${hunks.filter((hunk) => hunk.op === "add").length} -${hunks.filter((hunk) => hunk.op === "remove").length} ~${hunks.filter((hunk) => hunk.op === "modify").length}`;
+  return { hunks, summary };
+}
+
 // -- stream sessions（fixture 级 ring buffer + 定时发事件）-------------------------
 
 interface StreamSession {
@@ -210,14 +443,16 @@ interface StreamSession {
   produced: number;
   paused: boolean;
   timer?: number;
+  /** Phase 2：SR 挂载（tick 时给消息附 schemaId/subject/version）。 */
+  schema?: { subject: string; version?: number; format?: string };
 }
 
 const streams = new Map<string, StreamSession>();
 let streamSeq = 0;
 
-function startStream(topicName: string): StreamSession {
+function startStream(topicName: string, schema?: { subject: string; version?: number; format?: string }): StreamSession {
   streamSeq += 1;
-  const session: StreamSession = { id: `stream-${streamSeq}`, topic: topicName, buffer: [], produced: 0, paused: false };
+  const session: StreamSession = { id: `stream-${streamSeq}`, topic: topicName, buffer: [], produced: 0, paused: false, schema };
   session.timer = window.setInterval(() => {
     if (session.paused) return;
     injectError ? failStream(session) : tickStream(session);
@@ -226,13 +461,24 @@ function startStream(topicName: string): StreamSession {
   return session;
 }
 
+/** fixture 假 SR 解码：按挂载 subject/version 取 schemaId 附到消息上。
+ *  挂载编解码仅 Confluent 侧（Glue 仅管理面，produce/consume/stream 已拒绝）。 */
+function attachSchema(message: MockMessage, schema?: { subject: string; version?: number }): MockMessage {
+  if (!schema?.subject) return message;
+  const subject = schemaSubjects.get(schema.subject);
+  if (!subject || subject.provider !== "confluent") return message;
+  const version = schema.version !== undefined ? subject.versions.find((entry) => entry.version === schema.version) : subject.versions[subject.versions.length - 1];
+  if (!version) return message;
+  return { ...message, schemaId: version.id, schemaSubject: subject.subject, schemaVersion: version.version };
+}
+
 let tickCount = 0;
 function tickStream(session: StreamSession) {
   tickCount += 1;
   const batch: MockMessage[] = [];
   for (let index = 0; index < 3; index += 1) {
     session.produced += 1;
-    batch.push(makeMessage(session.topic, 0, session.produced, `live-${session.produced}`, `{"tick":${tickCount},"n":${session.produced}}`));
+    batch.push(attachSchema(makeMessage(session.topic, 0, session.produced, `live-${session.produced}`, `{"tick":${tickCount},"n":${session.produced}}`), session.schema));
   }
   session.buffer.push(...batch);
   if (session.buffer.length > 10000) session.buffer.splice(0, session.buffer.length - 10000);
@@ -335,7 +581,8 @@ function messageMatches(message: MockMessage, input: Record<string, unknown>): b
 }
 
 function scanTopic(topic: MockTopic, input: Record<string, unknown>): { messages: MockMessage[]; scanned: number } {
-  const limit = Number(input.limit ?? 100) || 100;
+  // big 压测模式：未显式 limit 时默认取 5000（一次 consume 返回全量大批次）。
+  const limit = Number(input.limit ?? (bigMode ? 5000 : 100)) || (bigMode ? 5000 : 100);
   const wantedPartitions = Array.isArray(input.partitions) ? (input.partitions as number[]) : null;
   const strategy = String(input.offsetStrategy ?? "latest");
   const scannedAll: Array<{ message: MockMessage; index: number; partition: number }> = [];
@@ -375,7 +622,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     throw new Error("connection lost (fixture error injection)");
   }
   if (method === "kafka/brokers/list") {
-    result = { brokers };
+    result = { brokers, connectionSource: "kafka" };
   } else if (method === "kafka/brokers/config") {
     result = { entries: brokerConfigs };
   } else if (method === "kafka/topics/list") {
@@ -556,23 +803,42 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     guardWrite("messages/produce", topicName);
     const count = Math.min(Number(input.count ?? 1) || 1, 1000);
     const partition = typeof input.partition === "number" ? input.partition : 0;
-    const key = typeof input.key === "string" ? input.key : "";
-    const value = String(input.value ?? "");
+    // Phase 2：keyBase64/valueBase64 保真载荷（与 key/value 二选一），base64 → 文本。
+    const key = typeof input.keyBase64 === "string" ? atob(input.keyBase64) : typeof input.key === "string" ? input.key : "";
+    const value = typeof input.valueBase64 === "string" ? atob(input.valueBase64) : String(input.value ?? "");
     const headers = (input.headers ?? {}) as Record<string, string>;
+    const schemaParam = input.schema as { subject: string; version?: number } | undefined;
+    rejectGlueSchemaAttach(schemaParam);
+    let schemaId: number | undefined;
+    if (schemaParam?.subject) {
+      const subject = schemaSubjects.get(schemaParam.subject);
+      const version =
+        schemaParam.version !== undefined
+          ? subject?.versions.find((entry) => entry.version === schemaParam.version)
+          : subject?.versions[subject.versions.length - 1];
+      if (subject && version) schemaId = version.id;
+    }
     let lastOffset = -1;
     for (let index = 0; index < count; index += 1) {
       lastOffset = topic.partitions[partition]?.length ?? 0;
-      topic.partitions[partition]?.push(makeMessage(topicName, partition, lastOffset, count > 1 ? `${key}-${index}` : key, value, headers));
+      const message = attachSchema(
+        makeMessage(topicName, partition, lastOffset, count > 1 ? `${key}-${index}` : key, value, headers),
+        schemaParam?.subject ? { subject: schemaParam.subject, version: schemaParam.version } : undefined,
+      );
+      if (schemaId !== undefined && message.schemaId === undefined) message.schemaId = schemaId;
+      topic.partitions[partition]?.push(message);
     }
     result = { partition, offset: lastOffset, timestamp: Date.now() };
   } else if (method === "kafka/messages/consume") {
     const topic = requireTopic(String(input.topic ?? ""));
+    const schemaParam = input.schema as { subject: string; version?: number } | undefined;
+    rejectGlueSchemaAttach(schemaParam);
     const scan = scanTopic(topic, input);
     result = {
-      messages: scan.messages,
+      messages: schemaParam?.subject ? scan.messages.map((message) => attachSchema(message, schemaParam)) : scan.messages,
       scanned: scan.scanned,
       matched: scan.messages.length,
-      limited: scan.messages.length >= Number(input.limit ?? 100),
+      limited: scan.messages.length >= Number(input.limit ?? (bigMode ? 5000 : 100)),
       hasMore: false,
       nextPartitionOffsets: {},
     };
@@ -601,7 +867,9 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const topicName = String(input.topic ?? "");
     requireTopic(topicName);
     if (readOnly && input.commit === true) guardWrite("stream/start", topicName);
-    const session = startStream(topicName);
+    const schemaParam = input.schema as { subject: string; version?: number } | undefined;
+    rejectGlueSchemaAttach(schemaParam);
+    const session = startStream(topicName, schemaParam);
     result = { sessionId: session.id };
   } else if (method === "kafka/stream/stop") {
     stopStream(input.all === true ? "all" : typeof input.sessionId === "string" ? input.sessionId : undefined);
@@ -642,8 +910,129 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     result = { presets };
   } else if (method === "kafka/connections/statuses") {
     result = {
-      statuses: [{ connectionId: String(context.connectionId), status: "connected", readOnly, allowDelete, lastUsedAt: Date.now() }],
+      statuses: [
+        {
+          connectionId: String(context.connectionId),
+          status: "connected",
+          readOnly,
+          allowDelete,
+          lastUsedAt: Date.now(),
+          schemaRegistry: {
+            enabled: true,
+            url: glueOnly ? "glue://us-east-1/dbx-kafka-registry (fixture)" : "http://schema-registry:8081 (fixture)",
+            provider: defaultSrProvider,
+          },
+          kerberos: { enabled: false },
+          connectionSource: "kafka",
+        },
+        {
+          // schema_registry=none 的对照行：SR 徽标应显示「未启用」（srOff）。
+          connectionId: "visual-connection-nosr",
+          status: "idle",
+          readOnly: true,
+          allowDelete: false,
+          schemaRegistry: { enabled: false, provider: "none" },
+          kerberos: { enabled: false },
+          connectionSource: "kafka",
+        },
+      ],
     };
+  } else if (method === "kafka/schema/test") {
+    // Phase P：按 registry 参数探测（glue-only 模式下 confluent 返回 none）。
+    const wanted = resolveProvider(input);
+    result =
+      wanted === "confluent" && glueOnly
+        ? { success: false, provider: "none" }
+        : { success: true, provider: wanted };
+  } else if (method === "kafka/schema/subjects/list") {
+    const wanted = resolveProvider(input);
+    result = {
+      subjects: providerSubjects(wanted).map((subject) => ({
+        subject: subject.subject,
+        formats: subject.formats,
+        latestVersion: subject.versions.length,
+        compatibilityLevel: subject.compatibilityLevel,
+      })),
+    };
+  } else if (method === "kafka/schema/versions/list") {
+    const subject = findSubject(String(input.subject ?? ""), resolveProvider(input));
+    if (!subject) throw new Error("schema subject not found (fixture)");
+    result = { versions: subject.versions.map((version) => ({ version: version.version, id: version.id, format: version.format })) };
+  } else if (method === "kafka/schema/get") {
+    const subject = findSubject(String(input.subject ?? ""), resolveProvider(input));
+    if (!subject) throw new Error("schema subject not found (fixture)");
+    const wanted = typeof input.version === "number" ? input.version : subject.versions.length;
+    const version = subject.versions.find((entry) => entry.version === wanted);
+    if (!version) throw new Error("schema version not found (fixture)");
+    result = { subject: subject.subject, version: version.version, id: version.id, schema: version.schema, format: version.format, references: [] };
+  } else if (method === "kafka/schema/versions/compare") {
+    const subject = findSubject(String(input.subject ?? ""), resolveProvider(input));
+    if (!subject) throw new Error("schema subject not found (fixture)");
+    result = diffSchemaVersions(subject, Number(input.fromVersion ?? 1), Number(input.toVersion ?? 1));
+  } else if (method === "kafka/schema/compatibility/get") {
+    const subjectName = typeof input.subject === "string" ? String(input.subject) : "";
+    const subject = subjectName ? findSubject(subjectName, resolveProvider(input)) : undefined;
+    result = subject ? { level: subject.compatibilityLevel, scope: "SUBJECT" } : { ...globalCompatibility };
+  } else if (method === "kafka/schema/compatibility/set") {
+    guardWrite("schema/compatibility/set", String(input.subject ?? "(global)"));
+    const level = String(input.level ?? "NONE");
+    const subjectName = typeof input.subject === "string" ? String(input.subject) : "";
+    if (subjectName) {
+      const subject = findSubject(subjectName, resolveProvider(input));
+      if (!subject) throw new Error("schema subject not found (fixture)");
+      subject.compatibilityLevel = level;
+    } else {
+      globalCompatibility = { level, scope: "GLOBAL" };
+    }
+    result = { level, scope: subjectName ? "SUBJECT" : "GLOBAL" };
+  } else if (method === "kafka/schema/compatibility/check") {
+    const subject = findSubject(String(input.subject ?? ""), resolveProvider(input));
+    if (!subject) throw new Error("schema subject not found (fixture)");
+    // fixture 级检查：候选 schema 能解析为 JSON 即视为向后兼容（不做 avro 真校验）。
+    const messages: string[] = [];
+    let isCompatible = true;
+    try {
+      JSON.parse(String(input.schema ?? ""));
+      messages.push("no incompatible changes detected (fixture)");
+    } catch (cause) {
+      isCompatible = false;
+      messages.push(`schema is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+    result = { isCompatible, messages };
+  } else if (method === "kafka/schema/register") {
+    const subjectName = String(input.subject ?? "");
+    const format = String(input.format ?? "avro") as "avro" | "json";
+    const schemaText = String(input.schema ?? "");
+    const provider = resolveProvider(input);
+    guardWrite("schema/register", subjectName);
+    try {
+      JSON.parse(schemaText);
+    } catch (cause) {
+      throw new Error(`schema is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+    let subject = findSubject(subjectName, provider);
+    if (!subject) {
+      subject = { subject: subjectName, formats: [format], versions: [], compatibilityLevel: globalCompatibility.level, provider };
+      schemaSubjects.set(subjectName, subject);
+    }
+    const version = makeSchemaVersion(subject, format, schemaText);
+    subject.versions.push(version);
+    if (!subject.formats.includes(format)) subject.formats.push(format);
+    result = { id: version.id, version: version.version };
+  } else if (method === "kafka/schema/delete") {
+    const subjectName = String(input.subject ?? "");
+    guardWrite("schema/delete", subjectName, { critical: true });
+    const subject = findSubject(subjectName, resolveProvider(input));
+    result = { success: subject ? schemaSubjects.delete(subjectName) : false };
+  } else if (method === "kafka/schema/delete/version") {
+    const subjectName = String(input.subject ?? "");
+    guardWrite("schema/delete/version", subjectName, { critical: true });
+    const subject = findSubject(subjectName, resolveProvider(input));
+    if (!subject) throw new Error("schema subject not found (fixture)");
+    const wanted = Number(input.version ?? 0);
+    const before = subject.versions.length;
+    subject.versions = subject.versions.filter((entry) => entry.version !== wanted);
+    result = { success: subject.versions.length < before };
   } else if (method === "kafka/audit") {
     // never emitted by the mock host itself (audit goes through events)
   }

@@ -3,8 +3,11 @@
 // create / delete（按过滤条件删除，回显 matched 数）。
 // 枚举值（资源类型/操作/许可）为 Kafka 协议术语，保持原文不翻译。
 import { computed, onMounted, ref } from "vue";
-import { Plus, RefreshCw, Trash2 } from "@lucide/vue";
+import { Plus, RefreshCw, Trash2, X } from "@lucide/vue";
+import type { ColDef } from "ag-grid-community";
+import DbxAgGrid from "./DbxAgGrid.vue";
 import { kafkaApi, type AclFilter, type KafkaAcl } from "../lib/api";
+import { MINIMAL_ACL_FIELDS, aclColumns, toAclRows, type AclVm } from "../lib/kafkaColumns";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -25,6 +28,10 @@ const PERMISSIONS = ["ANY", "ALLOW", "DENY"];
 const acls = ref<KafkaAcl[]>([]);
 const loading = ref(false);
 const busy = ref(false);
+const detail = ref<AclVm | null>(null);
+
+const aclGridRows = computed(() => toAclRows(acls.value));
+const aclGridCols = computed(() => aclColumns() as ColDef<AclVm>[]);
 
 const filter = ref<AclFilter>({});
 const filterLocalError = ref("");
@@ -157,29 +164,50 @@ onMounted(() => {
     </div>
     <p v-if="filterLocalError" class="form-error" style="padding: 0 8px 4px">{{ filterLocalError }}</p>
 
-    <div class="kafka-table">
-      <div class="kafka-table-header acl-cols">
-        <span>{{ t("acls.resourceType") }}</span>
-        <span>{{ t("acls.resourceName") }}</span>
-        <span>{{ t("acls.patternType") }}</span>
-        <span>{{ t("acls.principal") }}</span>
-        <span>{{ t("acls.host") }}</span>
-        <span>{{ t("acls.operation") }}</span>
-        <span>{{ t("acls.permission") }}</span>
+    <div class="grid-box grid-box--fill">
+      <!-- P2-9：空态不再裸列一行灰字，附过滤引导（复用现有 key，不新增 i18n）。 -->
+      <div v-if="acls.length === 0 && !loading" class="acls-empty">
+        <p class="empty compact">{{ t("acls.empty") }}</p>
+        <p class="hint">{{ t("acls.resourceName") }} / {{ t("acls.principal") }} → {{ t("acls.filterRun") }}</p>
       </div>
-      <div class="kafka-table-rows">
-        <p v-if="acls.length === 0 && !loading" class="empty compact">{{ t("acls.empty") }}</p>
-        <div v-for="(acl, index) in acls" :key="index" class="kafka-table-row acl-cols" style="cursor: default">
-          <span class="mono-s">{{ acl.resourceType }}</span>
-          <span class="mono-s">{{ acl.resourceName }}</span>
-          <span class="mono-s">{{ acl.patternType || "LITERAL" }}</span>
-          <span class="mono-s">{{ acl.principal }}</span>
-          <span class="mono-s">{{ acl.host || "*" }}</span>
-          <span class="mono-s">{{ acl.operation }}</span>
-          <span class="mono-s">{{ acl.permission }}</span>
+      <DbxAgGrid
+        v-else
+        table-key="acls"
+        :row-data="aclGridRows"
+        :column-defs="aclGridCols"
+        :compact-fields="MINIMAL_ACL_FIELDS"
+        row-selection="single"
+        @row-click="(row: unknown) => (detail = row as AclVm)"
+      />
+    </div>
+
+    <teleport to="body">
+      <div v-if="detail" class="drawer-backdrop" @click="detail = null" />
+      <div v-if="detail" class="drawer">
+        <header>
+          <span class="mono">{{ detail.resourceType }} · {{ detail.resourceName }}</span>
+          <button class="icon-button" :title="t('close')" @click="detail = null"><X /></button>
+        </header>
+        <div class="drawer-body">
+          <dl class="kv-grid">
+            <dt>{{ t("acls.resourceType") }}</dt>
+            <dd>{{ detail.resourceType }}</dd>
+            <dt>{{ t("acls.resourceName") }}</dt>
+            <dd>{{ detail.resourceName }}</dd>
+            <dt>{{ t("acls.patternType") }}</dt>
+            <dd>{{ detail.patternType }}</dd>
+            <dt>{{ t("acls.principal") }}</dt>
+            <dd>{{ detail.principal }}</dd>
+            <dt>{{ t("acls.host") }}</dt>
+            <dd>{{ detail.host }}</dd>
+            <dt>{{ t("acls.operation") }}</dt>
+            <dd>{{ detail.operation }}</dd>
+            <dt>{{ t("acls.permission") }}</dt>
+            <dd>{{ detail.permission }}</dd>
+          </dl>
         </div>
       </div>
-    </div>
+    </teleport>
 
     <teleport to="body">
       <div v-if="createOpen" class="modal-backdrop" @click.self="createOpen = false">
@@ -257,7 +285,22 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.acl-cols {
-  grid-template-columns: minmax(80px, 1fr) minmax(110px, 1.4fr) 70px minmax(120px, 1.2fr) 80px minmax(100px, 1fr) 80px;
+/* P2-9：空态引导行居中、弱化。 */
+.acls-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 100%;
+}
+/* P2 统一禁用态：只读/禁删下创建、删除按钮补强。 */
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+button:disabled {
+  filter: grayscale(0.4);
 }
 </style>

@@ -19,17 +19,60 @@ import (
 	"strings"
 )
 
-// 安全协议与 SASL 机制取值面（manifest §4）。
+// 安全协议与 SASL 机制取值面（manifest §4；GSSAPI=Kerberos 为 Phase 2 新增）。
 const (
-	SecurityProtocolPlaintext    = "PLAINTEXT"
-	SecurityProtocolSSL          = "SSL"
+	SecurityProtocolPlaintext     = "PLAINTEXT"
+	SecurityProtocolSSL           = "SSL"
 	SecurityProtocolSASLPlaintext = "SASL_PLAINTEXT"
-	SecurityProtocolSASLSSL      = "SASL_SSL"
+	SecurityProtocolSASLSSL       = "SASL_SSL"
 
-	SASLMechanismPlain        = "PLAIN"
-	SASLMechanismSCRAMSHA256  = "SCRAM-SHA-256"
-	SASLMechanismSCRAMSHA512  = "SCRAM-SHA-512"
+	SASLMechanismPlain       = "PLAIN"
+	SASLMechanismSCRAMSHA256 = "SCRAM-SHA-256"
+	SASLMechanismSCRAMSHA512 = "SCRAM-SHA-512"
+	SASLMechanismGSSAPI      = "GSSAPI"
+
+	// ConnectionSource 取值面（connection_source 字段）。
+	ConnectionSourceBootstrap = "bootstrap"
+	ConnectionSourceZookeeper = "zookeeper"
+
+	// SchemaRegistry 取值面（schema_registry 决策字段；空 = 旧版本连接，
+	// 运行时按 sr_url/glue_region 自动探测回退，见 NormalizeSchemaRegistry）。
+	SchemaRegistryNone      = "none"
+	SchemaRegistryConfluent = "confluent"
+	SchemaRegistryAWSGlue   = "aws_glue"
+
+	// GlueAuthMode 取值面（glue_auth_mode 字段；tinyrdm 的 aws-profile 模式
+	// sidecar 不提供）。
+	GlueAuthModeDefault = "default"
+	GlueAuthModeStatic  = "static"
 )
+
+// NormalizeSchemaRegistry 归一化 schema_registry 开关；空保留为空（旧连接
+// 向后兼容：按 sr_url/glue_region 自动探测），未知值保守回退 none。
+func NormalizeSchemaRegistry(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SchemaRegistryConfluent:
+		return SchemaRegistryConfluent
+	case SchemaRegistryAWSGlue:
+		return SchemaRegistryAWSGlue
+	case SchemaRegistryNone:
+		return SchemaRegistryNone
+	case "":
+		return ""
+	default:
+		return SchemaRegistryNone
+	}
+}
+
+// NormalizeConnectionSource 归一化连接来源；空值/未知回退 bootstrap。
+func NormalizeConnectionSource(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ConnectionSourceZookeeper:
+		return ConnectionSourceZookeeper
+	default:
+		return ConnectionSourceBootstrap
+	}
+}
 
 // NormalizeSecurityProtocol 归一化安全协议；空值/未知回退 PLAINTEXT。
 func NormalizeSecurityProtocol(value string) string {
@@ -52,30 +95,89 @@ func NormalizeSASLMechanism(value string) string {
 		return SASLMechanismSCRAMSHA256
 	case SASLMechanismSCRAMSHA512:
 		return SASLMechanismSCRAMSHA512
+	case SASLMechanismGSSAPI:
+		return SASLMechanismGSSAPI
 	default:
 		return ""
 	}
 }
 
 // Profile 是 sidecar 内存的连接配置（由 lifecycle 从宿主 params 构造）。
-// 凭据字段（SASL 密码、客户端私钥）不在此结构，见 connSecrets。
+// 凭据字段（SASL 密码、客户端私钥、SR 密码）不在此结构，见 connSecrets。
 type Profile struct {
-	ID   string   `json:"id"`
-	Name string   `json:"name"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
 	BootstrapServers []string `json:"bootstrapServers"`
 	// SecurityProtocol：PLAINTEXT | SSL | SASL_PLAINTEXT | SASL_SSL（§4 默认 PLAINTEXT）。
 	SecurityProtocol string `json:"securityProtocol"`
-	// SASLMechanism：PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512（含 SASL 时必填）。
-	SASLMechanism string `json:"saslMechanism,omitempty"`
-	Username      string `json:"username,omitempty"`
-	TLSCACert     string `json:"tlsCaCert,omitempty"`
-	TLSClientCert string `json:"tlsClientCert,omitempty"`
-	TLSInsecureSkipVerify bool `json:"tlsInsecureSkipVerify,omitempty"`
-	ClientID      string `json:"clientId,omitempty"`
+	// SASLMechanism：PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI（含 SASL 时必填）。
+	SASLMechanism         string `json:"saslMechanism,omitempty"`
+	Username              string `json:"username,omitempty"`
+	TLSCACert             string `json:"tlsCaCert,omitempty"`
+	TLSClientCert         string `json:"tlsClientCert,omitempty"`
+	TLSInsecureSkipVerify bool   `json:"tlsInsecureSkipVerify,omitempty"`
+	ClientID              string `json:"clientId,omitempty"`
 	// ReadOnly 收敛门禁：连接表单 read_only ∥ 宿主标准 read_only。
 	ReadOnly bool `json:"readOnly"`
 	// AllowDelete 允许删除类操作；read_only 下强制无效（§6 与门）。
 	AllowDelete bool `json:"allowDelete,omitempty"`
+
+	// --- Phase 2（IMPL_PLAN §0.2）：连接来源 / ZK 发现 / Kerberos / SR ---
+
+	// ConnectionSource：bootstrap（默认）| zookeeper（经 ZK 发现 broker）。
+	ConnectionSource string `json:"connectionSource,omitempty"`
+	// ZKServers：host:port[/chroot] 逗号分隔（仅 zookeeper 源使用）。
+	ZKServers []string `json:"zkServers,omitempty"`
+	// Kerberos 配置（GSSAPI 机制；keytab 只收文件路径不收内容）。
+	KerberosServiceName  string `json:"kerberosServiceName,omitempty"`
+	KerberosRealm        string `json:"kerberosRealm,omitempty"`
+	KerberosPrincipal    string `json:"kerberosPrincipal,omitempty"`
+	KerberosKeytabPath   string `json:"kerberosKeytabPath,omitempty"`
+	KerberosKrb5ConfPath string `json:"kerberosKrb5ConfPath,omitempty"`
+	// Schema Registry（Confluent 兼容 REST；空 URL = SR 能力禁用）。
+	// SchemaRegistry 是 manifest schema_registry 决策开关（none | confluent |
+	// aws_glue；空 = 旧连接按 sr_url/glue_region 自动探测回退）。SR provider
+	// 解析以本开关为准（resolveSchemaProvider），sr_url/glue_* 仅是该后端的
+	// 连接参数。
+	SchemaRegistry string `json:"schemaRegistry,omitempty"`
+	SRURL          string `json:"srUrl,omitempty"`
+	SRUsername     string `json:"srUsername,omitempty"`
+	// AWS Glue Schema Registry（Phase 3）：region+registryName 齐备 = 启用。
+	// 凭据（secret key/token）不在此结构，见 connSecrets；auth_mode 取值
+	// default | static（tinyrdm 的 aws-profile 模式 sidecar 不提供）。
+	GlueRegion       string `json:"glueRegion,omitempty"`
+	GlueRegistryName string `json:"glueRegistryName,omitempty"`
+	GlueAuthMode     string `json:"glueAuthMode,omitempty"`
+	GlueAccessKeyID  string `json:"glueAccessKeyId,omitempty"`
+}
+
+// kerberosEnabled 报告连接是否启用 GSSAPI。
+func (p Profile) kerberosEnabled() bool {
+	return p.SASLMechanism == SASLMechanismGSSAPI
+}
+
+// srEnabled 报告 Confluent SR 能力是否启用：以 schema_registry 开关为准；
+// 开关未设（旧连接）按 sr_url 非空自动探测回退。
+func (p Profile) srEnabled() bool {
+	switch p.SchemaRegistry {
+	case SchemaRegistryConfluent:
+		return true
+	case SchemaRegistryNone, SchemaRegistryAWSGlue:
+		return false
+	}
+	return strings.TrimSpace(p.SRURL) != ""
+}
+
+// glueEnabled 报告 AWS Glue SR 是否启用：以 schema_registry 开关为准；
+// 开关未设（旧连接）按 glue_region + glue_registry_name 齐备自动探测回退。
+func (p Profile) glueEnabled() bool {
+	switch p.SchemaRegistry {
+	case SchemaRegistryAWSGlue:
+		return true
+	case SchemaRegistryNone, SchemaRegistryConfluent:
+		return false
+	}
+	return strings.TrimSpace(p.GlueRegion) != "" && strings.TrimSpace(p.GlueRegistryName) != ""
 }
 
 // NormalizeProfile 归一化 Profile（trim + 协议/机制归一）。
@@ -88,6 +190,19 @@ func NormalizeProfile(p Profile) Profile {
 	p.TLSClientCert = strings.TrimSpace(p.TLSClientCert)
 	p.SecurityProtocol = NormalizeSecurityProtocol(p.SecurityProtocol)
 	p.SASLMechanism = NormalizeSASLMechanism(p.SASLMechanism)
+	p.ConnectionSource = NormalizeConnectionSource(p.ConnectionSource)
+	p.SchemaRegistry = NormalizeSchemaRegistry(p.SchemaRegistry)
+	p.KerberosServiceName = strings.TrimSpace(p.KerberosServiceName)
+	p.KerberosRealm = strings.TrimSpace(p.KerberosRealm)
+	p.KerberosPrincipal = strings.TrimSpace(p.KerberosPrincipal)
+	p.KerberosKeytabPath = strings.TrimSpace(p.KerberosKeytabPath)
+	p.KerberosKrb5ConfPath = strings.TrimSpace(p.KerberosKrb5ConfPath)
+	p.SRURL = strings.TrimSpace(p.SRURL)
+	p.SRUsername = strings.TrimSpace(p.SRUsername)
+	p.GlueRegion = strings.TrimSpace(p.GlueRegion)
+	p.GlueRegistryName = strings.TrimSpace(p.GlueRegistryName)
+	p.GlueAuthMode = strings.TrimSpace(p.GlueAuthMode)
+	p.GlueAccessKeyID = strings.TrimSpace(p.GlueAccessKeyID)
 
 	servers := make([]string, 0, len(p.BootstrapServers))
 	for _, server := range p.BootstrapServers {
@@ -98,6 +213,15 @@ func NormalizeProfile(p Profile) Profile {
 		servers = append(servers, server)
 	}
 	p.BootstrapServers = servers
+	zkServers := make([]string, 0, len(p.ZKServers))
+	for _, server := range p.ZKServers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		zkServers = append(zkServers, server)
+	}
+	p.ZKServers = zkServers
 	return p
 }
 
@@ -111,26 +235,99 @@ func (p Profile) hasTLS() bool {
 	return p.SecurityProtocol == SecurityProtocolSSL || p.SecurityProtocol == SecurityProtocolSASLSSL
 }
 
-// Validate 基础校验（bootstrap/SASL 参数齐备性）。
+// Validate 基础校验（bootstrap/SASL 参数齐备性；zookeeper 源时 bootstrap 可
+// 由 ZK 发现替代）。required_when 矩阵对应的必填组合校验见
+// validateRequiredCombination（含 secrets，返回 -32602 参数错）。
 func (p Profile) Validate() error {
 	if p.ID == "" {
 		return errf("connection.id is required")
 	}
-	if len(p.BootstrapServers) == 0 {
+	if p.ConnectionSource == ConnectionSourceZookeeper {
+		if len(p.ZKServers) == 0 {
+			return errf("zkServers is required for zookeeper connection source")
+		}
+	} else if len(p.BootstrapServers) == 0 {
 		return errf("bootstrapServers is required")
 	}
-	if p.hasSASL() {
-		if p.SASLMechanism == "" {
-			return errf("saslMechanism is required for %s", p.SecurityProtocol)
+	if p.hasSASL() && p.SASLMechanism == "" {
+		return errf("saslMechanism is required for %s", p.SecurityProtocol)
+	}
+	return nil
+}
+
+// validateRequiredCombination 是 manifest required_when 矩阵的后端兜底校验
+//（宿主连接对话框会拦可见必填字段，但 MCP/import 等非对话框写路径与纵深
+// 防御仍需 sidecar 复核；矩阵与 manifest §9 一致）。缺失 →
+// *InvalidParamsError（main.go 映射 -32602）。
+//
+// 矩阵：
+//   - schema_registry=confluent → sr_url 必填
+//   - schema_registry=aws_glue → glue_region/glue_registry_name 必填；
+//     glue_auth_mode=static 时 AK/SK 必填（token 可选）
+//   - SASL 非 GSSAPI → sasl username/password 必填
+//   - GSSAPI → kerberos principal/keytab 必填
+func validateRequiredCombination(p Profile, s connSecrets) error {
+	switch p.SchemaRegistry {
+	case SchemaRegistryConfluent:
+		if strings.TrimSpace(p.SRURL) == "" {
+			return &InvalidParamsError{Msg: "srUrl is required when schemaRegistry is \"confluent\""}
 		}
-		if p.Username == "" {
-			return errf("sasl username is required for %s", p.SecurityProtocol)
+	case SchemaRegistryAWSGlue:
+		if strings.TrimSpace(p.GlueRegion) == "" {
+			return &InvalidParamsError{Msg: "glueRegion is required when schemaRegistry is \"aws_glue\""}
+		}
+		if strings.TrimSpace(p.GlueRegistryName) == "" {
+			return &InvalidParamsError{Msg: "glueRegistryName is required when schemaRegistry is \"aws_glue\""}
+		}
+		if strings.EqualFold(strings.TrimSpace(p.GlueAuthMode), GlueAuthModeStatic) {
+			if strings.TrimSpace(p.GlueAccessKeyID) == "" {
+				return &InvalidParamsError{Msg: "glueAccessKeyId is required when glueAuthMode is \"static\""}
+			}
+			if strings.TrimSpace(s.GlueSecretAccessKey) == "" {
+				return &InvalidParamsError{Msg: "glueSecretAccessKey is required when glueAuthMode is \"static\""}
+			}
+		}
+	}
+	if p.hasSASL() {
+		switch p.SASLMechanism {
+		case SASLMechanismGSSAPI:
+			if strings.TrimSpace(p.KerberosPrincipal) == "" {
+				return &InvalidParamsError{Msg: "kerberosPrincipal is required for GSSAPI"}
+			}
+			if strings.TrimSpace(p.KerberosKeytabPath) == "" {
+				return &InvalidParamsError{Msg: "kerberosKeytabPath is required for GSSAPI"}
+			}
+		default:
+			if p.Username == "" {
+				return &InvalidParamsError{Msg: fmt.Sprintf("sasl username is required for %s", p.SecurityProtocol)}
+			}
+			if strings.TrimSpace(s.SASLPassword) == "" {
+				return &InvalidParamsError{Msg: fmt.Sprintf("sasl password is required for %s", p.SecurityProtocol)}
+			}
 		}
 	}
 	return nil
 }
 
 // --- 连接状态（kafka/connections/statuses，照 ldap 形态） ---
+
+// SchemaRegistryStatus SR 能力摘要（不含凭据）。provider 取值
+// confluent | glue | both | none（both = 旧连接双配置待显式 registry；none 时
+// enabled=false 且 url/registryName 均空）。Mode 是 schema_registry 开关的
+// 归一值 none | confluent | aws_glue（旧连接未设开关时省略，此时 provider
+// 来自自动探测）。
+type SchemaRegistryStatus struct {
+	Enabled      bool   `json:"enabled"`
+	Provider     string `json:"provider"`
+	Mode         string `json:"mode,omitempty"`
+	URL          string `json:"url,omitempty"`
+	RegistryName string `json:"registryName,omitempty"`
+}
+
+// KerberosStatus Kerberos 摘要（不含凭据/路径细节）。
+type KerberosStatus struct {
+	Enabled bool `json:"enabled"`
+}
 
 // ConnectionStatus 连接状态。
 type ConnectionStatus struct {
@@ -142,6 +339,10 @@ type ConnectionStatus struct {
 	ConnectedAt  int64  `json:"connectedAt,omitempty"`
 	LastUsedAt   int64  `json:"lastUsedAt,omitempty"`
 	Error        string `json:"error,omitempty"`
+	// ConnectionSource：bootstrap | zookeeper（Phase 2）。
+	ConnectionSource string                `json:"connectionSource,omitempty"`
+	SchemaRegistry   *SchemaRegistryStatus `json:"schemaRegistry,omitempty"`
+	Kerberos         *KerberosStatus       `json:"kerberos,omitempty"`
 }
 
 // --- brokers ---
@@ -157,6 +358,8 @@ type BrokerInfo struct {
 // BrokersListResult 对应 kafka/brokers/list。
 type BrokersListResult struct {
 	Brokers []BrokerInfo `json:"brokers"`
+	// ConnectionSource：bootstrap | zookeeper（broker 列表来源，Phase 2）。
+	ConnectionSource string `json:"connectionSource,omitempty"`
 }
 
 // BrokerConfigRequest 对应 kafka/brokers/config。
@@ -238,7 +441,7 @@ type TopicsCreateRequest struct {
 // TopicsDeleteRequest 对应 kafka/topics/delete（critical 门禁：confirmTopic
 // 必须与待删 topic 一致，防误删；多 topic 时要求全部同名或用 confirmTopics）。
 type TopicsDeleteRequest struct {
-	ConnectionID string `json:"connectionId"`
+	ConnectionID string   `json:"connectionId"`
 	Topics       []string `json:"topics"`
 	// ConfirmTopic 单 topic 删除的确认字段（§6：与 topic 同名才放行）。
 	ConfirmTopic string `json:"confirmTopic,omitempty"`
@@ -248,7 +451,7 @@ type TopicsDeleteRequest struct {
 
 // PartitionsUpdateRequest 对应 kafka/topics/partitions/update（只增）。
 type PartitionsUpdateRequest struct {
-	ConnectionID string         `json:"connectionId"`
+	ConnectionID string           `json:"connectionId"`
 	Partitions   map[string]int32 `json:"partitions"`
 }
 
@@ -270,7 +473,8 @@ type TopicConfigAlterRequest struct {
 type TopicOffsetsListRequest struct {
 	ConnectionID string   `json:"connectionId"`
 	Topics       []string `json:"topics"`
-	// OffsetTime：earliest | latest | RFC3339 | unix ms（§5.2）。
+	// OffsetTime：earliest | latest | max-timestamp | log-start | RFC3339 |
+	// unix ms（§5.2 Phase 2 全策略；默认 latest）。
 	OffsetTime string `json:"offsetTime,omitempty"`
 }
 
@@ -321,13 +525,13 @@ type GroupMemberInfo struct {
 
 // GroupDescribeResult 对应 kafka/groups/describe。
 type GroupDescribeResult struct {
-	Group        string             `json:"group"`
-	State        string             `json:"state,omitempty"`
-	ProtocolType string             `json:"protocolType,omitempty"`
-	Protocol     string             `json:"protocol,omitempty"`
-	Coordinator  int32              `json:"coordinator,omitempty"`
-	Members      []GroupMemberInfo  `json:"members,omitempty"`
-	Error        string             `json:"error,omitempty"`
+	Group        string            `json:"group"`
+	State        string            `json:"state,omitempty"`
+	ProtocolType string            `json:"protocolType,omitempty"`
+	Protocol     string            `json:"protocol,omitempty"`
+	Coordinator  int32             `json:"coordinator,omitempty"`
+	Members      []GroupMemberInfo `json:"members,omitempty"`
+	Error        string            `json:"error,omitempty"`
 }
 
 // GroupOffsetsListRequest 对应 kafka/groups/offsets/list（topics 空 =

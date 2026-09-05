@@ -1,9 +1,12 @@
 # IMPL PLAN — DBX Kafka 插件（io.dbx.kafka）
 
-> 状态：Phase 1 实施中（2026-09-05 启动）。
+> 状态：Phase 1（基础版）+ Phase 2（商用化）已实施，收口验证见 §11。
 > 决策记录：本文件是 kafka 插件**唯一工作来源**。工作区 AGENTS.md 原有
 > "聚焦三插件、不做任何新插件" 约束，经用户于 2026-09-05 明确指令新增
 > kafka 插件而解除；根 README.md / AGENTS.md 随本次任务同步修订登记。
+> 2026-09-05 目标升级：完整覆盖 tinyrdm 特性 + host 特有能力（取长补短）、
+> 商用级鉴权/加密矩阵、ag-grid 表格过滤检索、docker 覆盖测试——即本文件
+> §0.2 的 Phase 2 项全部落地，统一记入 §11。
 
 ## 0. 目标与非目标
 
@@ -31,11 +34,15 @@ Kafka 实现重写为 DBX 插件：
   SSH 隧道/代理传输层（sidecar 经 `runtime.host:port` 拨号）、read_only
   治理与审计基线全部走宿主。
 
-### 0.2 非目标（Phase 2 登记，本期不做）
+### 0.2 非目标
 
-- Schema Registry（Confluent / AWS Glue）编解码 —— tinyrdm 有，独立成期。
-- Kerberos/GSSAPI（keytab 链路）—— gokrb5 依赖重，Phase 2。
-- ZooKeeper 发现（`connectionSource=zookeeper`）—— KRaft 时代低优先。
+原 Phase 2 项（Schema Registry、Kerberos、ZooKeeper 发现）已于 2026-09-05
+商用化轮次全部落地（见 §11）。当前剩余非目标（Phase 3 登记）：
+
+- OAUTHBEARER / AWS MSK IAM 鉴权（tinyrdm/host 均无；sidecar 无 token 回调通道）。
+  AWS Glue SR 管理面已于 2026-09-05 第三轮落地（见 §11.5），tinyrdm 双 SR 后端
+  全覆盖；aws-profile 凭据模式由 default 链覆盖，无独立开关。
+- PROTOBUF 载荷编解码（SR 场景，明确报未实现）。
 - 幂等/事务生产参数、ACL 之外的 quota/reassignment/log dir。
 - 与宿主 MQ 控制台（topics/groups/ACL 治理面）的互通。
 
@@ -278,3 +285,85 @@ fetch 错误指数退避 500ms→30s；**只读策略下禁止 commit**。
   计数提示，避免 OOM。
 - tinyrdm 的 SR/Glue/Kerberos/Connector 导入不阻塞 Phase 1 验收，
   全部登记 Phase 2。
+
+## 11. Phase 2 商用化落地记录（2026-09-05）
+
+三路并发（D=backend+manifest+PROTOCOL、E=frontend+ag-grid、主线收口联调），
+契约冻结后并行，无目录交叉。
+
+### 11.1 交付
+
+- **后端 45 方法**（Phase 1 的 34 + schema 族 11）：Confluent 兼容 SR REST
+  （wire format 编解码、LCS diff、兼容性 get/set/check、注册/删除、
+  per-consume 元数据缓存）、Kerberos/GSSAPI（gokrb5 + franz-go sasl/kerberos，
+  keytab 只收路径）、ZooKeeper 发现（go-zookeeper/zk，chroot）、produce/consume
+  的 `valueBase64/keyBase64/schema{}` 挂载、offsets 五策略
+  （earliest/latest/max-timestamp/log-start/时间戳）。
+- **manifest 新字段 10 个**（connection_source/zk_servers/kerberos 五件套/
+  sr_url/sr_username/sr_password，sr_password 走 secret binding），
+  sasl_mechanism 增加 GSSAPI，七语逐字段全量。
+- **前端**：引入 `ag-grid-community`（36.1.0，MIT；理由：商用检索要求列内
+  过滤，用户点名 table 组件）——消息/组/offsets/ACL/topics 六表 ag-grid 化
+  （排序+列过滤+分页持久化+窄容器降级，`DbxAgGrid.vue` 统一封装对齐 DBX
+  主题令牌）；新增 `SchemasPanel`（版本 diff/兼容性/注册/删除双确认）与
+  `MonitorPanel`（lag 采样+趋势 SVG+阈值告警+方案 presets）；Confluent
+  properties 导入助手（密码掩码不落盘）；七语 440 键/语。
+- **测试**：backend 单测 74→98，前端 38→49；docker 双容器覆盖
+  （apache/kafka KRaft + Redpanda SR）smoke S1-S11。
+
+### 11.2 联调修复（收口主线）
+
+- **reset `partitionOffsets` 形状三方不一致**（Phase 1 遗留）：backend 嵌套
+  `map<topic,map<partition,int>>`、前端/PROTOCOL 扁平 → 以嵌套为准，
+  前端新增 `parseGroupOffsetTargetsText`（`topic:0=100` 显式语法，单 topic
+  可裸写 `0=100`，歧义报错）、api.ts 类型、PROTOCOL §3.3、七语 hint 同步。
+- **打包失败**：全局 npm CLI wrapper 注入的捆绑 go.work 锁 go 1.22 与模块
+  1.24 冲突 → `test.sh` package 段照 `build.sh` 直调原生 CLI 二进制
+  （`env -u DBX_PLUGIN_SDK_ROOT`）。
+- 容器真跑暴露并已修（D 路，详 PROGRESS-B §6.3）：无 group 消费建 client
+  失败、流式 poll 无限期阻塞导致事件不出、ACL 空 operation 误报、
+  sidecar_client readline 无超时挂死、Redpanda DELETE version 单数字兼容。
+
+### 11.3 验证证据
+
+- `bash scripts/build.sh` → `dist/io.dbx.kafka-0.1.0-darwin-arm64.dbxp`。
+- `bash scripts/test.sh`（含 package 步骤修复后复跑）→ 前端三件套 +
+  go vet/test + package + smoke `total=11 PASS=10 FAIL=0 SKIP=1`
+  （S3 合法 SKIP：新集群无消费组提交，`__consumer_offsets` 未建）。
+- ui_test.mjs（Playwright+mock 桥）：ag-grid 过滤/分页持久化、Schemas diff、
+  Monitor 采样/阈值/方案、`?ro=1` 只读禁用、暗色主题可读。
+
+### 11.4 完成定义四件套核验
+
+| 项 | 状态 |
+| --- | --- |
+| 单测（纯解析不连远端） | go 3 包 ok（98 例）+ vitest 6 文件 49 例 |
+| smoke（未实现方法 SKIP 不 FAIL） | S1-S11，SKIP 语义三层齐 |
+| 对标/任务清单更新 | 本文件 §11 + PROGRESS-B/-P 各 Phase 2 小节 |
+| 七语文案 | manifest 逐字段 × 前端 440 键 × 7 语，spec 守卫绿 |
+
+### 11.5 AWS Glue Schema Registry 落地（2026-09-05 第三轮，补齐 tinyrdm 字面缺口）
+
+- **后端**：`internal/kafkaconn/glue.go`（aws-sdk-go-v2/service/glue，auth_mode
+  default/static；API 映射照 tinyrdm：ListSchemas/ListSchemaVersions/
+  GetSchemaVersion/RegisterSchemaVersion/CreateRegistry/UpdateSchema
+  compatibility/CheckSchemaVersionValidity/DeleteSchema*），11 个 schema 方法
+  改 backend 分发，请求 `registry?: "confluent"|"glue"`（缺省自动探测，歧义
+  -32602）；compatibility 枚举含 Glue 8 档；**消息编解码挂载在 glue 下返回
+  tinyrdm 同款业务错**（tinyrdm 原文语义：schema-aware 编解码仅 Confluent
+  wire format，Glue 仅管理面）。
+- **manifest**：glue_region/glue_registry_name/glue_auth_mode/glue_access_key_id/
+  glue_secret_access_key(secret)/glue_session_token(secret)，七语全量。
+- **前端**：SchemasPanel registry 徽章+双后端切换（枚举 7/8 档联动）、
+  ConnectionsPanel Glue 摘要（secret 只显已配置态）、三面板 schema 挂载在
+  glue 下禁用+提示、`?glue=1` mock 模式、i18n 454 键/语。
+- **消息二次解码补齐**：fzstd/snappyjs/lz4js（MIT/ISC 纯 JS）落地，详情侧
+  gzip/zstd/snappy/lz4 四解压全支持（tinyrdm ConvertValue 对齐，Phase 2 降级
+  标注撤销）。
+- **验证**：backend 105 例（httptest 假 Glue JSON-RPC： subjects/versions/get/
+  register/compat/delete/错误透传/探测歧义/枚举全表）；前端 52 例（zstd CLI
+  固定向量 + snappy/lz4 roundtrip + 失败降级）；smoke S12（Glue 需
+  GLUE_TEST_REGION/GLUE_TEST_REGISTRY，本地无 Glue 容器即 SKIP）；收口
+  test.sh 全绿。
+- 遗留：真实 AWS Glue 往返需凭据环境跑 S12；Glue DISABLED 与 Confluent NONE
+  语义差异文档化；proto 载荷/幂等生产参数仍 Phase 3。

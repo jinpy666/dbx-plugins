@@ -41,7 +41,7 @@ dbx-plugins/
 | ssh | `io.dbx.ssh` | Rust（russh，stdio-framed + 二进制帧） | **已上线 v0.2.x**，按自身对标清单增强 | 仓内 `docs/FEATURE_PARITY*.zh-CN.md` |
 | ldap | `io.dbx.ldap` | Go（go-ldap + gokrb5，官方 Go SDK，stdio-jsonl） | 待实施（M0→M1→M3→M4） | `ldap/docs/IMPL_PLAN_DBX_LDAP.zh-CN.md` |
 | files | `io.dbx.files` | Rust（opendal 0.58.x，dbx-plugin-sdk，stdio-framed + 二进制帧） | 待实施（M0→M2→M3→M4） | `files/docs/IMPL_PLAN_DBX_FILES.zh-CN.md` |
-| kafka | `io.dbx.kafka` | Go（franz-go + kadm，官方 Go SDK，stdio-jsonl） | Phase 1 实施中（2026-09-05 新增） | `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md` |
+| kafka | `io.dbx.kafka` | Go（franz-go + kadm，官方 Go SDK，stdio-jsonl） | 商用级可用（2026-09-05：45+11 方法，Confluent+AWS Glue 双 SR、Kerberos/ZK、ag-grid 检索，test.sh 全绿） | `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md` |
 
 ## 实施入口（给实施 agent）
 

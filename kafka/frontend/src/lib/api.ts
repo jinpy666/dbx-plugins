@@ -230,7 +230,93 @@ export interface KafkaConnectionStatus {
   lastError?: string;
   /** unix 毫秒时间戳（sidecar JSON number）。 */
   lastUsedAt?: number;
+  /** Schema Registry 摘要（Phase 2；旧 sidecar 可能缺省 = 未启用）。
+   *  Phase P：provider 标注当前 SR 提供方（confluent|glue；缺省按 confluent 处理）。 */
+  schemaRegistry?: { enabled: boolean; url?: string; provider?: SchemaRegistryProvider };
+  /** Kerberos/GSSAPI 摘要（Phase 2）。 */
+  kerberos?: { enabled: boolean };
+  /** 连接元数据来源（ZK 模式 = zookeeper）。 */
+  connectionSource?: string;
 }
+
+// -- Schema Registry（Phase 2 冻结契约，方法与形状见任务书） -------------------------
+
+/** Schema Registry 提供方（Phase P：kafka/schema/* 全族可选 registry 参数）。 */
+export type SchemaRegistryProvider = "confluent" | "glue";
+/** schema/test 探测结果（none = 该 registry 未配置/不可达）。 */
+export type SchemaRegistryTestProvider = SchemaRegistryProvider | "none";
+
+export interface SchemaSubject {
+  subject: string;
+  formats: string[];
+  latestVersion?: number;
+  compatibilityLevel?: string;
+}
+
+export interface SchemaVersionRow {
+  version: number;
+  id: number;
+  format: string;
+}
+
+export interface SchemaReference {
+  name?: string;
+  subject?: string;
+  version?: number;
+  [key: string]: unknown;
+}
+
+export interface SchemaDetail {
+  subject: string;
+  version: number;
+  id: number;
+  /** 原始 schema 文本（JSON 序列化）。 */
+  schema: string;
+  format: string;
+  references: SchemaReference[];
+}
+
+export interface SchemaDiffHunk {
+  op: "add" | "remove" | "modify";
+  path: string;
+  before?: string;
+  after?: string;
+}
+
+export interface SchemaDiff {
+  hunks: SchemaDiffHunk[];
+  summary: string;
+}
+
+export interface SchemaCompatibility {
+  level: string;
+  scope?: string;
+}
+
+export interface SchemaCompatibilityCheckResult {
+  isCompatible: boolean;
+  messages: string[];
+}
+
+export interface SchemaRegisterResult {
+  id: number;
+  version: number;
+}
+
+export type SchemaCompatibilityLevel =
+  | "NONE"
+  | "BACKWARD"
+  | "BACKWARD_TRANSITIVE"
+  | "FORWARD"
+  | "FORWARD_TRANSITIVE"
+  | "FULL"
+  | "FULL_TRANSITIVE"
+  // AWS Glue 兼容性枚举（provider=glue；NONE/DISABLED 语义与 Confluent NONE 不同，
+  // 枚举原样透传展示，见 IMPL_PLAN Phase P 冻结契约）。
+  | "DISABLED"
+  | "BACKWARD_ALL"
+  | "FORWARD_ALL"
+  | "FULL_ALL";
 
 /** Current connection id, injected by App.vue once the host context resolves. */
 let currentConnectionId = "";
@@ -264,7 +350,7 @@ async function callKafka<T>(method: string, params: object = {}, options?: { tim
 export const kafkaApi = {
   // brokers
   brokersList() {
-    return callKafka<{ brokers: KafkaBroker[] }>("kafka/brokers/list");
+    return callKafka<BrokersListResult>("kafka/brokers/list");
   },
   brokersConfig(brokerId: number) {
     return callKafka<{ entries: ConfigEntry[] }>("kafka/brokers/config", { brokerId });
@@ -328,7 +414,7 @@ export const kafkaApi = {
     group: string,
     topics: string[],
     resetTo: "earliest" | "latest" | "timestamp" | "partitionOffset",
-    extra: { timestampMs?: number; partitionOffsets?: Record<string, number> } = {},
+    extra: { timestampMs?: number; partitionOffsets?: Record<string, Record<string, number>> } = {},
   ) {
     return callKafka<{ rows: Array<{ topic: string; partition: number; ok: boolean; error?: string }> }>(
       "kafka/groups/offsets/reset",
@@ -351,11 +437,16 @@ export const kafkaApi = {
   messagesProduce(params: {
     topic: string;
     key?: string;
-    value: string;
+    value?: string;
+    /** key 的 base64 保真载荷（keyBase64 与 key 二选一，Phase 2）。 */
+    keyBase64?: string;
+    /** value 的 base64 保真载荷（与 value 二选一，Phase 2）。 */
+    valueBase64?: string;
     headers?: Record<string, string>;
     partition?: number;
     count?: number;
     compression?: Compression;
+    schema?: SchemaAttach;
   }) {
     return callKafka<ProduceResult>("kafka/messages/produce", params);
   },
@@ -398,6 +489,77 @@ export const kafkaApi = {
   },
   connectionStatuses() {
     return callKafka<{ statuses: KafkaConnectionStatus[] }>("kafka/connections/statuses");
+  },
+
+  // schema registry（Phase 2 冻结契约 + Phase P registry 参数；只读/写门禁与
+  // delete 双门禁同 §6。registry 省略 = 连接默认提供方，与旧 sidecar 兼容）
+  schemaTest(registry?: SchemaRegistryProvider) {
+    return callKafka<{ success: boolean; provider?: SchemaRegistryTestProvider }>(
+      "kafka/schema/test",
+      registry ? { registry } : {},
+    );
+  },
+  schemaSubjectsList(registry?: SchemaRegistryProvider) {
+    return callKafka<{ subjects: SchemaSubject[] }>(
+      "kafka/schema/subjects/list",
+      registry ? { registry } : {},
+    );
+  },
+  schemaVersionsList(subject: string, registry?: SchemaRegistryProvider) {
+    return callKafka<{ versions: SchemaVersionRow[] }>(
+      "kafka/schema/versions/list",
+      registry ? { subject, registry } : { subject },
+    );
+  },
+  schemaGet(subject: string, version?: number, registry?: SchemaRegistryProvider) {
+    const base: Record<string, unknown> = version !== undefined ? { subject, version } : { subject };
+    return callKafka<SchemaDetail>("kafka/schema/get", registry ? { ...base, registry } : base);
+  },
+  schemaVersionsCompare(subject: string, fromVersion: number, toVersion: number, registry?: SchemaRegistryProvider) {
+    return callKafka<SchemaDiff>(
+      "kafka/schema/versions/compare",
+      registry ? { subject, fromVersion, toVersion, registry } : { subject, fromVersion, toVersion },
+    );
+  },
+  schemaCompatibilityGet(subject?: string, registry?: SchemaRegistryProvider) {
+    const base: Record<string, unknown> = subject ? { subject } : {};
+    return callKafka<SchemaCompatibility>("kafka/schema/compatibility/get", registry ? { ...base, registry } : base);
+  },
+  schemaCompatibilitySet(subject: string | undefined, level: SchemaCompatibilityLevel, registry?: SchemaRegistryProvider) {
+    const base: Record<string, unknown> = subject ? { subject, level } : { level };
+    return callKafka<SchemaCompatibility>("kafka/schema/compatibility/set", registry ? { ...base, registry } : base);
+  },
+  schemaCompatibilityCheck(
+    subject: string,
+    format: "avro" | "json",
+    schema: string,
+    version?: number,
+    registry?: SchemaRegistryProvider,
+  ) {
+    const base: Record<string, unknown> =
+      version !== undefined ? { subject, format, schema, version } : { subject, format, schema };
+    return callKafka<SchemaCompatibilityCheckResult>(
+      "kafka/schema/compatibility/check",
+      registry ? { ...base, registry } : base,
+    );
+  },
+  schemaRegister(subject: string, format: "avro" | "json", schema: string, registry?: SchemaRegistryProvider) {
+    return callKafka<SchemaRegisterResult>(
+      "kafka/schema/register",
+      registry ? { subject, format, schema, registry } : { subject, format, schema },
+    );
+  },
+  schemaDelete(subject: string, registry?: SchemaRegistryProvider) {
+    return callKafka<{ success: boolean }>(
+      "kafka/schema/delete",
+      registry ? { subject, registry } : { subject },
+    );
+  },
+  schemaDeleteVersion(subject: string, version: number, registry?: SchemaRegistryProvider) {
+    return callKafka<{ success: boolean }>(
+      "kafka/schema/delete/version",
+      registry ? { subject, version, registry } : { subject, version },
+    );
   },
 };
 

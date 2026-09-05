@@ -18,8 +18,18 @@ import (
 // adminTimeout 领域管理面统一超时（tinyrdm 15-20s 取中）。
 const adminTimeout = 20 * time.Second
 
-// ListBrokers 实现 kafka/brokers/list。
+// ListBrokers 实现 kafka/brokers/list。connection_source=zookeeper 时经 ZK
+// 发现 broker（ZK 不可达 → 业务错 -32000）；bootstrap 源走 Kafka metadata。
 func (s *Service) ListBrokers(ctx context.Context, connectionID string) (*BrokersListResult, error) {
+	profile := s.profileOf(connectionID)
+	if profile.ConnectionSource == ConnectionSourceZookeeper {
+		brokers, err := s.discoverBrokersViaZK(connectionID)
+		if err != nil {
+			return nil, err
+		}
+		return &BrokersListResult{Brokers: brokers, ConnectionSource: ConnectionSourceZookeeper}, nil
+	}
+
 	var result BrokersListResult
 	err := s.withAdmin(connectionID, func(client *kgo.Client) error {
 		admin := kadm.NewClient(client)
@@ -44,6 +54,7 @@ func (s *Service) ListBrokers(ctx context.Context, connectionID string) (*Broker
 	if err != nil {
 		return nil, err
 	}
+	result.ConnectionSource = ConnectionSourceBootstrap
 	return &result, nil
 }
 
@@ -315,7 +326,9 @@ func (s *Service) AlterTopicConfig(ctx context.Context, req TopicConfigAlterRequ
 	return results, nil
 }
 
-// ListTopicOffsets 实现 kafka/topics/offsets/list（earliest/latest/按时间）。
+// ListTopicOffsets 实现 kafka/topics/offsets/list（Phase 2 全策略：
+// earliest(-2)/latest(-1)/max-timestamp(-3)/log-start(-4)/RFC3339/unix ms；
+// 单分区失败在行上标 error，不整体失败）。
 func (s *Service) ListTopicOffsets(ctx context.Context, req TopicOffsetsListRequest) (*TopicOffsetsListResult, error) {
 	topics := normalizeTopicNames(req.Topics)
 	if len(topics) == 0 {
@@ -338,6 +351,10 @@ func (s *Service) ListTopicOffsets(ctx context.Context, req TopicOffsetsListRequ
 			offsets, err = admin.ListStartOffsets(ctx, topics...)
 		case "latest":
 			offsets, err = admin.ListEndOffsets(ctx, topics...)
+		case "max-timestamp":
+			offsets, err = admin.ListMaxTimestampOffsets(ctx, topics...)
+		case "log-start":
+			offsets, err = admin.ListLocalLogStartOffsets(ctx, topics...)
 		default:
 			offsets, err = admin.ListOffsetsAfterMilli(ctx, millis, topics...)
 		}

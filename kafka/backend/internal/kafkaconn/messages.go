@@ -49,13 +49,13 @@ type ConsumeParams struct {
 	// OffsetStrategy：latest | earliest | committed | timestamp | offset。
 	OffsetStrategy string `json:"offsetStrategy,omitempty"`
 	// OffsetTime：RFC3339 或 unix ms（strategy=timestamp 时必填）。
-	OffsetTime  string  `json:"offsetTime,omitempty"`
-	Partitions  []int32 `json:"partitions,omitempty"`
+	OffsetTime string  `json:"offsetTime,omitempty"`
+	Partitions []int32 `json:"partitions,omitempty"`
 	// PartitionOffsets strategy=offset 时必填：partition → offset。
 	PartitionOffsets map[int32]int64 `json:"partitionOffsets,omitempty"`
-	Limit           int    `json:"limit,omitempty"`
-	TimeoutMs       int    `json:"timeoutMs,omitempty"`
-	MaxScanRecords  int    `json:"maxScanRecords,omitempty"`
+	Limit            int             `json:"limit,omitempty"`
+	TimeoutMs        int             `json:"timeoutMs,omitempty"`
+	MaxScanRecords   int             `json:"maxScanRecords,omitempty"`
 	// IsolationLevel：read_uncommitted（默认）| read_committed。
 	IsolationLevel string `json:"isolationLevel,omitempty"`
 	// Commit 为 true 时禁一切过滤且必须 groupId（§5.3 互斥）。
@@ -63,20 +63,25 @@ type ConsumeParams struct {
 
 	// 过滤：filter 全文（key+value+headers 拼接），其余分通道；
 	// matchMode：contains | prefix | exact | regex。
-	Filter       string                    `json:"filter,omitempty"`
-	KeyFilter    string                    `json:"keyFilter,omitempty"`
-	ValueFilter  string                    `json:"valueFilter,omitempty"`
-	HeaderFilter string                    `json:"headerFilter,omitempty"`
-	MatchMode    string                    `json:"matchMode,omitempty"`
-	FieldFilters []ConsumeFieldFilter      `json:"fieldFilters,omitempty"`
-	TimestampFrom *int64                   `json:"timestampFrom,omitempty"`
-	TimestampTo   *int64                   `json:"timestampTo,omitempty"`
-	OffsetFrom    *int64                   `json:"offsetFrom,omitempty"`
-	OffsetTo      *int64                   `json:"offsetTo,omitempty"`
+	Filter        string               `json:"filter,omitempty"`
+	KeyFilter     string               `json:"keyFilter,omitempty"`
+	ValueFilter   string               `json:"valueFilter,omitempty"`
+	HeaderFilter  string               `json:"headerFilter,omitempty"`
+	MatchMode     string               `json:"matchMode,omitempty"`
+	FieldFilters  []ConsumeFieldFilter `json:"fieldFilters,omitempty"`
+	TimestampFrom *int64               `json:"timestampFrom,omitempty"`
+	TimestampTo   *int64               `json:"timestampTo,omitempty"`
+	OffsetFrom    *int64               `json:"offsetFrom,omitempty"`
+	OffsetTo      *int64               `json:"offsetTo,omitempty"`
 
 	// 解码：decode none|base64（二次解码）；decompression 一次解压。
 	Decode        string `json:"decode,omitempty"`
 	Decompression string `json:"decompression,omitempty"`
+
+	// Schema 可选（Phase 2）：SR 挂载 —— 解码 Confluent wire format 载荷为
+	// JSON 文本；命中消息附加 schemaId/schemaSubject/schemaVersion 字段，
+	// 解码失败置 decodeError（不中断消费）。
+	Schema *SchemaRef `json:"schema,omitempty"`
 }
 
 // ConsumeFieldFilter 字段级过滤（三通道 + JSON path + 数值比较）。
@@ -94,18 +99,18 @@ type ConsumeFieldFilter struct {
 
 // ConsumedMessage 消息形状（契约 §5.3 二进制保真）。
 type ConsumedMessage struct {
-	Topic      string            `json:"topic"`
-	Partition  int32             `json:"partition"`
-	Offset     int64             `json:"offset"`
-	Timestamp  int64             `json:"timestamp,omitempty"`
-	LeaderEpoch int32            `json:"leaderEpoch,omitempty"`
+	Topic       string `json:"topic"`
+	Partition   int32  `json:"partition"`
+	Offset      int64  `json:"offset"`
+	Timestamp   int64  `json:"timestamp,omitempty"`
+	LeaderEpoch int32  `json:"leaderEpoch,omitempty"`
 	// Key 为合法 UTF-8 时输出；否则 keyBase64。
-	Key           string `json:"key,omitempty"`
-	KeyBase64     string `json:"keyBase64,omitempty"`
+	Key       string `json:"key,omitempty"`
+	KeyBase64 string `json:"keyBase64,omitempty"`
 	// ValueText 恒为 UTF-8 安全预览（非法字节替换）；ValueBase64 恒完整
 	// （超 512KB 截断并置 truncated）。
-	ValueText   string `json:"valueText"`
-	ValueBase64 string `json:"valueBase64"`
+	ValueText   string            `json:"valueText"`
+	ValueBase64 string            `json:"valueBase64"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	// Truncated 标记 value 超上限被截断。
 	Truncated bool `json:"truncated,omitempty"`
@@ -113,6 +118,10 @@ type ConsumedMessage struct {
 	Committed bool `json:"committed,omitempty"`
 	// DecodeError 保存解码/解压失败信息。
 	DecodeError string `json:"decodeError,omitempty"`
+	// Schema 定位信息（Phase 2：ConsumeParams.schema 命中时填充）。
+	SchemaID      int64  `json:"schemaId,omitempty"`
+	SchemaSubject string `json:"schemaSubject,omitempty"`
+	SchemaVersion int64  `json:"schemaVersion,omitempty"`
 }
 
 // ConsumeResult 对应 kafka/messages/consume。
@@ -137,6 +146,16 @@ type ProduceRequest struct {
 	Count int `json:"count,omitempty"`
 	// Compression：none（默认）| gzip | lz4 | zstd | snappy。
 	Compression string `json:"compression,omitempty"`
+
+	// --- Phase 2 扩展（冻结契约） ---
+	// KeyBase64 可选：key 的 base64（与 key 二选一，二进制 key 保真）。
+	KeyBase64 string `json:"keyBase64,omitempty"`
+	// ValueBase64 可选：未编码载荷的 base64（与 value 二选一）。
+	ValueBase64 string `json:"valueBase64,omitempty"`
+	// Schema 可选：SR 挂载 —— 有 schema 时 value/valueBase64 是未编码载荷，
+	// sidecar 按 SR 元数据编码为载荷并打包 Confluent wire format
+	// （magic byte 0 + 4 字节大端 schemaID + 载荷）。
+	Schema *SchemaRef `json:"schema,omitempty"`
 }
 
 // ProduceResult 对应 kafka/messages/produce 返回。
@@ -167,7 +186,8 @@ type ExportResult struct {
 	HasMore     bool   `json:"hasMore"`
 }
 
-// Produce 实现 kafka/messages/produce（批量 ≤1000 / headers / 压缩 / 指定分区）。
+// Produce 实现 kafka/messages/produce（批量 ≤1000 / headers / 压缩 / 指定分区；
+// Phase 2：valueBase64/keyBase64 保真输入 + schema 挂载编码 wire format）。
 func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResult, error) {
 	profile := s.profileOf(req.ConnectionID)
 	topic := trimSpace(req.Topic)
@@ -187,6 +207,38 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 		return nil, err
 	}
 
+	// 载荷/键解析：value 与 valueBase64 二选一（同给报错）；key 同理。
+	payload, err := producePayloadBytes(req)
+	if err != nil {
+		return nil, err
+	}
+	keyBytes := []byte(req.Key)
+	if keyB64 := trimSpace(req.KeyBase64); keyB64 != "" {
+		if trimSpace(req.Key) != "" {
+			return nil, errf("key and keyBase64 are mutually exclusive")
+		}
+		decoded, decodeErr := base64.StdEncoding.DecodeString(keyB64)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("keyBase64 is not valid base64: %w", decodeErr)
+		}
+		keyBytes = decoded
+	}
+
+	// schema 挂载：按 SR 元数据编码载荷并打包 wire format（Phase 2）。
+	// wire format 编解码仅支持 Confluent：provider=glue → 业务错（Phase 3
+	// 门禁，tinyrdm 同款语义）；双配置歧义 → -32602。
+	var schemaClient *schemaRegistryClient
+	if req.Schema != nil {
+		if err := s.schemaMountSupported(req.ConnectionID, req.Schema.Registry, "produce"); err != nil {
+			return nil, err
+		}
+		schemaClient, err = s.confluentClientFor(req.ConnectionID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var schemaAuditDetail string
+
 	var extraOpts []kgo.Opt
 	if req.Partition != nil {
 		extraOpts = append(extraOpts, kgo.RecordPartitioner(kgo.ManualPartitioner()))
@@ -202,13 +254,25 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 	}
 	defer closeClient()
 
+	if req.Schema != nil {
+		produceCtx, cancel := context.WithTimeout(ctx, adminTimeout)
+		var schemaResult SchemaGetResult
+		payload, schemaResult, err = encodeForProduce(produceCtx, schemaClient, req.Schema, payload)
+		cancel()
+		if err != nil {
+			s.emitAudit(req.ConnectionID, "produce", topic, "error", err.Error())
+			return nil, err
+		}
+		schemaAuditDetail = sprintf(" schema=subject:%s,id:%d,version:%d", schemaResult.Subject, schemaResult.ID, schemaResult.Version)
+	}
+
 	records := make([]*kgo.Record, 0, count)
 	headers := recordHeaders(req.Headers)
 	for i := 0; i < count; i++ {
 		record := &kgo.Record{
 			Topic:   topic,
-			Key:     []byte(req.Key),
-			Value:   []byte(req.Value),
+			Key:     keyBytes,
+			Value:   payload,
 			Headers: headers,
 		}
 		if req.Partition != nil {
@@ -224,13 +288,34 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 		s.emitAudit(req.ConnectionID, "produce", topic, "error", err.Error())
 		return nil, err
 	}
-	s.emitAudit(req.ConnectionID, "produce", topic, "success", sprintf("count=%d", count))
+	s.emitAudit(req.ConnectionID, "produce", topic, "success", sprintf("count=%d%s", count, schemaAuditDetail))
 	return &ProduceResult{
 		Topic:     written.Topic,
 		Partition: written.Partition,
 		Offset:    written.Offset,
 		Timestamp: written.Timestamp.UnixMilli(),
 	}, nil
+}
+
+// producePayloadBytes 解析 produce 载荷：value 与 valueBase64 二选一
+// （同给/均空报错；base64 路径支持二进制载荷保真）。
+func producePayloadBytes(req ProduceRequest) ([]byte, error) {
+	valueText := req.Value
+	valueB64 := trimSpace(req.ValueBase64)
+	if valueB64 != "" {
+		if trimSpace(valueText) != "" {
+			return nil, errf("value and valueBase64 are mutually exclusive")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(valueB64)
+		if err != nil {
+			return nil, fmt.Errorf("valueBase64 is not valid base64: %w", err)
+		}
+		return decoded, nil
+	}
+	if trimSpace(valueText) == "" {
+		return nil, errf("value (or valueBase64) is required")
+	}
+	return []byte(valueText), nil
 }
 
 // Consume 实现 kafka/messages/consume（一次性）。
@@ -326,6 +411,19 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	if err != nil {
 		return result, err
 	}
+	// schema 挂载（Phase 2）：per-consume 解码器（SR 客户端 + 元数据缓存）。
+	// wire format 解码仅支持 Confluent：provider=glue → 业务错（Phase 3 门禁）。
+	var schemaDec *schemaDecoder
+	if params.Schema != nil {
+		if err := s.schemaMountSupported(params.ConnectionID, params.Schema.Registry, "consume"); err != nil {
+			return result, err
+		}
+		schemaClient, schemaErr := s.confluentClientFor(params.ConnectionID)
+		if schemaErr != nil {
+			return result, schemaErr
+		}
+		schemaDec = newSchemaDecoder(schemaClient, params.Schema)
+	}
 	matcher, err := newConsumeTextMatcher(params)
 	if err != nil {
 		return result, err
@@ -379,12 +477,29 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 			decoded := false
 			decodeErr := ""
 			valueDecoded := false
+			var recordSchemaInfo *schemaValueInfo
 			ensureValueDecoded := func() {
 				if valueDecoded {
 					return
 				}
 				valueDecoded = true
 				value, decoded, decodeErr = decodeConsumeValue(record.Value, decodeMethod, decompressMethod)
+				if schemaDec != nil {
+					out, info, schemaErr := schemaDec.decode(consumeCtx, value)
+					if schemaErr != nil {
+						// 解码失败不中断消费：保留原值 + decodeError。
+						if decodeErr == "" {
+							decodeErr = "schema: " + schemaErr.Error()
+						} else {
+							decodeErr = decodeErr + "; schema: " + schemaErr.Error()
+						}
+						return
+					}
+					value = out
+					decoded = true
+					info.Subject = firstNonEmpty(info.Subject, trimSpace(params.Schema.Subject))
+					recordSchemaInfo = &info
+				}
 			}
 			if fieldFiltersNeedValue(params.FieldFilters) {
 				ensureValueDecoded()
@@ -397,7 +512,7 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 				continue
 			}
 			ensureValueDecoded()
-			messages = append(messages, messageFromRecord(record, value, decoded, decodeErr, committed))
+			messages = append(messages, messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, recordSchemaInfo))
 		}
 		if err := fetches.Err(); err != nil {
 			if isDeadline(err) {
@@ -601,7 +716,12 @@ func consumeOffset(strategy, offsetTime string, hasGroup, directPartitions bool)
 func buildConsumeOpts(params ConsumeParams, topic, groupID string, partitions []int32, partitionOffsets map[int32]int64, isolation kgo.IsolationLevel) ([]kgo.Opt, error) {
 	var opts []kgo.Opt
 	opts = append(opts, kgo.FetchIsolationLevel(isolation))
-	opts = append(opts, kgo.DisableAutoCommit())
+	// 禁自动提交仅 group 模式有意义（franz-go 对无 group 的
+	// DisableAutoCommit 直接拒建 client）；commit=true 场景必有 groupId
+	//（validateConsumeParams 校验）。
+	if groupID != "" {
+		opts = append(opts, kgo.DisableAutoCommit())
+	}
 	if len(partitions) > 0 {
 		if usesExactOffsets(params.OffsetStrategy, partitionOffsets) {
 			topicPartitions := make(map[int32]kgo.Offset, len(partitions))
@@ -1259,6 +1379,12 @@ func decompressSnappy(value []byte) ([]byte, error) {
 // messageFromRecord 构建保真消息（valueText UTF-8 安全预览 + valueBase64
 // 完整；512KB 截断标记；key 非法 UTF-8 → keyBase64）。
 func messageFromRecord(record *kgo.Record, value []byte, decoded bool, decodeErr string, committed bool) ConsumedMessage {
+	return messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, nil)
+}
+
+// messageFromRecordWithSchema 是 messageFromRecord 的 schema 感知变体
+// （Phase 2：schema 解码命中时附 schemaId/schemaSubject/schemaVersion）。
+func messageFromRecordWithSchema(record *kgo.Record, value []byte, decoded bool, decodeErr string, committed bool, schemaInfo *schemaValueInfo) ConsumedMessage {
 	valueText := safeUTF8Preview(value)
 	valueBase64, truncated := encodeBase64WithLimit(value, maxMessageBytes)
 	message := ConsumedMessage{
@@ -1275,6 +1401,11 @@ func messageFromRecord(record *kgo.Record, value []byte, decoded bool, decodeErr
 		DecodeError: decodeErr,
 	}
 	_ = decoded
+	if schemaInfo != nil {
+		message.SchemaID = int64(schemaInfo.ID)
+		message.SchemaSubject = schemaInfo.Subject
+		message.SchemaVersion = schemaInfo.Version
+	}
 	if isProbablyUTF8(record.Key) {
 		message.Key = string(record.Key)
 	} else {

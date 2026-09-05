@@ -18,7 +18,9 @@ await build({
     emptyOutDir: true,
     cssCodeSplit: false,
     assetsInlineLimit: 10 * 1024 * 1024,
-    rollupOptions: { output: { inlineDynamicImports: true } },
+    // vite 8（rolldown）：inlineDynamicImports 已废弃，等价写法为 codeSplitting: false
+    // （构建告警指引）；保持单 chunk 自包含产物形态不变。
+    rolldownOptions: { output: { codeSplitting: false } },
   },
 });
 

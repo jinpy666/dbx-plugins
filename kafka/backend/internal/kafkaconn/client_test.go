@@ -63,10 +63,16 @@ func TestBuildSASLOptMatrix(t *testing.T) {
 	if _, err := buildSASLOpt(profile, secrets); err == nil {
 		t.Error("buildSASLOpt(empty mechanism) expected error")
 	}
+	// GSSAPI（Phase 2 已接入）：缺 principal → 参数错误（完整矩阵见
+	// kerberos_test.go）。
+	profile.SASLMechanism = SASLMechanismGSSAPI
+	if _, err := buildSASLOpt(profile, secrets); err == nil || !strings.Contains(err.Error(), "principal") {
+		t.Errorf("buildSASLOpt(GSSAPI without principal) error = %v, want principal error", err)
+	}
 	// 未知机制 → 拒绝。
-	profile.SASLMechanism = "GSSAPI"
+	profile.SASLMechanism = "OAUTHBEARER"
 	if _, err := buildSASLOpt(profile, secrets); err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("buildSASLOpt(GSSAPI) error = %v, want unsupported (Kerberos Phase 2 禁入)", err)
+		t.Errorf("buildSASLOpt(unknown mechanism) error = %v, want unsupported", err)
 	}
 }
 

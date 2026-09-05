@@ -98,7 +98,18 @@ func (s *Service) Test(ctx context.Context, params *lifecycle.Params) (string, e
 		status:  "idle",
 	}
 
-	opts, err := entry.buildClientOpts()
+	opts, err := func() ([]kgo.Opt, error) {
+		if entry.profile.ConnectionSource == ConnectionSourceZookeeper {
+			// zookeeper 源：先经 ZK 发现 broker，作为探活拨号种子
+			//（ZK 不可达 → 业务错，语义与 brokers/list 一致）。
+			seeds, seedErr := zkSeedsForTest(entry.profile)
+			if seedErr != nil {
+				return nil, seedErr
+			}
+			return entry.buildClientOptsWithSeeds(seeds)
+		}
+		return entry.buildClientOpts()
+	}()
 	if err != nil {
 		return "", err
 	}
@@ -172,16 +183,54 @@ func (s *Service) SnapshotStatuses() []ConnectionStatus {
 	statuses := make([]ConnectionStatus, 0, len(entries))
 	for _, entry := range entries {
 		entry.mu.Lock()
-		statuses = append(statuses, ConnectionStatus{
-			ConnectionID: entry.profile.ID,
-			Name:         entry.profile.Name,
-			Bootstrap:    strings.Join(entry.profile.BootstrapServers, ","),
-			Status:       statusForContract(entry.status),
-			ReadOnly:     entry.profile.ReadOnly,
-			ConnectedAt:  entry.connectedAt,
-			LastUsedAt:   entry.lastUsedAt,
-			Error:        entry.lastError,
-		})
+		status := ConnectionStatus{
+			ConnectionID:     entry.profile.ID,
+			Name:             entry.profile.Name,
+			Bootstrap:        strings.Join(entry.profile.BootstrapServers, ","),
+			Status:           statusForContract(entry.status),
+			ReadOnly:         entry.profile.ReadOnly,
+			ConnectedAt:      entry.connectedAt,
+			LastUsedAt:       entry.lastUsedAt,
+			Error:            entry.lastError,
+			ConnectionSource: entry.profile.ConnectionSource,
+		}
+		// Phase 2/3 摘要：SR（开关 mode + provider + url/registryName，不含
+		// 凭据）与 Kerberos（仅 enabled）。开关=none 或未配置任何 SR 时给出
+		// provider=none；旧连接（无开关）mode 省略、provider 走自动探测。
+		switch entry.profile.schemaProviderConfigured() {
+		case schemaProviderConfluent:
+			status.SchemaRegistry = &SchemaRegistryStatus{
+				Enabled:  true,
+				Provider: schemaProviderConfluent,
+				Mode:     entry.profile.SchemaRegistry,
+				URL:      entry.profile.SRURL,
+			}
+		case schemaProviderGlue:
+			status.SchemaRegistry = &SchemaRegistryStatus{
+				Enabled:      true,
+				Provider:     schemaProviderGlue,
+				Mode:         entry.profile.SchemaRegistry,
+				RegistryName: entry.profile.GlueRegistryName,
+			}
+		case schemaProviderBoth:
+			status.SchemaRegistry = &SchemaRegistryStatus{
+				Enabled:      true,
+				Provider:     schemaProviderBoth,
+				Mode:         entry.profile.SchemaRegistry,
+				URL:          entry.profile.SRURL,
+				RegistryName: entry.profile.GlueRegistryName,
+			}
+		default:
+			status.SchemaRegistry = &SchemaRegistryStatus{
+				Enabled:  false,
+				Provider: schemaProviderNone,
+				Mode:     entry.profile.SchemaRegistry,
+			}
+		}
+		if entry.profile.kerberosEnabled() {
+			status.Kerberos = &KerberosStatus{Enabled: true}
+		}
+		statuses = append(statuses, status)
 		entry.mu.Unlock()
 	}
 	return statuses

@@ -322,3 +322,71 @@ files PROGRESS-P-FILES §14。
   框架分支插件中心/本地常驻图层叠加后，移植点从 ContentArea 上移到
   SqlEditorWorkspace 层；此类"本地改造挂在哪个组件上"的映射关系，每次上游重构
   后要重新定位，不能按上轮冲突文件清单惯性处理。
+
+## 15. 本地二开补丁：插件连接编辑窗口宽度（2026-09-05）
+
+- **现象**：插件（connection-provider 贡献点）的连接编辑窗口恒为 560px 窄档，
+  字段多的插件表单（如 Kafka：bootstrap/SASL/TLS/Kerberos/SR 两套/Glue 六件套，
+  约 29 字段）非常拥挤。
+- **根因**：`ConnectionDialog.vue` 的 `shouldUseWideConnectionDialog` 只看
+  visibleDatabases / visibleNacosNamespaces / visibleSchemas 三个开关，这三个
+  开关对插件连接全为 false，于是始终落入 standard `sm:max-w-[560px]`（wide 为
+  `sm:max-w-[660px]`）。
+- **改动**（1 文件 1 行）：`shouldUseWideConnectionDialog` 追加
+  `|| ((selectedPluginProvider.value?.contribution.fields.length ?? 0) >= 6)`。
+  判定来源：复用既有 computed `selectedPluginProvider`（
+  `pluginProviderEntryForOption(selectedType)`，来自已安装插件
+  connection-provider 注册表），字段数取其 contribution.fields（provider 声明
+  的 PluginFormField[]）长度；非插件连接时该 computed 为 null → `?? 0` →
+  false，既有行为零回归。
+- **验证**：`pnpm exec vue-tsc --noEmit --project apps/desktop/tsconfig.json`
+  0 错（绕过 pretypecheck 生成钩子，避免动其他文件）；
+  `pnpm exec vitest run apps/desktop/src/components/connection` 3 文件 10 例
+  全绿。ConnectionDialog 组件本身无现成单测（既有 spec 均为抽出的纯逻辑
+  函数），故未新增组件挂载用例。真机验证：代码级验证即止（未跑 host-e2e）。
+- **上游冲突面提示**：host submodule 内
+  `apps/desktop/src/components/connection/ConnectionDialog.vue` 的
+  `shouldUseWideConnectionDialog` 行（L3573 附近）。下次
+  `scripts/host-sync.sh sync` 冲突或上游调整该判定/宽度档位时，需复查本补丁
+  语义（插件 provider 字段数 ≥6 → wide）是否仍成立后重放。
+
+## 16. 插件图标入侧栏/标签栏 + 四插件 icon 重绘（2026-09-05）
+
+- **背景**：用户反馈"点击插件连接没有面板 tab 出现，怀疑合并覆盖"，并要求
+  优化四插件 icon、让宿主连接列表显示插件图标。
+- **点击无 tab 排查结论（未复现，代码未被覆盖）**：
+  - merge `0bd2c19fc`（main → dev/plugin-framework-current）全树 diff 无任何
+    插件框架文件被删改；queryStore.openPluginConnection /
+    SidebarTreeRuntimeHost 点击分支 / App.vue 常驻插件图层 /
+    PluginWorkbenchTab 宿主链路全部完好。
+  - `/Applications/DBX.app`（0.6.4）与 `host/target/debug/bundle` 二进制逐字节
+    一致，内嵌前端与 `host/dist` 资源指纹一致（App-CZG2HCo9.js 含
+    plugin-workbench），即当前安装包含插件框架。
+  - 真实 app-data 中插件连接字段完整（db_type=plugin + plugin_id +
+    plugin_connection_provider），插件版本与仓库 manifest 一致。
+  - host-e2e 隔离环境实测（DBX_DATA_DIR=shared/host-e2e/app-data 拉起 debug
+    bundle）：关闭 tab 后单击侧栏插件连接 → workbench tab 正常创建并激活，
+    SSH 终端/SFTP 均可用。**点击路径在当前构建工作正常**。
+  - 推断：用户此前点击的是 09:26 重建前安装的旧版应用（无插件框架前端）；
+    需完全退出并重启 DBX.app 后复测，若仍失败请提供具体插件与报错 toast。
+- **宿主改动（host/ 子仓库，3 文件新增 1 文件）**：
+  - 新增 `apps/desktop/src/lib/plugins/pluginIconResolver.ts`：模块级缓存
+    `listPlugins()` 结果，索引 manifest icon 与各 contribution icon（键
+    `<pluginId>/<contributionId>`），shallowRef 保持响应式；listPlugins 失败
+    允许下次重试。
+  - `TreeItem.vue`：connection 节点 `db_type === "plugin"` 时用 `PluginIcon`
+    渲染 provider/manifest 图标，解析不到回退 DatabaseIcon。
+  - `EditorGroupTabBar.vue`：主标签条与溢出弹层为
+    `mode === "plugin-workbench"` 增加 PluginIcon 分支（workbench contribution
+    icon 优先），替换原 Code2 兜底。
+- **四插件 icon 重绘（ssh/ldap/files/kafka `assets/plugin.svg`）**：统一
+  64×64 圆角渐变底板家族风格——ssh 深蓝终端（提示符+红绿灯）、ldap 紫青
+  目录树、files 蓝色文件夹、kafka 藏蓝"topic→消费组"管道；明/暗底、14px
+  侧栏尺寸均已截图核验。图标属 assets 替换，协议无变化，随下次插件打包
+  （build.sh → .dbxp）生效。
+- **验证**：`pnpm typecheck` 0 错；vitest（EditorGroupTabBar.groups、
+  frontendPlugin、sidebar/__tests__ 等）全绿；host-e2e 真机回归点击流 +
+  侧栏图标渲染（vagrant 连接显示插件 SVG 徽标而非通用数据库图形）。
+- **构建环境注意**：`pnpm tauri build --debug` 需
+  `PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.97.1-aarch64-apple-darwin`，
+  否则 /usr/local/bin/cargo(1.69) 报 lock file v4 / rustc 版本不足。

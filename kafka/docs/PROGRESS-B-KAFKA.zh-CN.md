@@ -1,29 +1,38 @@
-# B-KAFKA 路交付报告（io.dbx.kafka backend / Phase 1 全量）
+# B-KAFKA 路交付报告（io.dbx.kafka backend / Phase 1 全量 + Phase 2 商用化）
 
 > 路线：IMPL_PLAN_DBX_KAFKA.zh-CN.md §9 A 路 backend —— tinyrdm Kafka
 > 实现（franz-go + kadm）重写为 DBX Go sidecar（stdio-jsonl，与 ldap 同构）。
-> 范围：仅 `kafka/backend/**` 与本文件；`kafka/frontend/**`、manifest、
-> scripts 由并行路负责，未改动。无 git commit/push。
+> Phase 1：仅 `kafka/backend/**` 与本文件。Phase 2（§6 小节）：另含
+> `kafka/manifest.json`、`docker-compose.kafka-test.yml`、
+> `docs/PROTOCOL_KAFKA.zh-CN.md`、`scripts/smoke_test.py`（追加 S11）、
+> `scripts/sidecar_client_jsonl.py`（超时/诊断修复）。`kafka/frontend/**`
+> 属并行路，未改动。无 git commit/push。
 
 ## 0. 验证终值
 
-| 套件 | 结果 |
-|---|---|
-| `CGO_ENABLED=0 go vet ./...` | ✅ 0 告警 |
-| `CGO_ENABLED=0 go test ./...` | **74 passed / 0 failed**（`go test -count=1 -v` 计数） |
-| 方法注册 | **34/34**（manifest §5.2 方法表全量，缺一 smoke 会 FAIL 的项无遗漏） |
-| manifest 契约测试 | **真实 PASS 非 SKIP**（C 路 manifest.json 已在位，字段/binding/七语全部对齐） |
-| 依赖 | franz-go v1.20.7 + kadm v1.17.2（tinyrdm 同款版本，公网拉取成功进 go.sum；CGO_ENABLED=0） |
-| 二进制构建 | 未执行（按约定收口统一跑 build.sh） |
+| 套件 | Phase 1 | Phase 2（2026-09-05） |
+|---|---|---|
+| `CGO_ENABLED=0 go vet ./...` | ✅ 0 告警 | ✅ 0 告警 |
+| `CGO_ENABLED=0 go test ./...` | **74 passed / 0 failed** | **98 passed / 0 failed**（`-count=1 -v` 计数；kafkaconn 85 + lifecycle + store） |
+| 方法注册 | **34/34** | **45/45**（Phase 2 新增 11 个 `kafka/schema/*`） |
+| manifest 契约测试 | 真实 PASS | 真实 PASS（新增 10 字段/绑定/七语/GSSAPI 选项守卫） |
+| 依赖 | franz-go v1.20.7 + kadm v1.17.2 | + go-zookeeper/zk v1.0.4、gokrb5/v8 v8.4.4、franz-go pkg/sasl/kerberos v1.1.0、goavro/v2 v2.15.0、jsonschema-go v0.4.2（全部进 go.sum，公网拉取成功；CGO_ENABLED=0） |
+| smoke（真容器） | 未跑 | **S1-S11：10 PASS / 0 FAIL / 1 合法 SKIP**（apache/kafka 9092 + redpanda 19081，详见 §6.5） |
 
 复现命令：
 
 ```bash
 cd /Users/Jinpy/btroot/dbx-plugins/kafka/backend
-CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test ./...
+CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test -count=1 ./...
 # ok  io.dbx.kafka.plugin/internal/kafkaconn
 # ok  io.dbx.kafka.plugin/internal/lifecycle
 # ok  io.dbx.kafka.plugin/internal/store
+python3 -c "import json;d=json.load(open('../manifest.json'));ks={f['key'] for f in d['contributions'][0]['fields']};need={'connection_source','zk_servers','kerberos_service_name','kerberos_realm','kerberos_principal','kerberos_keytab_path','kerberos_krb5_conf_path','sr_url','sr_username','sr_password'};assert need<=ks, need-ks;print('manifest fields ok')"
+# manifest fields ok
+# smoke（双容器）：
+#   docker compose -f docker-compose.kafka-test.yml up -d
+#   bash scripts/kafka-seed/seed-topics.sh
+#   DBX_PLUGIN_SIDECAR=$PWD/backend/bin/dbx-plugin-kafka python3 scripts/smoke_test.py
 ```
 
 ## 1. 交付总览
@@ -177,3 +186,316 @@ pierrec/lz4/v4。无 sarama、无 gokrb5（Kerberos 按契约 Phase 2）。
    入参字段。
 6. manifest 契约测试当前真实 PASS（manifest 已在位）；若 manifest 后续
    调整字段，以本测试为守卫（文件缺失时才 Skip）。
+
+## 6. Phase 2 商用化（2026-09-05 增补）
+
+### 6.0 范围与交付
+
+IMPL_PLAN §0.2 三项全部落地：**Schema Registry**（Confluent 兼容 REST，
+含 Redpanda 内置 SR；AWS Glue 登记 Phase 3 不做）、**Kerberos/GSSAPI**
+（gokrb5 + franz-go pkg/sasl/kerberos，tinyrdm 同款）、**ZooKeeper 发现**
+（go-zookeeper/zk，支持 chroot）。另含冻结契约要求的既有方法扩展
+（produce/consume/stream 的 schema 挂载与 valueBase64/keyBase64、offsets
+全策略、statuses 摘要）与 manifest/协议文档同步。
+
+### 6.1 新方法注册清单（+11，Phase 1 34 → Phase 2 45）
+
+`kafka/schema/test`、`kafka/schema/subjects/list`、
+`kafka/schema/versions/list`、`kafka/schema/get`、
+`kafka/schema/versions/compare`、`kafka/schema/compatibility/get`、
+`kafka/schema/compatibility/set`（写，过 read_only）、
+`kafka/schema/compatibility/check`、`kafka/schema/register`
+（写，过 read_only，非 allow_delete 级）、`kafka/schema/delete`、
+`kafka/schema/delete/version`（两者 critical：allow_delete + read_only 与门）。
+写操作均走 emitAudit：`kafka/schema-register` / `kafka/schema-compatibility-set` /
+`kafka/schema-delete`。
+
+新文件：`internal/kafkaconn/schema.go`（SR REST 客户端 10s 超时、wire format
+magic-0 编解码、AVRO/JSON 载荷编解码、LCS 逐行 diff、per-consume 元数据
+缓存）、`kerberos.go`、`zk.go` + 对应 `_test.go`（httptest 假 SR、合成
+keytab v2/krb5.conf、ZK 解析与不可达路径；无外网、无 KDC）。
+
+### 6.2 既有方法扩展（冻结契约逐项）
+
+- `messages/produce`：`valueBase64`（与 value 二选一，同给 -32602）、
+  `keyBase64`、`schema{subject,version?,format}` —— 有 schema 时 value 是
+  未编码载荷，按 SR 元数据编码（AVRO→goavro 二进制 / JSON→Schema 校验
+  透传）并打包 wire format 后生产。
+- `messages/consume` + `stream/start`：`schema` 解码 wire format 为 JSON
+  文本，命中消息附 `schemaId/schemaSubject/schemaVersion`，解码失败置
+  `decodeError` 不中断；元数据按 schemaID / subject+version 在本次消费或
+  会话内缓存（同 ID 只请求一次 SR，单测计数断言）。
+- `topics/offsets/list`：`offsetTime` 支持 `earliest`(-2)/`latest`(-1)/
+  `max-timestamp`(-3)/`log-start`(-4)/RFC3339/unix ms（kadm
+  ListStartOffsets/ListEndOffsets/ListMaxTimestampOffsets/
+  ListLocalLogStartOffsets/ListOffsetsAfterMilli；负数整数按协议保留值拒绝）。
+- `brokers/list`：`connection_source=zookeeper` 时经 ZK `/brokers/ids` 发现
+  （快速 TCP 预拨 + chroot 支持；ZK 不可达 → -32000 业务错），返回新增
+  `connectionSource` 字段；connection/test 同语义（ZK 模式先发现再探活）。
+- `connections/statuses`：新增 `connectionSource`、`schemaRegistry{enabled,url}`、
+  `kerberos{enabled}` 摘要（凭据不出）。
+- manifest 新字段 10 个（connection_source/zk_servers/kerberos_*/sr_*，
+  sr_password 为 secret binding）+ sasl_mechanism 增加 GSSAPI 选项，七语
+  label/description 全量，`manifest_contract_test.go` 同步守卫。
+
+### 6.3 真跑容器暴露并修复的 Phase 1 遗留缺陷（单测不可见）
+
+首轮 smoke FAIL 暴露的问题，全部已修并复验：
+
+1. **无 group 消费直接建 client 失败**：`buildConsumeOpts` 无条件
+   `kgo.DisableAutoCommit()`，franz-go v1.20.7 对无 group 的
+   DisableAutoCommit 在 NewClient 即报 "invalid autocommit options"——
+   S4/S7/S8/S11 全炸。改为仅 groupID != "" 时附加（commit 场景必有
+   groupId，语义安全）。
+2. **acls/list 空 operation 误报**：`aclOperationType("")` 落 default 报错；
+   过滤语义空 = any，补 `case ""`（create 路径仍有 "not any" 保护）。
+3. **connection/test 无参错误码**：`connection.id is required` 走了
+   -32000，契约要求参数错 -32602；main 层补空 id 判定。
+4. **流式会话永不出事件（bufferSize 恒 0）**：runLoop 的
+   `PollRecords(session.ctx)` 无记录时无限阻塞，ticker 分支永远无法调度，
+   ring/事件只在"消息持续流动"时才 flush。改为 poll 以 200ms
+   （StreamBatchFlush）为上限 + `isDeadline` 过滤超时错误。真机验证
+   `bufferSize` 从 0 → 6、`kafka/stream/messages` 事件正常到达。
+5. **smoke 基础设施**（scripts/sidecar_client_jsonl.py）：`_read_line` 的
+   `readline()` 无超时（deadline 仅前置检查），stream 空转时 sidecar 不发
+   行导致整条套件挂死——改为 raw fd select + 超时；`stderr=PIPE` 无人读取
+   存在管道写满阻塞 sidecar 的隐患——加后台 drain 线程 + 保留 200 行尾部
+   供诊断。
+6. **smoke S10 场景顺序**（scripts/smoke_test.py，既有场景一行修正）：
+   S9 把 CURRENT_CONNECTION 切到只读连接后 S10 直接复用导致 create 必被
+   拒——S10 开头恢复可写连接。
+
+### 6.4 S11（Phase 2 SR 场景）与 Redpanda 兼容点
+
+`docker-compose.kafka-test.yml` 新增 `redpanda-sr-test` 服务
+（redpandadata/redpanda 单节点 dev-container、SASL 关闭、无任何凭据字面量；
+容器名 dbx-kafka-sr-test，broker 19092→9092，SR 19081→8081，与主 kafka
+9092 不冲突）。S11 流程：schema/test → topics/create → subjects/list →
+register → produce(schema) → consume(schema) roundtrip（断言 schemaId/
+schemaSubject/JSON 内容）→ compatibility global get / subject set /
+check → delete/version + delete subject。实现差异处理：Redpanda 的
+DELETE version 响应是**单个数字**（Confluent 为数组）→ 后端
+`decodeDeletedVersions` 双形状兼容（含单测）；Redpanda 在 subject 最后
+一个版本删除后即移除 subject（40401）→ S11 对该形状容忍。
+
+### 6.5 Phase 2 验证证据
+
+```
+CGO_ENABLED=0 go vet ./...          # 0 告警
+CGO_ENABLED=0 go test -count=1 ./...
+# ok  io.dbx.kafka.plugin/internal/kafkaconn    （85 个测试函数）
+# ok  io.dbx.kafka.plugin/internal/lifecycle
+# ok  io.dbx.kafka.plugin/internal/store
+# 合计 98 passed / 0 failed
+
+# 真容器 smoke（apache/kafka 9092 + redpanda 19081）：
+# No.   Scenario                                         Status
+# S1    initialize + connection/test without params      PASS
+# S2    connection/test fake cluster -> business error   PASS
+# S3    connect + topics/list seeded topics              SKIP  (合法：__consumer_offsets 未建)
+# S4    produce -> consume round-trip fidelity           PASS
+# S5    consume valueFilter subset                       PASS
+# S6    groups/list + acls/list shapes                   PASS
+# S7    stream start -> events -> stop                   PASS
+# S8    export json + csv                                PASS
+# S9    read-only write rejection                        PASS
+# S10   topics create + delete confirmTopic gate         PASS
+# S11   schema registry .../compat/delete                PASS
+# total=11 PASS=10 FAIL=0 SKIP=1
+```
+
+### 6.6 Phase 2 遗留与风险
+
+1. **Kerberos 无真实 KDC 验证**：按契约仅做参数构造/校验单测（principal
+   解析、keytab 必填、合成 keytab v2 + krb5.conf 下机制可构建、krb5.conf
+   回落顺序）；真实 GSSAPI 握手需 KDC/keytab 环境做 e2e 复核。
+2. **ZooKeeper 发现正路径**：单测覆盖地址/broker JSON 解析与不可达错误
+   路径；`/brokers/ids` 正路径由容器/集成验证（本容器组无 ZK，未跑），
+   chroot 走 go-zookeeper 原生语义。
+3. **PROTOBUF 载荷编解码未实现**（明确 -32000 报错），SR 的 protobuf
+   subject 仅支持元数据/浏览/diff；如需编解码登记后续期。
+4. **JSON Schema 校验依赖 jsonschema-go**（tinyrdm 同款）；`format` 等
+   关键字的覆盖面以该库为准。
+5. **AWS Glue SR**：按契约登记 Phase 3。
+6. scripts/sidecar_client_jsonl.py 的两处基础设施修复（读超时/stderr
+   drain）超出"仅追加 S11"字面范围：不修则 S7 永远挂死（select 前
+   readline 无界），属让套件可真实运行的必要修正，已在此报备。
+
+## 7. Phase 3：AWS Glue Schema Registry 接入（2026-09-05 增补）
+
+按冻结契约补齐 tinyrdm 的字面功能缺口：AWS Glue SR **管理面**。逻辑参照
+tiny-rdm `backend/services/kafka_schema_registry.go` 的 glue 分支重写
+（kafkaGlueClient / ListSchemas / ListSchemaVersions / GetSchemaVersion /
+RegisterSchema / Get·Set·CheckSchemaCompatibility / DeleteSchema 逐一映射）。
+
+### 7.1 交付内容
+
+1. **`backend/internal/kafkaconn/glue.go`（新增）**：aws-sdk-go-v2
+   （config/credentials/service/glue + smithy-go）Glue 客户端与后端实现。
+   auth_mode 归一化 `default|static`（static = NewStaticCredentialsProvider；
+   tinyrdm 的 aws-profile 模式 sidecar 不提供，协议文档登记 Phase 3 后续，
+   传 `profile` 明确报错）；`glueBaseEndpointOverride` 包级 seam 供单测注入
+   httptest 端点（生产恒空）。compatibility 枚举映射 `normalizeGlueCompatibility`
+   （`*_TRANSITIVE` 输入归并 `*_ALL`，另支持 Glue 特有 `DISABLED`）；
+   `isAWSNotFound`（smithy APIError code 含 notfound）供 register 探测分流。
+2. **provider 抽象**（schema.go）：新增 `schemaBackend` 接口 +
+   `confluentBackend` 适配器 + `glueBackend` 双实现，11 个 `kafka/schema/*`
+   Service 方法全部改为 backend 分发；`resolveSchemaProvider` 实现 registry
+   参数解析（显式 confluent|glue / 自动探测 / 双配置歧义与未知值 →
+   `InvalidParamsError`，main.go `bizError` 据此映射 **-32602**，其余业务错
+   仍 -32000）。
+3. **挂载门禁**（messages.go/stream.go）：produce/consume/stream start 的
+   `schema{}` 增加 `registry?`；provider=glue → 业务错
+   "schema-aware produce/consume currently supports Confluent wire format;
+   AWS Glue schema management is available"（tinyrdm 同款语义，不发明 Glue
+   wire format）；`schemaClientFor` 正名为 `confluentClientFor`。
+4. **Profile/secrets**：`glue_region/glue_registry_name/glue_auth_mode/
+   glue_access_key_id`（config）+ `glue_secret_access_key/glue_session_token`
+   （secret，凭据红线：只进 SigV4，不落日志/审计/事件）。
+5. **statuses**：`schemaRegistry` 改为恒出 `{enabled, provider, url?,
+   registryName?}`，provider 取值 `confluent|glue|both|none`。
+6. **manifest.json**：六新字段（与 sr_url 平级、无 visible_when；
+   glue_secret_access_key/glue_session_token 为 secret binding）+ 七语
+   label/description（glue_auth_mode options 亦七语）；
+   `manifest_contract_test.go` 同步（config/secret 落点、取值面、无
+   visible_when 断言、七语完整性）。
+7. **协议文档**（PROTOCOL_KAFKA §3.7/§3.8/§9）：registry 参数与自动探测、
+   Glue manifest 字段、Glue 各方法语义（id=0 + versionId、per-schema 兼容
+   级别无全局、check 纯语法校验、register Create/Register 双路径、delete
+   单版本/整 schema 的版本清单差异）、挂载 glue 业务错。
+8. **smoke**（scripts/smoke_test.py，仅追加）：S12 —— 仅当
+   `GLUE_TEST_REGION`+`GLUE_TEST_REGISTRY` 存在才执行（本地无 Glue 容器，
+   否则 SKIP）；static 模式凭据全部经 `GLUE_TEST_*` 环境变量透传，脚本零
+   字面量。覆盖 test(provider=glue)/subjects/versions/get/compare/
+   compat get·set·check（含全局 get 必败断言）/register create+version/
+   delete version+subject/挂载业务错。
+
+### 7.2 实现差异与取舍（tinyrdm 对齐备注）
+
+- **数字 schemaID**：Glue 无数字 id，`id` 恒 0，GUID 走新增
+  `versionId?:string` 字段（SchemaVersionInfo/SchemaGetResult/
+  SchemaRegisterResult/SchemaMeta 增量字段，confluent 不受影响）。
+- **全局兼容级别**：Glue 仅 per-schema，compatibility get/set 的
+  subject 为空 → `-32000`；set 增加可选 `version`（UpdateSchema 版本
+  检查点，缺省 LatestSchemaVersion）。
+- **compatibility/check**：tinyrdm 同款映射 CheckSchemaVersionValidity
+  （纯语法校验、无副作用），`isCompatible`=Glue Valid，messages 首条为
+  无副作用说明。
+- **register**：GetSchema 探测 404（EntityNotFound）→ CreateSchema
+  （`compatibility` 缺省 NONE；`references` 为 Confluent 概念、忽略），
+  存在 → RegisterSchemaVersion。
+- **delete**：version>0 → DeleteSchemaVersions（本版 SDK 未建模
+  VersionNumbers，按 SchemaVersionErrors 折算：无错误 = 已删）；subject
+  整删 → `deletedVersions` 空数组（Glue 不返回清单）。
+- **subjects/list**：Glue 列表级无 DataFormat/版本/兼容级别（tinyrdm 同款
+  不逐条回查），formats 空数组、description 透出；versions/list 补一次
+  GetSchema 取全版本同款 DataFormat。
+
+### 7.3 Phase 3 验证证据
+
+```
+CGO_ENABLED=0 go vet ./...            # 0 告警
+CGO_ENABLED=0 go test -count=1 ./...  # 全绿（118 个测试函数，较 Phase 2 +20）
+
+# glue 专项（httptest 假 Glue JSON-RPC，不连真实 AWS）：
+# --- PASS: TestResolveSchemaProvider            （探测/歧义 -32602/未知值）
+# --- PASS: TestNormalizeGlueCompatibility       （枚举映射全表）
+# --- PASS: TestGlueDataFormatAndNotFound        （DataFormat/EntityNotFound）
+# --- PASS: TestNewGlueClientValidation          （region/static 校验、profile 拒绝）
+# --- PASS: TestGlueSchemaServiceFlow            （subjects/versions/get/compare/
+#                                                 compat/register 双路径/delete/
+#                                                 错误透传）
+# --- PASS: TestSchemaMountGlueRejected          （produce/consume/stream 挂载
+#                                                 glue 业务错；双配置 -32602）
+# --- PASS: TestSchemaRegistryStatusProvider     （statuses provider 摘要）
+# manifest：glue fields ok（六字段 + 七语，契约测试全绿）
+
+python3 scripts/smoke_test.py         # 无 Glue 环境：S12 SKIP（其余场景不受影响）
+```
+
+### 7.4 Phase 3 遗留与风险
+
+1. **无真实 AWS Glue 环境**：正路径全部由 httptest 假 Glue（JSON-RPC 按
+   X-Amz-Target 路由，含 EntityNotFound 错误形状）覆盖；签名请求的真实
+   AWS 往返需 `GLUE_TEST_REGION`+`GLUE_TEST_REGISTRY` 环境跑 S12 复核。
+2. **aws-profile 凭据模式**：tinyrdm 支持但 sidecar 场景不提供（shared
+   config 的 default 链已覆盖本机 profile 场景），协议文档已登记。
+3. **produce/consume 的 schema 编解码不含 Glue**：按冻结契约对齐 tinyrdm
+   （仅 Confluent wire format），Glue 消息解码如需支持须引入 Glue 的
+   schema registry 消息头格式，登记后续期。
+4. **SDK DeleteSchemaVersionsOutput 未建模 VersionNumbers**：单版本删除
+   结果按 SchemaVersionErrors 折算（无错误即成功），与 AWS 控制台语义
+   一致；若 SDK 后续补全字段可改为回读精确清单。
+
+## 8. 连接表单条件显隐 + 必填校验（2026-09-05 增补，实施路 agent I）
+
+### 8.1 背景与交付
+
+用户反馈：连接表单 AWS Glue 等字段全部平铺、无条件显隐、无必填校验。
+本轮以宿主 1.1 的 `visible_when` / `required_when`（单字段条件
+`{field, one_of[]}`）落地，并新增 **`schema_registry` 决策字段**
+（select：`none`/`confluent`/`aws_glue`，默认 `none`，binding config，
+置于 `sr_url` 之前）统一裁决 SR 后端：
+
+- **显隐矩阵**：`sr_*` 三件挂 `schema_registry ∈ [confluent]`；
+  `glue_region/glue_registry_name/glue_auth_mode` 挂 `[aws_glue]`；
+  `glue_access_key_id/glue_secret_access_key/glue_session_token` 挂
+  `glue_auth_mode ∈ [static]`；SASL 账密/Kerberos 五件套/TLS 字段维持
+  原 `security_protocol`/`sasl_mechanism` 挂点。
+- **必填矩阵**：`sr_url`、`glue_region`、`glue_registry_name`、
+  `glue_access_key_id`、`glue_secret_access_key`（static 时 AK/SK）、
+  `sasl_username`/`sasl_password`（PLAIN/SCRAM 时）、
+  `kerberos_principal`/`kerberos_keytab_path`（GSSAPI 时）；
+  `sr_username`/`sr_password`/`glue_session_token`/`kerberos_service_name`
+  （有默认值）/`kerberos_realm`/`kerberos_krb5_conf_path` 恒可选。
+  全部新增 required 字段的七语 description 注明必填条件。
+- **backend**：`Profile.SchemaRegistry` 解析（缺省空 = 旧连接按
+  `sr_url`/`glue_*` 自动探测回退，向后兼容）；`resolveSchemaProvider`
+  以开关为准（none 禁用 SR、开关与显式 registry 参数冲突 → `-32602`）；
+  `validateRequiredCombination` 兜底校验矩阵（缺失 → `*InvalidParamsError`
+  → `-32602`，Connect/Test 均过）；`kafka/connections/statuses` 的
+  `schemaRegistry` 摘要新增 `mode`（开关归一值，旧连接省略）；指纹纳入
+  开关与 SR/Glue 参数。
+- **frontend**：`mockDbxHost.ts` connection fixture `external_config` 加
+  `schema_registry`（默认 confluent，`?glue=1` 时 aws_glue），statuses
+  fixture 增补一条 `schema_registry=none` 对照行（SR 徽标显示「未启用」）；
+  `ConnectionsPanel` 徽标逻辑核对无需改动（`enabled=false` → srOff 文案，
+  provider=none 已兼容）。
+
+### 8.2 宿主契约核对结论（required_when 真实消费）
+
+- `host/plugins/manifest.schema.json` L142-167：`fieldCondition={field,one_of[]}`，
+  `visible_when`/`required_when` 同构、单字段无 AND。
+- 宿主前端 `pluginFieldConditions.ts`：effective required = static `required`
+  OR 匹配的 `required_when`；连接对话框渲染必填标记并阻断提交；
+  binding=password 的 required 字段触发共享密码提示（`connectionPassword.ts`）。
+- 宿主 Rust 核心 `host.rs`：连接校验对「可见 + required + 空」字段报错，
+  与前端语义镜像；隐藏字段不参与必填校验（MCP/import 路径友好）。
+- **结论**：`required_when` 宿主已实现并被消费；sidecar 兜底校验为纵深
+  防御 + 非对话框写路径保障，矩阵与宿主一致（详见 PROTOCOL §9.2）。
+
+### 8.3 验证证据（真实跑）
+
+```text
+backend：CGO_ENABLED=0 go vet ./... 通过；
+         CGO_ENABLED=0 go test -count=1 ./... 全绿
+         （新增 required_matrix_test.go：TestRequiredCombinationMatrix 14 例
+         必填矩阵、TestSchemaRegistrySwitchResolvesProvider 11 例开关语义、
+         TestSchemaRegistryStatusesExposeMode、TestNormalizeSchemaRegistry；
+         manifest_contract_test.go 同步显隐/必填矩阵与 schema_registry 七语）。
+frontend：pnpm typecheck 通过；pnpm test 6 files / 52 tests 全绿。
+manifest：python 断言脚本「manifest conditional fields ok; fields total = 30」
+         （schema_registry 存在、sr_*/glue_* visible_when、required_when
+         矩阵、七语 options 全量）。
+```
+
+### 8.4 遗留
+
+1. **真机表单复核**：显隐矩阵在真实 DBX.app 连接对话框的交互表现（切换
+   `schema_registry` 时字段淡入淡出、必填星号）建议随下次宿主 e2e 批次
+   目验（本轮以宿主源码契约 + 单测 + manifest 断言为据）。
+2. **旧连接 statuses 的 `mode` 省略**：前端类型未消费 `mode`，仅协议文档
+   登记；如后续徽标需区分「旧连接自动探测」与「显式开关」，再补前端读取。
+3. glue 连接 fixture 的 `glue_auth_mode: "access_key"` 为 mock 装饰值
+   （取值面实为 default/static），与真表单无关，本轮未改（保持既有视觉
+   断言稳定）。

@@ -22,9 +22,11 @@ const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
   { pattern: /group.*(not.*(found|exist)|empty)|unknown member|illegal generation/i, key: "err.group" },
   { pattern: /record too large|message size.*larger|bytes.*exceed/i, key: "err.messageTooLarge" },
   { pattern: /not leader|leader.*not.*available|coordinator.*not.*available|rebalance/i, key: "err.meta" },
-  // 网络/超时类（网络先于通用超时）
+  // 网络/超时类（网络先于通用超时）。connection lost/closed 覆盖流式/消费侧
+  // 断连（含 mock 夹具的 "connection lost (fixture error injection)"）。
   {
-    pattern: /network error|connection refused|no such host|connection reset|broken pipe|i\/o timeout|eof|dial/i,
+    pattern:
+      /network error|connection (refused|lost|closed|reset)|no such host|broken pipe|unreachable|client (has been )?closed|i\/o timeout|eof|dial/i,
     key: "err.network",
   },
   { pattern: /timeout|timed out|deadline exceeded/i, key: "err.timeout" },

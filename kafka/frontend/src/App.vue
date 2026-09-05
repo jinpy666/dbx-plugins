@@ -3,24 +3,32 @@
 // 连接生命周期由宿主驱动（connection/test|connect|disconnect），工作台只持有
 // connectionId；所有 kafka/* 调用经 lib/api.ts 注入 connectionId。
 // 面板：messages / stream / produce / topics / groups / brokers / acls。
-import { computed, ref, onBeforeUnmount, onMounted } from "vue";
+import { computed, defineAsyncComponent, nextTick, ref, onBeforeUnmount, onMounted, watch } from "vue";
 import { Network, RefreshCw } from "@lucide/vue";
 import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
 import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
 import { setWorkbenchLocale, t } from "./lib/i18n";
 import { kafkaApi, setKafkaConnectionId, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type KafkaTopic } from "./lib/api";
 import { friendlyKafkaError } from "./lib/kafkaErrors";
+import { decideModalKeydown, focusableElements } from "./lib/kafkaModel";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 import TopicTree from "./components/TopicTree.vue";
 import MessagesPanel from "./components/MessagesPanel.vue";
 import StreamPanel from "./components/StreamPanel.vue";
-import ProducePanel from "./components/ProducePanel.vue";
-import TopicsPanel from "./components/TopicsPanel.vue";
-import GroupsPanel from "./components/GroupsPanel.vue";
-import BrokersPanel from "./components/BrokersPanel.vue";
-import AclsPanel from "./components/AclsPanel.vue";
 import ConnectionsPanel from "./components/ConnectionsPanel.vue";
 import AuditFeedPanel from "./components/AuditFeedPanel.vue";
+
+// 启动性能（大数据量专项）：非默认 tab 的重面板（ag-grid / CodeMirror / 图表
+// 所在）走 defineAsyncComponent + 首次访问才挂载（visited set + v-if）——模块
+// 求值与实例化都推迟到首次进入；已访问面板用 v-show 常驻保状态。MessagesPanel
+// （默认 tab）与 StreamPanel（App 转发流事件的 ref 目标，模块体轻）保持静态。
+const ProducePanel = defineAsyncComponent(() => import("./components/ProducePanel.vue"));
+const TopicsPanel = defineAsyncComponent(() => import("./components/TopicsPanel.vue"));
+const GroupsPanel = defineAsyncComponent(() => import("./components/GroupsPanel.vue"));
+const BrokersPanel = defineAsyncComponent(() => import("./components/BrokersPanel.vue"));
+const AclsPanel = defineAsyncComponent(() => import("./components/AclsPanel.vue"));
+const SchemasPanel = defineAsyncComponent(() => import("./components/SchemasPanel.vue"));
+const MonitorPanel = defineAsyncComponent(() => import("./components/MonitorPanel.vue"));
 
 interface ConnectionSummary {
   name?: string;
@@ -32,7 +40,7 @@ interface ConnectionSummary {
   external_config?: Record<string, unknown>;
 }
 
-type PanelKey = "messages" | "stream" | "produce" | "topics" | "groups" | "brokers" | "acls";
+type PanelKey = "messages" | "stream" | "produce" | "topics" | "groups" | "brokers" | "acls" | "schemas" | "monitor";
 
 const hostContext = ref<Record<string, unknown>>({});
 const appearance = ref(resolveAppearance());
@@ -43,6 +51,19 @@ const kafkaErrorDetail = ref("");
 const notice = ref("");
 const activePanel = ref<PanelKey>("messages");
 
+// 懒挂载：首次访问才实例化面板（v-if），已访问面板 v-show 常驻保状态
+// （Monitor 切走不停止采样是既有遗留语义，保持不变）。
+const visitedPanels = ref<Set<PanelKey>>(new Set<PanelKey>(["messages"]));
+
+function hasVisited(key: PanelKey): boolean {
+  return visitedPanels.value.has(key);
+}
+
+function openPanel(key: PanelKey) {
+  visitedPanels.value.add(key);
+  activePanel.value = key;
+}
+
 const topics = ref<KafkaTopic[]>([]);
 const topicsLoading = ref(false);
 const topicsError = ref("");
@@ -50,6 +71,56 @@ const selectedTopic = ref("");
 
 const streamRef = ref<InstanceType<typeof StreamPanel>>();
 const connectionsOpen = ref(false);
+
+// -- 连接弹窗交互（P1-2/P1-3）：Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素 --------
+// ConnectionsPanel 不可内改，keydown 在 App 壳层监听；决策逻辑走
+// kafkaModel.decideModalKeydown（纯函数，有单测）。
+
+const connectionsTrigger = ref<HTMLElement | null>(null);
+
+function modalContainerForTrap(): HTMLElement | null {
+  // 导入助手弹窗（teleport 到 body）在场时置顶，陷阱圈定它；否则圈定主弹窗。
+  return (
+    document.querySelector<HTMLElement>("body > .modal-backdrop .modal") ??
+    document.querySelector<HTMLElement>(".workbench .modal-backdrop .modal")
+  );
+}
+
+function onConnectionsKeydown(event: KeyboardEvent) {
+  if (!connectionsOpen.value || (event.key !== "Escape" && event.key !== "Tab")) return;
+  const container = modalContainerForTrap();
+  if (!container && event.key !== "Escape") return;
+  const focusables = container ? focusableElements(container) : [];
+  const currentIndex = focusables.indexOf(document.activeElement as HTMLElement);
+  const decision = decideModalKeydown(event.key, event.shiftKey, focusables.length, currentIndex);
+  if (decision.kind === "close") {
+    event.preventDefault();
+    event.stopPropagation();
+    connectionsOpen.value = false;
+  } else if (decision.kind === "focus") {
+    event.preventDefault();
+    event.stopPropagation();
+    focusables[decision.index]?.focus();
+  }
+}
+
+watch(connectionsOpen, (open) => {
+  if (open) {
+    connectionsTrigger.value = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    window.addEventListener("keydown", onConnectionsKeydown);
+    void nextTick(() => {
+      // 打开：焦点进弹窗首个可交互控件（header 操作按钮）。
+      const container = document.querySelector<HTMLElement>(".workbench .modal-backdrop .modal");
+      const first = container ? focusableElements(container)[0] : null;
+      first?.focus({ preventScroll: true });
+    });
+  } else {
+    // 关闭（Esc/✕/footer/遮罩）：焦点归还工具栏触发按钮。
+    window.removeEventListener("keydown", onConnectionsKeydown);
+    connectionsTrigger.value?.focus({ preventScroll: true });
+    connectionsTrigger.value = null;
+  }
+});
 
 const auditItems = ref<AuditFeedItem[]>([]);
 let auditSeq = 0;
@@ -71,6 +142,9 @@ const backendReadOnly = ref(false);
 const backendAllowDelete = ref(false);
 const canWrite = computed(() => !connection.value.readOnly && !backendReadOnly.value);
 const canDelete = computed(() => canWrite.value && backendAllowDelete.value);
+// SR provider（Phase P）：statuses.schemaRegistry.provider（旧 sidecar 缺省 = ""，
+// 各面板按 confluent 处理；Glue 下消息面板的 schema 挂载区禁用 + 提示）。
+const srProvider = ref<"confluent" | "glue" | "">("");
 
 async function refreshBackendPolicy() {
   try {
@@ -79,9 +153,12 @@ async function refreshBackendPolicy() {
     backendReadOnly.value = mine?.readOnly === true;
     // 旧 sidecar 缺 allowDelete 字段时不主动禁用删除按钮（后端仍会拒绝）。
     backendAllowDelete.value = mine?.allowDelete !== false;
+    const provider = mine?.schemaRegistry?.provider;
+    srProvider.value = provider === "confluent" || provider === "glue" ? provider : "";
   } catch {
     backendReadOnly.value = false;
     backendAllowDelete.value = true;
+    srProvider.value = "";
   }
 }
 
@@ -165,6 +242,45 @@ function selectTopic(topic: string) {
 
 // -- host bridge ------------------------------------------------------------------
 
+// -- stream 事件背压（大数据量专项）--------------------------------------------
+// 流面板不可见（未激活或 document.hidden）时暂停向 StreamPanel 转发流事件，
+// 改入有界队列（丢最旧，镜像面板 MAX_ROWS 丢弃语义），可见后按序补发——
+// 隐藏期间避免高频响应式追加与 display:none 下的无效 DOM 更新。
+const STREAM_BUFFER_LIMIT = 800;
+const pendingStreamEvents: Array<KafkaStreamMessagesEvent | KafkaStreamErrorEvent> = [];
+let droppedStreamEvents = 0;
+const documentHidden = ref(document.hidden);
+
+const streamPanelHidden = computed(() => activePanel.value !== "stream" || documentHidden.value);
+
+function onVisibilityChange() {
+  documentHidden.value = document.hidden;
+  if (!documentHidden.value) void nextTick(flushStreamEvents);
+}
+
+function forwardStreamEvent(params: KafkaStreamMessagesEvent | KafkaStreamErrorEvent) {
+  if (streamPanelHidden.value) {
+    if (pendingStreamEvents.length >= STREAM_BUFFER_LIMIT) {
+      pendingStreamEvents.shift();
+      droppedStreamEvents += 1;
+    }
+    pendingStreamEvents.push(params);
+    return;
+  }
+  streamRef.value?.pushEvent(params);
+}
+
+function flushStreamEvents() {
+  while (pendingStreamEvents.length > 0 && !streamPanelHidden.value) {
+    streamRef.value?.pushEvent(pendingStreamEvents.shift()!);
+  }
+}
+
+watch(activePanel, (next) => {
+  // 切入 stream：刚挂载（首次访问）或 v-show 显示完成后补发缓冲事件。
+  if (next === "stream" && !documentHidden.value) void nextTick(flushStreamEvents);
+});
+
 function handleEvent(event: { method: string; params: Record<string, unknown> }) {
   if (event.method === "kafka/audit") {
     // 数据面：进入最近操作面板（denied/error 高亮）；即时反馈走横幅/通知。
@@ -176,7 +292,7 @@ function handleEvent(event: { method: string; params: Record<string, unknown> })
     return;
   }
   if (event.method === "kafka/stream/messages" || event.method === "kafka/stream/error") {
-    streamRef.value?.pushEvent(event.params as unknown as KafkaStreamMessagesEvent | KafkaStreamErrorEvent);
+    forwardStreamEvent(event.params as unknown as KafkaStreamMessagesEvent | KafkaStreamErrorEvent);
   }
 }
 
@@ -222,12 +338,14 @@ function syncConnectionContext() {
 }
 
 onMounted(() => {
+  document.addEventListener("visibilitychange", onVisibilityChange);
   void initialize().catch((cause) => {
     initError.value = cause instanceof Error ? cause.message : String(cause);
   });
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", onVisibilityChange);
   window.clearTimeout(noticeTimer);
   for (const dispose of [...unsubscribeAppearance, ...unsubscribeLocale, ...unsubscribeContext, ...unsubscribeEvent]) dispose();
 });
@@ -258,13 +376,15 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <nav class="tab-bar">
-        <button type="button" :class="{ 'is-active': activePanel === 'messages' }" @click="activePanel = 'messages'">{{ t("tabs.messages") }}</button>
-        <button type="button" :class="{ 'is-active': activePanel === 'stream' }" @click="activePanel = 'stream'">{{ t("tabs.stream") }}</button>
-        <button type="button" :class="{ 'is-active': activePanel === 'produce' }" @click="activePanel = 'produce'">{{ t("tabs.produce") }}</button>
-        <button type="button" :class="{ 'is-active': activePanel === 'topics' }" @click="activePanel = 'topics'">{{ t("tabs.topics") }}</button>
-        <button type="button" :class="{ 'is-active': activePanel === 'groups' }" @click="activePanel = 'groups'">{{ t("tabs.groups") }}</button>
-        <button type="button" :class="{ 'is-active': activePanel === 'brokers' }" @click="activePanel = 'brokers'">{{ t("tabs.brokers") }}</button>
-        <button type="button" :class="{ 'is-active': activePanel === 'acls' }" @click="activePanel = 'acls'">{{ t("tabs.acls") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'messages' }" @click="openPanel('messages')">{{ t("tabs.messages") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'stream' }" @click="openPanel('stream')">{{ t("tabs.stream") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'produce' }" @click="openPanel('produce')">{{ t("tabs.produce") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'topics' }" @click="openPanel('topics')">{{ t("tabs.topics") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'groups' }" @click="openPanel('groups')">{{ t("tabs.groups") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'brokers' }" @click="openPanel('brokers')">{{ t("tabs.brokers") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'acls' }" @click="openPanel('acls')">{{ t("tabs.acls") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'schemas' }" @click="openPanel('schemas')">{{ t("tabs.schemas") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'monitor' }" @click="openPanel('monitor')">{{ t("tabs.monitor") }}</button>
         <span class="tab-spacer" />
         <span v-if="selectedTopic" class="badge">{{ selectedTopic }}</span>
       </nav>
@@ -284,25 +404,31 @@ onBeforeUnmount(() => {
             v-show="activePanel === 'messages'"
             :topic="selectedTopic"
             :can-write="canWrite"
+            :sr-provider="srProvider"
             @error="showError"
             @notify="showNotice"
           />
           <StreamPanel
+            v-if="hasVisited('stream')"
             v-show="activePanel === 'stream'"
             ref="streamRef"
             :topic="selectedTopic"
             :can-write="canWrite"
+            :sr-provider="srProvider"
             @error="showError"
             @notify="showNotice"
           />
           <ProducePanel
+            v-if="hasVisited('produce')"
             v-show="activePanel === 'produce'"
             :topic="selectedTopic"
             :can-write="canWrite"
+            :sr-provider="srProvider"
             @error="showError"
             @notify="showNotice"
           />
           <TopicsPanel
+            v-if="hasVisited('topics')"
             v-show="activePanel === 'topics'"
             :topics="topics"
             :loading="topicsLoading"
@@ -312,9 +438,19 @@ onBeforeUnmount(() => {
             @notify="showNotice"
             @refresh="loadTopics"
           />
-          <GroupsPanel v-show="activePanel === 'groups'" :can-write="canWrite" :can-delete="canDelete" @error="showError" @notify="showNotice" />
-          <BrokersPanel v-show="activePanel === 'brokers'" @error="showError" />
-          <AclsPanel v-show="activePanel === 'acls'" :can-write="canWrite" :can-delete="canDelete" @error="showError" @notify="showNotice" />
+          <GroupsPanel v-if="hasVisited('groups')" v-show="activePanel === 'groups'" :can-write="canWrite" :can-delete="canDelete" @error="showError" @notify="showNotice" />
+          <BrokersPanel v-if="hasVisited('brokers')" v-show="activePanel === 'brokers'" @error="showError" />
+          <AclsPanel v-if="hasVisited('acls')" v-show="activePanel === 'acls'" :can-write="canWrite" :can-delete="canDelete" @error="showError" @notify="showNotice" />
+          <SchemasPanel
+            v-if="hasVisited('schemas')"
+            v-show="activePanel === 'schemas'"
+            :can-write="canWrite"
+            :can-delete="canDelete"
+            :sr-provider="srProvider"
+            @error="showError"
+            @notify="showNotice"
+          />
+          <MonitorPanel v-if="hasVisited('monitor')" v-show="activePanel === 'monitor'" @error="showError" @notify="showNotice" @alert="showError" />
           <AuditFeedPanel :items="auditItems" @clear="clearAuditFeed" />
         </main>
       </div>
@@ -326,6 +462,6 @@ onBeforeUnmount(() => {
     </div>
     <div v-if="notice" class="notice">{{ notice }}</div>
 
-    <ConnectionsPanel :open="connectionsOpen" :disabled="!ready" @close="connectionsOpen = false" @error="showError" />
+    <ConnectionsPanel :open="connectionsOpen" :disabled="!ready" :connection="connection as unknown as Record<string, unknown>" @close="connectionsOpen = false" @error="showError" />
   </div>
 </template>

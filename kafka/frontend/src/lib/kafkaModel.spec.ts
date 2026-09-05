@@ -1,23 +1,33 @@
 // kafkaModel 纯函数单测：解码/格式化管线、topic 排序、lag 聚合、CSV/JSON
 // 导出、properties 解析与 consume 表单校验。不连网、不依赖组件；
-// 不引 node 专有模块（zlib/Buffer），gzip 样本用预生成常量，保持 tsconfig
-// types=["vite/client"] 与 ldap 基线一致（零新依赖）。
+// 不引 node 专有模块（zlib/Buffer）：gzip/zstd 用预生成 base64 常量，
+// snappy/lz4 用各库自身 compress API 构造 roundtrip 样本。
 import { describe, expect, it } from "vitest";
+import { compress as lz4Compress } from "lz4js";
+import { compress as snappyCompress } from "snappyjs";
 import {
   appendStreamRows,
   base64ToBytes,
   bytesToHex,
   bytesToUtf8,
+  capRows,
+  decideModalKeydown,
   filterTopics,
   formatBitSet,
   formatMessageValue,
   headersPreview,
   isInternalTopicName,
+  fieldFilterIssue,
+  isRangeReversed,
+  jsonErrorLine,
   matchText,
   messageFullValueText,
+  nowDatetimeLocal,
   offsetTimeToParam,
+  offsetTimeToUnixMs,
   parseHeadersJson,
   parsePartitionList,
+  parseGroupOffsetTargetsText,
   parsePartitionOffsetsText,
   partitionOffsetsToText,
   parsePropertiesText,
@@ -29,15 +39,28 @@ import {
   sortTopics,
   scoreTopicName,
   sumLag,
+  switchTimeInputMode,
+  unixMsToDatetimeLocal,
   validateConsumeForm,
 } from "./kafkaModel";
 import type { KafkaMessage } from "./api";
+import { MESSAGE_ROWS_MAX, truncatedValuePreview } from "./kafkaModel";
 
 // gzipSync('{"n":7}') 的 base64 常量（生成命令见仓库 PROGRESS 文档）。
 const GZIP_JSON_N7_BASE64 = "H4sIAAAAAAAAE6tWylOyMq8FAPicEYIHAAAA";
+// `zstd -q`('{"orderId":"A-1001","amount":42,"currency":"USD"}') 的 base64 常量
+// （fzstd 仅提供解码器，无法库内 roundtrip，故用 CLI 预生成固定向量）。
+const ZSTD_ORDER_JSON_BASE64 =
+  "KLUv/SQxiQEAeyJvcmRlcklkIjoiQS0xMDAxIiwiYW1vdW50Ijo0MiwiY3VycmVuY3kiOiJVU0QifbQxJQg=";
 
 function b64(text: string): string {
   return utf8ToBase64(text);
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 function utf8ToBase64(text: string): string {
@@ -107,7 +130,40 @@ describe("format pipeline", () => {
     expect(result.text).toBe('{\n  "n": 7\n}');
   });
 
-  it("flags unsupported decompression algorithms instead of crashing", async () => {
+  it("inflates zstd payloads (fzstd, fixed CLI vector)", async () => {
+    const result = await formatMessageValue(msg({ valueBase64: ZSTD_ORDER_JSON_BASE64 }), {
+      decode: "none",
+      decompression: "zstd",
+      format: "json",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.text).toBe('{\n  "orderId": "A-1001",\n  "amount": 42,\n  "currency": "USD"\n}');
+  });
+
+  it("inflates snappy payloads (roundtrip with snappyjs compress)", async () => {
+    const payload = new TextEncoder().encode('{"n":7,"ok":true}');
+    const result = await formatMessageValue(msg({ valueBase64: bytesToBase64(snappyCompress(payload)) }), {
+      decode: "none",
+      decompression: "snappy",
+      format: "raw",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.text).toBe('{"n":7,"ok":true}');
+  });
+
+  it("inflates lz4 payloads (roundtrip with lz4js compress)", async () => {
+    const payload = new TextEncoder().encode('{"n":7,"ok":true}');
+    const result = await formatMessageValue(msg({ valueBase64: bytesToBase64(lz4Compress(payload)) }), {
+      decode: "none",
+      decompression: "lz4",
+      format: "raw",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.text).toBe('{"n":7,"ok":true}');
+  });
+
+  it("reports decompression failures per algorithm instead of crashing", async () => {
+    // 非 zstd 字节流喂给 zstd：fzstd 抛错 → 管线转 error 展示（原值透传）。
     const result = await formatMessageValue(msg({ valueBase64: b64("data") }), {
       decode: "none",
       decompression: "zstd",
@@ -115,6 +171,18 @@ describe("format pipeline", () => {
     });
     expect(result.error).toContain("zstd");
     expect(result.text).toBe("data");
+    const snappy = await formatMessageValue(msg({ valueBase64: b64("data") }), {
+      decode: "none",
+      decompression: "snappy",
+      format: "raw",
+    });
+    expect(snappy.error).toContain("snappy");
+    const lz4 = await formatMessageValue(msg({ valueBase64: b64("data") }), {
+      decode: "none",
+      decompression: "lz4",
+      format: "raw",
+    });
+    expect(lz4.error).toContain("lz4");
   });
 
   it("hex-formats and reports invalid inner base64", async () => {
@@ -186,6 +254,46 @@ describe("stream buffer", () => {
   });
 });
 
+describe("message table cap", () => {
+  it("returns the same reference and zero dropped when under the cap", () => {
+    const rows = [msg({ partition: 0, offset: 0 }), msg({ partition: 0, offset: 1 })];
+    const capped = capRows(rows);
+    expect(capped.rows).toBe(rows); // 零拷贝语义
+    expect(capped).toEqual({ rows, total: 2, dropped: 0 });
+  });
+
+  it("trims the head and keeps the newest tail when over the cap", () => {
+    const rows = Array.from({ length: 5 }, (_unused, index) => msg({ partition: 0, offset: index }));
+    const capped = capRows(rows, 3);
+    expect(capped.rows.map((row) => row.offset)).toEqual([2, 3, 4]); // 最新在尾部
+    expect(capped.total).toBe(5);
+    expect(capped.dropped).toBe(2);
+    expect(capped.rows).not.toBe(rows); // 裁剪产出新数组
+  });
+
+  it("caps to a single row and handles an empty list", () => {
+    const rows = [msg({ partition: 0, offset: 7 }), msg({ partition: 0, offset: 8 })];
+    expect(capRows(rows, 1).rows.map((row) => row.offset)).toEqual([8]);
+    expect(capRows([], 10)).toEqual({ rows: [], total: 0, dropped: 0 });
+    expect(MESSAGE_ROWS_MAX).toBeGreaterThan(0);
+  });
+
+  it("keeps short value previews untouched", () => {
+    const short = "hello world";
+    expect(truncatedValuePreview(short)).toEqual({ text: short, truncated: false });
+  });
+
+  it("truncates long values keeping head and tail with a hidden-char marker", () => {
+    const text = "A".repeat(20000) + "B".repeat(100) + "C".repeat(20000);
+    const preview = truncatedValuePreview(text);
+    expect(preview.truncated).toBe(true);
+    expect(preview.text.length).toBeLessThan(text.length);
+    expect(preview.text.startsWith("A".repeat(100))).toBe(true); // 头部保留
+    expect(preview.text.endsWith("C".repeat(100))).toBe(true); // 尾部保留
+    expect(preview.text).toMatch(/⋯ \d+ chars ⋯/); // 中段省略标记
+  });
+});
+
 describe("export serialization", () => {
   it("serializes CSV with RFC 4180 escaping", () => {
     const csv = serializeMessagesToCsv([
@@ -209,6 +317,16 @@ describe("consume form helpers", () => {
     expect(parsePartitionList("2, 0，0 1")).toEqual([0, 1, 2]);
     expect(parsePartitionOffsetsText("0=100, 1:200\n2=300")).toEqual({ "0": 100, "1": 200, "2": 300 });
     expect(partitionOffsetsToText({ "1": 200, "0": 100 })).toBe("0=100,1=200");
+  });
+
+  it("parses group reset offset targets (explicit topic and single-topic fallback)", () => {
+    const multi = parseGroupOffsetTargetsText("t1:0=100, t1:1=200, t2:0=5", ["t1", "t2"]);
+    expect(multi.invalid).toEqual([]);
+    expect(multi.targets).toEqual({ t1: { "0": 100, "1": 200 }, t2: { "0": 5 } });
+    const single = parseGroupOffsetTargetsText("0=100, 1:200", ["only"]);
+    expect(single.targets).toEqual({ only: { "0": 100, "1": 200 } });
+    const ambiguous = parseGroupOffsetTargetsText("0=100", ["a", "b"]);
+    expect(ambiguous.invalid).toEqual(["0=100"]);
   });
 
   it("converts offset time inputs (unix ms, datetime-local, RFC3339)", () => {
@@ -255,6 +373,54 @@ describe("consume form helpers", () => {
   });
 });
 
+describe("time range inputs", () => {
+  it("normalizes datetime-local / unix ms / RFC3339 inputs to unix ms", () => {
+    expect(offsetTimeToUnixMs("1700000000000")).toBe(1700000000000);
+    expect(offsetTimeToUnixMs("2026-09-05T08:30:00")).toBe(new Date("2026-09-05T08:30:00").getTime());
+    expect(offsetTimeToUnixMs("2026-09-05T08:30:00Z")).toBe(Date.parse("2026-09-05T08:30:00.000Z"));
+    expect(offsetTimeToUnixMs("junk")).toBeNull();
+    expect(offsetTimeToUnixMs("  ")).toBeNull();
+  });
+
+  it("round-trips unix ms through datetime-local with second precision", () => {
+    const ms = Date.UTC(2026, 8, 5, 0, 30, 15);
+    const text = unixMsToDatetimeLocal(ms);
+    expect(text).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(offsetTimeToUnixMs(text)).toBe(ms);
+    expect(unixMsToDatetimeLocal(Number.NaN)).toBe("");
+  });
+
+  it("builds now() as a parseable datetime-local string", () => {
+    const now = nowDatetimeLocal();
+    expect(now).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(offsetTimeToUnixMs(now)).not.toBeNull();
+  });
+
+  it("switches input modes without losing unparseable drafts", () => {
+    expect(switchTimeInputMode("2026-09-05T08:30:00", "unix")).toBe(String(new Date("2026-09-05T08:30:00").getTime()));
+    const ms = 1_700_000_000_000;
+    const back = switchTimeInputMode(String(ms), "datetime");
+    expect(offsetTimeToUnixMs(back)).toBe(ms);
+    expect(switchTimeInputMode("junk", "unix")).toBe("junk");
+    expect(switchTimeInputMode("junk", "datetime")).toBe("junk");
+    expect(switchTimeInputMode("", "datetime")).toBe("");
+  });
+
+  it("flags only concrete from>to ranges as reversed", () => {
+    expect(isRangeReversed(200, 100)).toBe(true);
+    expect(isRangeReversed(100, 100)).toBe(false);
+    expect(isRangeReversed(null, 100)).toBe(false);
+    expect(isRangeReversed(100, null)).toBe(false);
+  });
+
+  it("requires numeric values only for numeric-comparison operators", () => {
+    expect(fieldFilterIssue({ operator: "gt", value: "42" })).toBeNull();
+    expect(fieldFilterIssue({ operator: "lte", value: "abc" })).toBe("fieldValueNumeric");
+    expect(fieldFilterIssue({ operator: "gt", value: "" })).toBeNull();
+    expect(fieldFilterIssue({ operator: "contains", value: "abc" })).toBeNull();
+  });
+});
+
 describe("headers json", () => {
   it("accepts string-valued objects only", () => {
     expect(parseHeadersJson('{"trace":"abc"}')).toEqual({ headers: { trace: "abc" } });
@@ -262,6 +428,31 @@ describe("headers json", () => {
     expect(parseHeadersJson("[1]")).toHaveProperty("error");
     expect(parseHeadersJson('{"n":1}')).toHaveProperty("error");
     expect(parseHeadersJson("{bad")).toHaveProperty("error");
+  });
+});
+
+describe("json error line (editor linter)", () => {
+  it("returns null for valid, empty and whitespace-only text", () => {
+    expect(jsonErrorLine('{"a": [1, 2, {"b": null}], "c": "x"}')).toBeNull();
+    expect(jsonErrorLine("")).toBeNull();
+    expect(jsonErrorLine("   \n\t ")).toBeNull();
+  });
+
+  it("locates the first syntax error line across value kinds", () => {
+    expect(jsonErrorLine("{bad}")).toBe(1);
+    expect(jsonErrorLine('{\n  "a": 1,\n  "b": tru\n}')).toBe(3); // 非法字面量
+    expect(jsonErrorLine('{\n  "a": 1\n  "b": 2\n}')).toBe(3); // 缺逗号
+    expect(jsonErrorLine("[1, 2,\n3,\n]")).toBe(3); // 数组尾逗号
+    expect(jsonErrorLine('{"k": "v"')).toBe(1); // 未闭合
+  });
+
+  it("tracks multi-line strings/objects and trailing junk", () => {
+    expect(jsonErrorLine('{\n  "a": "line1\nbroken"}')).toBe(2); // 字符串内裸换行
+    expect(jsonErrorLine('{"a": 1} extra')).toBe(1); // 尾部多余 token
+    expect(jsonErrorLine("123")).toBeNull(); // 顶层标量合法
+    expect(jsonErrorLine("1.5e-3")).toBeNull();
+    expect(jsonErrorLine("01")).toBe(1); // 前导零 → 多余 token
+    expect(jsonErrorLine('{"\\u00zz": 1}')).toBe(1); // 非法 \\u 转义
   });
 });
 
@@ -307,5 +498,37 @@ sasl.jaas.config=ScramLoginModule required username="app" password="secret";
     expect(skipped.tlsInsecureSkipVerify).toBe(true);
     const skippedNone = propertiesToConnectionForm(parsePropertiesText("ssl.endpoint.identification.algorithm=NONE"));
     expect(skippedNone.tlsInsecureSkipVerify).toBe(true);
+  });
+});
+
+describe("modal keydown decision (Esc close + Tab focus trap)", () => {
+  it("closes on Escape regardless of Tab state", () => {
+    expect(decideModalKeydown("Escape", false, 0, -1)).toEqual({ kind: "close" });
+    expect(decideModalKeydown("Escape", true, 5, 2)).toEqual({ kind: "close" });
+  });
+
+  it("ignores non-Esc/Tab keys and empty containers", () => {
+    expect(decideModalKeydown("Enter", false, 5, 0)).toEqual({ kind: "none" });
+    expect(decideModalKeydown("Tab", false, 0, -1)).toEqual({ kind: "none" });
+    expect(decideModalKeydown("Tab", true, 0, 3)).toEqual({ kind: "none" });
+  });
+
+  it("cycles forward with wrap-around", () => {
+    expect(decideModalKeydown("Tab", false, 3, 0)).toEqual({ kind: "focus", index: 1 });
+    expect(decideModalKeydown("Tab", false, 3, 2)).toEqual({ kind: "focus", index: 0 });
+  });
+
+  it("cycles backward with wrap-around", () => {
+    expect(decideModalKeydown("Tab", true, 3, 2)).toEqual({ kind: "focus", index: 1 });
+    expect(decideModalKeydown("Tab", true, 3, 0)).toEqual({ kind: "focus", index: 2 });
+  });
+
+  it("enters at the start/end when focus is outside the container", () => {
+    // 焦点尚未进容器（如打开瞬间）：Tab 进首个控件，Shift+Tab 进最后一个。
+    expect(decideModalKeydown("Tab", false, 4, -1)).toEqual({ kind: "focus", index: 0 });
+    expect(decideModalKeydown("Tab", true, 4, -1)).toEqual({ kind: "focus", index: 3 });
+    // 越界（焦点被容器外逻辑移走）同样按方向兜底。
+    expect(decideModalKeydown("Tab", false, 4, 99)).toEqual({ kind: "focus", index: 0 });
+    expect(decideModalKeydown("Tab", true, 4, 99)).toEqual({ kind: "focus", index: 3 });
   });
 });

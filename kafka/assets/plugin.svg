@@ -1,14 +1,15 @@
+<!-- Original DBX Kafka workbench icon. Licensed under the repository Apache-2.0 license. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DBX Kafka">
   <defs>
-    <linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#1f2b46"/>
-      <stop offset="1" stop-color="#2f6fb3"/>
+    <linearGradient id="kafka-bg" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#27354f"/>
+      <stop offset="1" stop-color="#1b5e9e"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="url(#g)"/>
-  <ellipse cx="26" cy="19" rx="12" ry="5" fill="#fff"/>
-  <path fill="#fff" d="M14 19v24c0 2.76 5.37 5 12 5s12-2.24 12-5V19c0 2.76-5.37 5-12 5s-12-2.24-12-5Z"/>
-  <circle cx="48" cy="24" r="4" fill="#fff"/>
-  <circle cx="48" cy="38" r="4" fill="#fff"/>
-  <circle cx="48" cy="52" r="4" fill="#fff"/>
+  <rect width="64" height="64" rx="14" fill="url(#kafka-bg)"/>
+  <path d="M15 18.5c0-2 3.8-3.5 8.5-3.5s8.5 1.5 8.5 3.5-3.8 3.5-8.5 3.5-8.5-1.5-8.5-3.5z" fill="#fff"/>
+  <path d="M15 18.5v25c0 1.9 3.8 3.5 8.5 3.5s8.5-1.6 8.5-3.5v-25c0 1.9-3.8 3.5-8.5 3.5s-8.5-1.6-8.5-3.5z" fill="#fff" fill-opacity="0.92"/>
+  <path d="M32 33h6m0 0c0-3 3-4 6-4h2m-8 4c0 3 3 4 6 4h2" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="50" cy="29" r="4" fill="#fff"/>
+  <circle cx="50" cy="41" r="4" fill="#fff"/>
 </svg>

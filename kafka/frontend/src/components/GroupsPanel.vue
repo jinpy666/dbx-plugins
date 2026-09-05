@@ -1,11 +1,29 @@
 <script setup lang="ts">
-// 消费组面板：组列表 + offsets 表（start/end/committed/lag + hasCommitted:false
-// 标注）+ totalLag 聚合 + describe members + offset 重置（earliest/latest/
-// timestamp/partitionOffset）+ 删除组。写操作按 readOnly/allowDelete 禁用。
-import { onMounted, ref } from "vue";
+// 消费组面板（Phase 2 ag-grid 版）：组列表 / offsets 表 / members 表均走
+// DbxAgGrid（列排序 + 列内过滤 + 分页持久化），行选择驱动 describe/load；
+// reset/delete 从行内按钮收敛为工具栏动作（作用于选中组），门禁不变：
+// reset 按 canWrite、delete 按 canDelete（read_only 下后端同规则拒绝）。
+import { computed, onMounted, ref } from "vue";
 import { RefreshCw, Trash2 } from "@lucide/vue";
+import type { ColDef } from "ag-grid-community";
+import DbxAgGrid from "./DbxAgGrid.vue";
 import { kafkaApi, type GroupMember, type GroupOffsetRow, type KafkaGroup } from "../lib/api";
-import { parsePartitionOffsetsText, sumLag } from "../lib/kafkaModel";
+import {
+  MINIMAL_GROUP_FIELDS,
+  MINIMAL_GROUP_OFFSET_FIELDS,
+  MINIMAL_MEMBER_FIELDS,
+  groupColumns,
+  groupOffsetColumns,
+  memberColumns,
+  toGroupOffsetRows,
+  toGroupRows,
+  toMemberRows,
+  type GroupOffsetVm,
+  type GroupRow,
+  type MemberVm,
+} from "../lib/kafkaColumns";
+import { parseGroupOffsetTargetsText, sumLag } from "../lib/kafkaModel";
+import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
 defineProps<{
@@ -26,6 +44,13 @@ const totalLag = ref<number | null>(null);
 const hasCommitted = ref(true);
 const members = ref<GroupMember[]>([]);
 const busy = ref(false);
+
+const groupGridRows = computed(() => toGroupRows(groups.value));
+const groupGridCols = computed(() => groupColumns() as ColDef<GroupRow>[]);
+const offsetGridRows = computed(() => toGroupOffsetRows(offsetRows.value));
+const offsetGridCols = computed(() => groupOffsetColumns() as ColDef<GroupOffsetVm>[]);
+const memberGridRows = computed(() => toMemberRows(members.value));
+const memberGridCols = computed(() => memberColumns() as ColDef<MemberVm>[]);
 
 // reset dialog
 const resetOpen = ref(false);
@@ -51,12 +76,18 @@ async function load() {
   }
 }
 
-async function selectGroup(group: KafkaGroup) {
+function selectGroup(row: GroupRow | null) {
+  const group = row?.raw ?? null;
   selected.value = group;
   offsetRows.value = [];
   totalLag.value = null;
   hasCommitted.value = true;
   members.value = [];
+  if (!group) return;
+  void loadGroupDetail(group);
+}
+
+async function loadGroupDetail(group: KafkaGroup) {
   busy.value = true;
   emit("error", "");
   try {
@@ -73,8 +104,8 @@ async function selectGroup(group: KafkaGroup) {
   }
 }
 
-function askReset(group: KafkaGroup) {
-  selected.value = group;
+function askReset() {
+  if (!selected.value) return;
   resetTopics.value = "";
   resetTo.value = "earliest";
   resetTimestampMs.value = "";
@@ -88,7 +119,7 @@ async function submitReset() {
     .split(/[,，\s]+/)
     .map((entry) => entry.trim())
     .filter(Boolean);
-  const extra: { timestampMs?: number; partitionOffsets?: Record<string, number> } = {};
+  const extra: { timestampMs?: number; partitionOffsets?: Record<string, Record<string, number>> } = {};
   if (resetTo.value === "timestamp") {
     const parsed = Number.parseInt(resetTimestampMs.value.trim(), 10);
     if (!Number.isFinite(parsed)) {
@@ -98,24 +129,29 @@ async function submitReset() {
     extra.timestampMs = parsed;
   }
   if (resetTo.value === "partitionOffset") {
-    const offsets = parsePartitionOffsetsText(resetPartitionOffsets.value);
-    if (Object.keys(offsets).length === 0) {
+    const parsed = parseGroupOffsetTargetsText(resetPartitionOffsets.value, topics);
+    if (Object.keys(parsed.targets).length === 0) {
       emit("error", t("messages.offsetsRequired"));
       return;
     }
-    extra.partitionOffsets = offsets;
+    if (parsed.invalid.length > 0) {
+      emit("error", t("groups.resetOffsetsInvalid") + " " + parsed.invalid.join(", "));
+      return;
+    }
+    extra.partitionOffsets = parsed.targets;
   }
   busy.value = true;
   try {
     const response = await kafkaApi.groupsOffsetsReset(selected.value.group, topics, resetTo.value, extra);
     const failed = (response.rows ?? []).filter((row) => !row.ok);
     if (failed.length > 0) {
-      emit("error", failed.map((row) => `${row.topic}-${row.partition}: ${row.error ?? "failed"}`).join("; "));
+      // 行级错误经 friendlyKafkaError 归一（未映射原文兜底）。
+      emit("error", failed.map((row) => `${row.topic}-${row.partition}: ${row.error ? friendlyKafkaError(row.error) : "failed"}`).join("; "));
     } else {
       emit("notify", t("groups.resetDone"));
     }
     resetOpen.value = false;
-    await selectGroup(selected.value);
+    await loadGroupDetail(selected.value);
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
@@ -123,8 +159,9 @@ async function submitReset() {
   }
 }
 
-function askDelete(group: KafkaGroup) {
-  deleteTarget.value = group.group;
+function askDelete() {
+  if (!selected.value) return;
+  deleteTarget.value = selected.value.group;
   deleteOpen.value = true;
 }
 
@@ -149,12 +186,6 @@ function lagBadgeClass(lag: number): string {
   return "badge-warn";
 }
 
-function assignmentsText(member: GroupMember): string {
-  return Object.entries(member.assignments ?? {})
-    .map(([topic, partitions]) => `${topic}[${partitions.join(",")}]`)
-    .join("; ");
-}
-
 onMounted(() => {
   void load();
 });
@@ -166,47 +197,26 @@ onMounted(() => {
       <span>{{ t("groups.title") }} · {{ groups.length }}</span>
       <span class="inline-actions">
         <button class="icon-button" :title="t('refresh')" @click="load"><RefreshCw :class="{ spinning: loading }" /></button>
+        <button class="qb-add" type="button" :disabled="!canWrite || !selected || busy" :title="canWrite ? t('groups.reset') : t('readOnly')" @click="askReset">
+          {{ t("groups.reset") }}
+        </button>
+        <button class="qb-add" type="button" :disabled="!canDelete || !selected || busy" :title="canDelete ? t('groups.delete') : canWrite ? t('noDelete') : t('readOnly')" @click="askDelete">
+          <Trash2 aria-hidden="true" />
+        </button>
       </span>
     </div>
 
-    <div class="kafka-table" style="max-height: 34%">
-      <div class="kafka-table-header groups-cols">
-        <span>{{ t("groups.colGroup") }}</span>
-        <span>{{ t("groups.colState") }}</span>
-        <span>{{ t("groups.colProtocol") }}</span>
-        <span>{{ t("groups.colCoordinator") }}</span>
-        <span />
-      </div>
-      <div class="kafka-table-rows">
-        <p v-if="groups.length === 0 && !loading" class="empty compact">{{ t("groups.empty") }}</p>
-        <div
-          v-for="group in groups"
-          :key="group.group"
-          class="kafka-table-row groups-cols"
-          :class="{ selected: selected?.group === group.group }"
-          style="cursor: pointer"
-          @click="selectGroup(group)"
-        >
-          <span class="mono-s">{{ group.group }}</span>
-          <span>{{ group.state ?? "—" }}</span>
-          <span>{{ group.protocolType ?? "—" }}</span>
-          <span class="mono-s">{{ group.coordinator ?? "—" }}</span>
-          <span class="inline-actions">
-            <button class="qb-add" type="button" :disabled="!canWrite" :title="canWrite ? t('groups.reset') : t('readOnly')" @click.stop="askReset(group)">
-              {{ t("groups.reset") }}
-            </button>
-            <button
-              class="qb-add"
-              type="button"
-              :disabled="!canDelete"
-              :title="canDelete ? t('groups.delete') : canWrite ? t('noDelete') : t('readOnly')"
-              @click.stop="askDelete(group)"
-            >
-              <Trash2 aria-hidden="true" />
-            </button>
-          </span>
-        </div>
-      </div>
+    <div class="grid-box" style="height: 240px">
+      <p v-if="groups.length === 0 && !loading" class="empty compact">{{ t("groups.empty") }}</p>
+      <DbxAgGrid
+        v-else
+        table-key="groups"
+        :row-data="groupGridRows"
+        :column-defs="groupGridCols"
+        :compact-fields="MINIMAL_GROUP_FIELDS"
+        row-selection="single"
+        @selection-changed="(row: unknown) => selectGroup(row as GroupRow | null)"
+      />
     </div>
 
     <template v-if="selected">
@@ -215,46 +225,33 @@ onMounted(() => {
         <span v-if="totalLag !== null" class="badge" :class="lagBadgeClass(totalLag)">{{ t("groups.totalLag", { lag: totalLag }) }}</span>
         <span v-if="!hasCommitted" class="badge badge-warn">{{ t("groups.hasCommittedFalse") }}</span>
       </p>
-      <div class="kafka-table" style="max-height: 26%">
-        <div class="kafka-table-header group-offsets-cols">
-          <span>{{ t("groups.colTopic") }}</span>
-          <span>#</span>
-          <span>{{ t("groups.colStart") }}</span>
-          <span>{{ t("groups.colEnd") }}</span>
-          <span>{{ t("groups.colCommitted") }}</span>
-          <span>{{ t("groups.colLag") }}</span>
-        </div>
-        <div class="kafka-table-rows">
-          <p v-if="offsetRows.length === 0" class="empty compact">{{ t("groups.offsetsEmpty") }}</p>
-          <p v-else-if="!hasCommitted" class="hint" style="padding: 0 8px">{{ t("groups.noCommitted") }}</p>
-          <div v-for="row in offsetRows" :key="`${row.topic}:${row.partition}`" class="kafka-table-row group-offsets-cols" style="cursor: default">
-            <span class="mono-s">{{ row.topic }}</span>
-            <span class="mono-s">{{ row.partition }}</span>
-            <span class="mono-s">{{ row.startOffset ?? "—" }}</span>
-            <span class="mono-s">{{ row.endOffset ?? "—" }}</span>
-            <span class="mono-s">
-              {{ row.hasCommitted === false ? t("groups.hasCommittedFalse") : (row.committedOffset ?? "—") }}
-            </span>
-            <span class="mono-s">
-              <span v-if="row.lag !== undefined && row.lag !== null" class="badge" :class="lagBadgeClass(row.lag)">{{ row.lag }}</span>
-              <template v-else>—</template>
-            </span>
-          </div>
-        </div>
+      <div class="grid-box" style="height: 200px">
+        <p v-if="offsetRows.length === 0" class="empty compact">{{ t("groups.offsetsEmpty") }}</p>
+        <template v-else>
+          <p v-if="!hasCommitted" class="hint" style="padding: 0 8px">{{ t("groups.noCommitted") }}</p>
+          <DbxAgGrid
+            table-key="group-offsets"
+            :row-data="offsetGridRows"
+            :column-defs="offsetGridCols"
+            :compact-fields="MINIMAL_GROUP_OFFSET_FIELDS"
+            :row-selection="false"
+            :emit-row-click="false"
+          />
+        </template>
       </div>
 
       <p class="subpanel-title">{{ t("groups.describeTitle", { group: selected.group }) }}</p>
-      <div class="kafka-table" style="max-height: 22%">
-        <div class="kafka-table-rows">
-          <p v-if="members.length === 0" class="empty compact">{{ t("groups.noMembers") }}</p>
-          <div v-for="member in members" :key="member.memberId" class="kafka-table-row member-cols" style="cursor: default">
-            <span class="mono-s" :title="member.memberId">{{ member.memberId }}</span>
-            <span class="mono-s">{{ member.instanceId ?? "—" }}</span>
-            <span class="mono-s">{{ member.clientId ?? "—" }}</span>
-            <span class="mono-s">{{ member.clientHost ?? "—" }}</span>
-            <span class="mono-s">{{ assignmentsText(member) || "—" }}</span>
-          </div>
-        </div>
+      <div class="grid-box" style="height: 170px">
+        <p v-if="members.length === 0" class="empty compact">{{ t("groups.noMembers") }}</p>
+        <DbxAgGrid
+          v-else
+          table-key="group-members"
+          :row-data="memberGridRows"
+          :column-defs="memberGridCols"
+          :compact-fields="MINIMAL_MEMBER_FIELDS"
+          :row-selection="false"
+          :emit-row-click="false"
+        />
       </div>
     </template>
 
@@ -319,13 +316,13 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.groups-cols {
-  grid-template-columns: minmax(140px, 2fr) minmax(90px, 1fr) minmax(90px, 1fr) 70px auto;
+/* P2 统一禁用态：只读下重置/删除按钮补强。 */
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
 }
-.group-offsets-cols {
-  grid-template-columns: minmax(140px, 2fr) 44px repeat(4, minmax(70px, 1fr));
-}
-.member-cols {
-  grid-template-columns: minmax(140px, 1.4fr) minmax(90px, 1fr) minmax(100px, 1fr) minmax(100px, 1fr) minmax(140px, 1.6fr);
+button:disabled {
+  filter: grayscale(0.4);
 }
 </style>

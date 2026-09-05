@@ -68,10 +68,10 @@ func TestACLTokenNormalization(t *testing.T) {
 
 func TestResetModeNormalization(t *testing.T) {
 	for raw, want := range map[string]OffsetResetMode{
-		"earliest": OffsetResetEarliest,
-		"latest":   OffsetResetLatest,
-		"timestamp": OffsetResetTimestamp,
-		"partitionOffset": OffsetResetPartitionOffsets,
+		"earliest":         OffsetResetEarliest,
+		"latest":           OffsetResetLatest,
+		"timestamp":        OffsetResetTimestamp,
+		"partitionOffset":  OffsetResetPartitionOffsets,
 		"partition_offset": OffsetResetPartitionOffsets,
 	} {
 		got, err := normalizeResetMode(raw)

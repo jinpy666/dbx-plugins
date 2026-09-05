@@ -2,6 +2,13 @@
 # (scenarios S1-S10). PLAINTEXT only: there are no credentials in this setup, so
 # no secret environment variable is required; if a SASL/TLS variant is added
 # later, every secret must come from the environment via ${VAR:?export VAR ...}.
+#
+# Phase 2 adds a second single-node Redpanda broker (dbx-kafka-sr-test) whose
+# built-in Schema Registry speaks the Confluent REST API: smoke scenario S11
+# runs SR subjects/register/produce(schema)/consume(schema)/compatibility/
+# delete against http://127.0.0.1:19081 (broker on 127.0.0.1:19092, so the
+# main apache/kafka 9092 stays untouched). SASL is off and there are no
+# credentials anywhere in this setup.
 services:
   kafka-test:
     image: apache/kafka:latest
@@ -23,3 +30,24 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+
+  redpanda-sr-test:
+    image: redpandadata/redpanda:latest
+    container_name: dbx-kafka-sr-test
+    command:
+      - redpanda
+      - start
+      - --mode dev-container
+      - --smp 1
+      - --memory 512M
+      # Kafka listener: container 9092 -> host 19092 (advertised back to host).
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://127.0.0.1:19092
+      # Schema Registry (Confluent-compatible HTTP API): container 8081 -> host 19081.
+      - --schema-registry-addr=PLAINTEXT://0.0.0.0:8081
+      # Pandaproxy unused; keep it bound so dev-container mode stays happy.
+      - --pandaproxy-addr=PLAINTEXT://0.0.0.0:8082
+      - --advertise-pandaproxy-addr=PLAINTEXT://127.0.0.1:19082
+    ports:
+      - "19092:9092"
+      - "19081:8081"

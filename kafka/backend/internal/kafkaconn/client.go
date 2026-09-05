@@ -10,8 +10,8 @@ package kafkaconn
 // runtime.host:port 兜底（单 seed）。
 //
 // TLS（CA/client cert/insecure skip verify）+ SASL（PLAIN/SCRAM-SHA-256/
-// SCRAM-SHA-512）取值面与 tinyrdm kafkaSASLOpt / kafkaDialer 对齐
-// （Kerberos 依赖 gokrb5，Phase 2 禁入，见 IMPL_PLAN §3）。
+// SCRAM-SHA-512/GSSAPI）取值面与 tinyrdm kafkaSASLOpt / kafkaDialer 对齐
+// （GSSAPI/Kerberos 为 Phase 2 接入，见 kerberos.go）。
 
 import (
 	"crypto/sha256"
@@ -32,8 +32,11 @@ import (
 
 // connSecrets 是 binding:secret 的连接凭据（仅存内存，禁止落日志/审计/事件）。
 type connSecrets struct {
-	SASLPassword string
-	TLSClientKey string
+	SASLPassword        string
+	TLSClientKey        string
+	SRPassword          string
+	GlueSecretAccessKey string // AWS Glue static 凭据（Phase 3）
+	GlueSessionToken    string // AWS Glue 会话 token（可选）
 }
 
 // connTarget 是一次拨号需要的运行时端点（bootstrap 空时兜底）。
@@ -46,11 +49,11 @@ type connTarget struct {
 type connEntry struct {
 	mu sync.Mutex
 
-	profile   Profile     // 已 NormalizeProfile 的连接配置（不含凭据）
-	secrets   connSecrets // binding: secret
-	target    connTarget  // runtime 兜底端点
-	client    *kgo.Client // admin 类调用共享 client（nil = 未建）
-	fingerprint string    // 建 client 时的配置指纹
+	profile     Profile     // 已 NormalizeProfile 的连接配置（不含凭据）
+	secrets     connSecrets // binding: secret
+	target      connTarget  // runtime 兜底端点
+	client      *kgo.Client // admin 类调用共享 client（nil = 未建）
+	fingerprint string      // 建 client 时的配置指纹
 
 	connectedAt int64 // unix ms
 	lastUsedAt  int64 // unix ms
@@ -72,6 +75,22 @@ func (e *connEntry) computeFingerprint() string {
 		e.secrets.TLSClientKey,
 		fmt.Sprintf("%t", e.profile.TLSInsecureSkipVerify),
 		e.profile.ClientID,
+		// Phase 2：GSSAPI 参数进指纹（换 keytab/principal 重建）。
+		e.profile.ConnectionSource,
+		strings.Join(e.profile.ZKServers, ","),
+		e.profile.KerberosServiceName,
+		e.profile.KerberosRealm,
+		e.profile.KerberosPrincipal,
+		e.profile.KerberosKeytabPath,
+		e.profile.KerberosKrb5ConfPath,
+		// Schema Registry 开关/参数变化（含 glue 参数）→ 摘要变化。
+		e.profile.SchemaRegistry,
+		e.profile.SRURL,
+		e.profile.SRUsername,
+		e.profile.GlueRegion,
+		e.profile.GlueRegistryName,
+		e.profile.GlueAuthMode,
+		e.profile.GlueAccessKeyID,
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])
@@ -91,12 +110,27 @@ func (e *connEntry) seedBrokers() []string {
 
 // buildClientOpts 组装 kgo opts（TLS + SASL + SeedBrokers + ClientID）。
 // extraOpts 由调用方追加（consume/stream 的 ConsumePartitions 等）。
-// 本函数纯构建、不拨号（单测覆盖 TLS/SASL 矩阵）。
+// 本函数不主动拨号（单测覆盖 TLS/SASL 矩阵）。
 func (e *connEntry) buildClientOpts(extraOpts ...kgo.Opt) ([]kgo.Opt, error) {
 	seeds := e.seedBrokers()
+	if len(seeds) == 0 && e.profile.ConnectionSource == ConnectionSourceZookeeper {
+		// zookeeper 源且未给 bootstrap：经 ZK 发现 broker 作为拨号种子
+		//（discoverBrokersViaZK 是纯 profile 实现，不触 entry/service）。
+		resolved, err := zkSeedsForTest(e.profile)
+		if err != nil {
+			return nil, err
+		}
+		seeds = resolved
+	}
 	if len(seeds) == 0 {
 		return nil, errf("bootstrap servers or runtime endpoint is required")
 	}
+	return e.buildClientOptsWithSeeds(seeds, extraOpts...)
+}
+
+// buildClientOptsWithSeeds 以给定种子组装 kgo opts（connection/test 的 ZK
+// 模式与常规路径共用 TLS/SASL 组装）。
+func (e *connEntry) buildClientOptsWithSeeds(seeds []string, extraOpts ...kgo.Opt) ([]kgo.Opt, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(seeds...),
 		// 默认生产者参数对 admin/consume 无影响；关闭 kgo 默认的自动
@@ -169,10 +203,22 @@ func buildSASLOpt(profile Profile, secrets connSecrets) (kgo.Opt, error) {
 			User: profile.Username,
 			Pass: secrets.SASLPassword,
 		}.AsSha512Mechanism()), nil
+	case SASLMechanismGSSAPI:
+		// Kerberos/GSSAPI（Phase 2）：参数构造在此完成（keytab/krb5.conf
+		// 落盘读取），真实认证发生在 kgo 拨号时。
+		params, err := buildKerberosParams(profile)
+		if err != nil {
+			return nil, err
+		}
+		auth, err := buildKerberosSASLMechanism(params)
+		if err != nil {
+			return nil, err
+		}
+		return kgo.SASL(auth.AsMechanismWithClose()), nil
 	case "":
 		return nil, errf("saslMechanism is required for %s", profile.SecurityProtocol)
 	default:
-		return nil, errf("unsupported SASL mechanism %q (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)", profile.SASLMechanism)
+		return nil, errf("unsupported SASL mechanism %q (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI)", profile.SASLMechanism)
 	}
 }
 
@@ -284,6 +330,24 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 		TLSCACert:        params.ConfigString("tls_ca_cert"),
 		TLSClientCert:    params.ConfigString("tls_client_cert"),
 		ClientID:         params.ConfigString("client_id"),
+		// --- Phase 2（manifest 新字段，key/取值面见冻结契约） ---
+		ConnectionSource:     params.ConfigString("connection_source"),
+		ZKServers:            params.ConfigStringSlice("zk_servers"),
+		KerberosServiceName:  params.ConfigString("kerberos_service_name"),
+		KerberosRealm:        params.ConfigString("kerberos_realm"),
+		KerberosPrincipal:    params.ConfigString("kerberos_principal"),
+		KerberosKeytabPath:   params.ConfigString("kerberos_keytab_path"),
+		KerberosKrb5ConfPath: params.ConfigString("kerberos_krb5_conf_path"),
+		// --- Schema Registry 决策开关（none | confluent | aws_glue；空 = 旧
+		// 连接自动探测回退）+ Confluent SR 参数 ---
+		SchemaRegistry: params.ConfigString("schema_registry"),
+		SRURL:          params.ConfigString("sr_url"),
+		SRUsername:     params.ConfigString("sr_username"),
+		// --- Phase 3（AWS Glue Schema Registry，冻结契约 1） ---
+		GlueRegion:       params.ConfigString("glue_region"),
+		GlueRegistryName: params.ConfigString("glue_registry_name"),
+		GlueAuthMode:     params.ConfigString("glue_auth_mode"),
+		GlueAccessKeyID:  params.ConfigString("glue_access_key_id"),
 	}
 	profile.TLSInsecureSkipVerify = params.ConfigBool("tls_insecure_skip_verify")
 	// 只读门禁收敛：连接表单 read_only ∥ 宿主标准 read_only。
@@ -291,11 +355,18 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 	profile.AllowDelete = params.ConfigBool("allow_delete")
 
 	secrets := connSecrets{
-		SASLPassword: params.SecretString("sasl_password"),
-		TLSClientKey: params.SecretString("tls_client_key"),
+		SASLPassword:        params.SecretString("sasl_password"),
+		TLSClientKey:        params.SecretString("tls_client_key"),
+		SRPassword:          params.SecretString("sr_password"),
+		GlueSecretAccessKey: params.SecretString("glue_secret_access_key"),
+		GlueSessionToken:    params.SecretString("glue_session_token"),
 	}
 	profile = NormalizeProfile(profile)
 	if err := profile.Validate(); err != nil {
+		return Profile{}, connSecrets{}, err
+	}
+	// required_when 矩阵兜底校验（缺失 → *InvalidParamsError → -32602）。
+	if err := validateRequiredCombination(profile, secrets); err != nil {
 		return Profile{}, connSecrets{}, err
 	}
 	return profile, secrets, nil

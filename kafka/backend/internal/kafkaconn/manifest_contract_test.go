@@ -20,6 +20,10 @@ type manifestField struct {
 		Field string   `json:"field"`
 		OneOf []string `json:"one_of"`
 	} `json:"visible_when"`
+	RequiredWhen *struct {
+		Field string   `json:"field"`
+		OneOf []string `json:"one_of"`
+	} `json:"required_when"`
 	Options []struct {
 		Label string `json:"label"`
 		Value string `json:"value"`
@@ -125,6 +129,14 @@ func TestManifestBackendFieldContract(t *testing.T) {
 		"bootstrap_servers", "security_protocol", "sasl_mechanism", "sasl_username",
 		"tls_ca_cert", "tls_client_cert", "tls_insecure_skip_verify", "client_id",
 		"read_only", "allow_delete",
+		// Phase 2（IMPL_PLAN §0.2）：连接来源 / ZK / Kerberos / SR；
+		// Phase 3（AWS Glue SR）：region/registry/auth_mode/access_key_id。
+		// schema_registry 为 SR 决策开关（agent I：条件显隐 + 必填校验）。
+		"connection_source", "zk_servers", "schema_registry",
+		"kerberos_service_name", "kerberos_realm", "kerberos_principal",
+		"kerberos_keytab_path", "kerberos_krb5_conf_path",
+		"sr_url", "sr_username",
+		"glue_region", "glue_registry_name", "glue_auth_mode", "glue_access_key_id",
 	}
 	for _, key := range wantConfig {
 		field, ok := fields[key]
@@ -139,8 +151,10 @@ func TestManifestBackendFieldContract(t *testing.T) {
 		}
 	}
 
-	// 凭据红线：sasl_password / tls_client_key 必须 secret binding。
-	for _, key := range []string{"sasl_password", "tls_client_key"} {
+	// 凭据红线：sasl_password / tls_client_key / sr_password /
+	// glue_secret_access_key / glue_session_token 必须 secret binding。
+	for _, key := range []string{"sasl_password", "tls_client_key", "sr_password",
+		"glue_secret_access_key", "glue_session_token"} {
 		field, ok := fields[key]
 		if !ok {
 			t.Fatalf("manifest field %q missing", key)
@@ -170,9 +184,110 @@ func TestManifestBackendFieldContract(t *testing.T) {
 	for _, option := range fields["sasl_mechanism"].Options {
 		mechanismValues[option.Value] = true
 	}
-	for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"} {
+	for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "GSSAPI"} {
 		if !mechanismValues[want] {
 			t.Errorf("sasl_mechanism options missing %q", want)
+		}
+	}
+
+	// Phase 2：connection_source 取值面与 NormalizeConnectionSource 一致。
+	sourceValues := map[string]bool{}
+	for _, option := range fields["connection_source"].Options {
+		sourceValues[option.Value] = true
+	}
+	for _, want := range []string{"bootstrap", "zookeeper"} {
+		if !sourceValues[want] {
+			t.Errorf("connection_source options missing %q", want)
+		}
+	}
+	// schema_registry 取值面与 NormalizeSchemaRegistry / resolveSchemaProvider
+	// 一致；default none（开关未显式选择时不启用任何 SR 后端）。
+	registryValues := map[string]bool{}
+	for _, option := range fields["schema_registry"].Options {
+		registryValues[option.Value] = true
+	}
+	for _, want := range []string{"none", "confluent", "aws_glue"} {
+		if !registryValues[want] {
+			t.Errorf("schema_registry options missing %q", want)
+		}
+	}
+	if fields["schema_registry"].Default != "none" {
+		t.Errorf("schema_registry default = %v, want \"none\"", fields["schema_registry"].Default)
+	}
+	// Phase 3：glue_auth_mode 取值面与 newGlueClient 一致（default | static；
+	// tinyrdm 的 aws-profile 模式 sidecar 不提供）。
+	authModeValues := map[string]bool{}
+	for _, option := range fields["glue_auth_mode"].Options {
+		authModeValues[option.Value] = true
+	}
+	for _, want := range []string{"default", "static"} {
+		if !authModeValues[want] {
+			t.Errorf("glue_auth_mode options missing %q", want)
+		}
+	}
+	// --- 显隐/必填矩阵（agent I）：单字段条件，与宿主 pluginFieldConditions
+	// 语义（visible_when/required_when ∈ {field, one_of[]}）对齐 ---
+	// schema_registry=confluent → sr_* 三件可见，sr_url 必填。
+	for _, key := range []string{"sr_url", "sr_username", "sr_password"} {
+		cond := fields[key].VisibleWhen
+		if cond == nil || cond.Field != "schema_registry" || len(cond.OneOf) != 1 || cond.OneOf[0] != "confluent" {
+			t.Errorf("%s visible_when = %+v, want schema_registry one_of [confluent]", key, cond)
+		}
+	}
+	if rw := fields["sr_url"].RequiredWhen; rw == nil || rw.Field != "schema_registry" ||
+		len(rw.OneOf) != 1 || rw.OneOf[0] != "confluent" {
+		t.Errorf("sr_url required_when = %+v, want schema_registry one_of [confluent]", fields["sr_url"].RequiredWhen)
+	}
+	for _, key := range []string{"sr_username", "sr_password"} {
+		if fields[key].RequiredWhen != nil {
+			t.Errorf("%s required_when = %+v, want nil (可选)", key, fields[key].RequiredWhen)
+		}
+	}
+	// schema_registry=aws_glue → glue 三件可见，region/registry_name 必填。
+	for _, key := range []string{"glue_region", "glue_registry_name", "glue_auth_mode"} {
+		cond := fields[key].VisibleWhen
+		if cond == nil || cond.Field != "schema_registry" || len(cond.OneOf) != 1 || cond.OneOf[0] != "aws_glue" {
+			t.Errorf("%s visible_when = %+v, want schema_registry one_of [aws_glue]", key, cond)
+		}
+	}
+	for _, key := range []string{"glue_region", "glue_registry_name"} {
+		rw := fields[key].RequiredWhen
+		if rw == nil || rw.Field != "schema_registry" || len(rw.OneOf) != 1 || rw.OneOf[0] != "aws_glue" {
+			t.Errorf("%s required_when = %+v, want schema_registry one_of [aws_glue]", key, rw)
+		}
+	}
+	if fields["glue_auth_mode"].RequiredWhen != nil {
+		t.Errorf("glue_auth_mode required_when = %+v, want nil", fields["glue_auth_mode"].RequiredWhen)
+	}
+	// glue_auth_mode=static → AK/SK/token 可见，AK/SK 必填，token 可选。
+	for _, key := range []string{"glue_access_key_id", "glue_secret_access_key", "glue_session_token"} {
+		cond := fields[key].VisibleWhen
+		if cond == nil || cond.Field != "glue_auth_mode" || len(cond.OneOf) != 1 || cond.OneOf[0] != "static" {
+			t.Errorf("%s visible_when = %+v, want glue_auth_mode one_of [static]", key, cond)
+		}
+	}
+	for _, key := range []string{"glue_access_key_id", "glue_secret_access_key"} {
+		rw := fields[key].RequiredWhen
+		if rw == nil || rw.Field != "glue_auth_mode" || len(rw.OneOf) != 1 || rw.OneOf[0] != "static" {
+			t.Errorf("%s required_when = %+v, want glue_auth_mode one_of [static]", key, rw)
+		}
+	}
+	if fields["glue_session_token"].RequiredWhen != nil {
+		t.Errorf("glue_session_token required_when = %+v, want nil (可选)", fields["glue_session_token"].RequiredWhen)
+	}
+	// zk_servers 挂在 connection_source ∈ [zookeeper]。
+	zk := fields["zk_servers"]
+	if zk.VisibleWhen == nil || zk.VisibleWhen.Field != "connection_source" ||
+		len(zk.VisibleWhen.OneOf) != 1 || zk.VisibleWhen.OneOf[0] != "zookeeper" {
+		t.Errorf("zk_servers visible_when = %+v, want connection_source one_of [zookeeper]", zk.VisibleWhen)
+	}
+	// Kerberos 字段挂在 sasl_mechanism ∈ [GSSAPI]。
+	for _, key := range []string{"kerberos_service_name", "kerberos_realm", "kerberos_principal",
+		"kerberos_keytab_path", "kerberos_krb5_conf_path"} {
+		field := fields[key]
+		if field.VisibleWhen == nil || field.VisibleWhen.Field != "sasl_mechanism" ||
+			len(field.VisibleWhen.OneOf) != 1 || field.VisibleWhen.OneOf[0] != "GSSAPI" {
+			t.Errorf("%s visible_when = %+v, want sasl_mechanism one_of [GSSAPI]", key, field.VisibleWhen)
 		}
 	}
 
@@ -190,6 +305,43 @@ func TestManifestBackendFieldContract(t *testing.T) {
 			}
 		}
 	}
+	// required_when：SASL 账密挂在 sasl_mechanism ∈ PLAIN/SCRAM（GSSAPI 不需要账密）。
+	saslCredMechanisms := []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"}
+	for _, key := range []string{"sasl_username", "sasl_password"} {
+		rw := fields[key].RequiredWhen
+		if rw == nil || rw.Field != "sasl_mechanism" || !slicesEqual(rw.OneOf, saslCredMechanisms) {
+			t.Errorf("%s required_when = %+v, want sasl_mechanism one_of %v", key, rw, saslCredMechanisms)
+		}
+	}
+	if fields["sasl_mechanism"].RequiredWhen != nil {
+		t.Errorf("sasl_mechanism required_when = %+v, want nil", fields["sasl_mechanism"].RequiredWhen)
+	}
+	// required_when：GSSAPI 时 principal/keytab 必填（service_name 有默认值、
+	// realm/krb5 可选）。
+	for _, key := range []string{"kerberos_principal", "kerberos_keytab_path"} {
+		rw := fields[key].RequiredWhen
+		if rw == nil || rw.Field != "sasl_mechanism" || len(rw.OneOf) != 1 || rw.OneOf[0] != "GSSAPI" {
+			t.Errorf("%s required_when = %+v, want sasl_mechanism one_of [GSSAPI]", key, rw)
+		}
+	}
+	for _, key := range []string{"kerberos_service_name", "kerberos_realm", "kerberos_krb5_conf_path"} {
+		if fields[key].RequiredWhen != nil {
+			t.Errorf("%s required_when = %+v, want nil (可选)", key, fields[key].RequiredWhen)
+		}
+	}
+}
+
+// slicesEqual 是测试内 string 切片比较（顺序敏感）。
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestManifestSevenLanguages 七语 localizations 完整性（M0 硬性规则）。
@@ -208,7 +360,12 @@ func TestManifestSevenLanguages(t *testing.T) {
 		for _, key := range append([]string(nil),
 			"display_name", "bootstrap_servers", "security_protocol", "sasl_mechanism",
 			"sasl_username", "sasl_password", "tls_ca_cert", "tls_client_cert",
-			"tls_client_key", "tls_insecure_skip_verify", "client_id", "read_only", "allow_delete") {
+			"tls_client_key", "tls_insecure_skip_verify", "client_id", "read_only", "allow_delete",
+			"connection_source", "zk_servers", "kerberos_service_name", "kerberos_realm",
+			"kerberos_principal", "kerberos_keytab_path", "kerberos_krb5_conf_path",
+			"sr_url", "sr_username", "sr_password",
+			"glue_region", "glue_registry_name", "glue_auth_mode",
+			"glue_access_key_id", "glue_secret_access_key", "glue_session_token") {
 			entry, ok := connFields[key]
 			if !ok || entry.Label == "" {
 				t.Fatalf("localization %s/%s label missing", lang, key)
@@ -221,9 +378,42 @@ func TestManifestSevenLanguages(t *testing.T) {
 			}
 		}
 		mechanismLoc := connFields["sasl_mechanism"]
-		for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"} {
+		for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "GSSAPI"} {
 			if mechanismLoc.Options[want] == "" {
 				t.Fatalf("localization %s sasl_mechanism option %q label missing", lang, want)
+			}
+		}
+		sourceLoc := connFields["connection_source"]
+		for _, want := range []string{"bootstrap", "zookeeper"} {
+			if sourceLoc.Options[want] == "" {
+				t.Fatalf("localization %s connection_source option %q label missing", lang, want)
+			}
+		}
+		// Phase 2/3 新字段逐字段七语 label/description（schema_registry 开关
+		// 同样七语；agent I 条件显隐改造）。
+		for _, key := range []string{"connection_source", "zk_servers", "schema_registry",
+			"kerberos_service_name", "kerberos_realm", "kerberos_principal",
+			"kerberos_keytab_path", "kerberos_krb5_conf_path",
+			"sr_url", "sr_username", "sr_password",
+			"glue_region", "glue_registry_name", "glue_auth_mode",
+			"glue_access_key_id", "glue_secret_access_key", "glue_session_token"} {
+			entry, ok := connFields[key]
+			if !ok || entry.Label == "" || entry.Description == "" {
+				t.Fatalf("localization %s/%s label/description missing", lang, key)
+			}
+		}
+		// glue_auth_mode 选项七语。
+		authModeLoc := connFields["glue_auth_mode"]
+		for _, want := range []string{"default", "static"} {
+			if authModeLoc.Options[want] == "" {
+				t.Fatalf("localization %s glue_auth_mode option %q label missing", lang, want)
+			}
+		}
+		// schema_registry 选项七语（none/confluent/aws_glue）。
+		registryLoc := connFields["schema_registry"]
+		for _, want := range []string{"none", "confluent", "aws_glue"} {
+			if registryLoc.Options[want] == "" {
+				t.Fatalf("localization %s schema_registry option %q label missing", lang, want)
 			}
 		}
 	}

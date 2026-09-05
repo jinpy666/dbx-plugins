@@ -136,4 +136,10 @@ onMounted(() => {
   color: var(--muted-foreground);
   font-weight: 600;
 }
+/* P2 统一禁用态（该面板按钮均可用，规则兜底保持一致）。 */
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
 </style>

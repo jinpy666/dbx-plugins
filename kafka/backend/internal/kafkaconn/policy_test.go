@@ -9,11 +9,11 @@ import (
 
 func TestEnsureWriteAllowedMatrix(t *testing.T) {
 	cases := []struct {
-		name      string
-		readOnly  bool
-		allowDel  bool
-		writeOK   bool
-		deleteOK  bool
+		name     string
+		readOnly bool
+		allowDel bool
+		writeOK  bool
+		deleteOK bool
 	}{
 		{"read-write full", false, true, true, true},
 		{"read-write no delete", false, false, true, false},

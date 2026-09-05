@@ -19,15 +19,15 @@ import (
 
 // 流式会话常量（§5.5）。
 const (
-	StreamMaxSessions      = 20
-	StreamIdleTimeout      = 30 * time.Minute
-	StreamBatchFlush       = 200 * time.Millisecond
-	StreamBatchSize        = 50
-	StreamRingCapacity     = 10000
-	StreamMinRetryDelay    = 500 * time.Millisecond
-	StreamMaxRetryDelay    = 30 * time.Second
-	StreamBackoffFactor    = 2.0
-	StreamEvictScanEvery   = 5 * time.Minute
+	StreamMaxSessions    = 20
+	StreamIdleTimeout    = 30 * time.Minute
+	StreamBatchFlush     = 200 * time.Millisecond
+	StreamBatchSize      = 50
+	StreamRingCapacity   = 10000
+	StreamMinRetryDelay  = 500 * time.Millisecond
+	StreamMaxRetryDelay  = 30 * time.Second
+	StreamBackoffFactor  = 2.0
+	StreamEvictScanEvery = 5 * time.Minute
 )
 
 // StreamEmitter 是流式事件出口（main 注入 SDK emitter 适配器）。
@@ -49,13 +49,13 @@ type StreamMessageBatch struct {
 
 // StreamStatus 是 kafka/stream/status 返回（§5.2）。
 type StreamStatus struct {
-	SessionID      string          `json:"sessionId"`
-	Topic          string          `json:"topic"`
-	Paused         bool            `json:"paused"`
-	TotalScanned   int64           `json:"totalScanned"`
-	TotalMatched   int64           `json:"totalMatched"`
-	BufferSize     int             `json:"bufferSize"`
-	BufferCapacity int             `json:"bufferCapacity"`
+	SessionID        string          `json:"sessionId"`
+	Topic            string          `json:"topic"`
+	Paused           bool            `json:"paused"`
+	TotalScanned     int64           `json:"totalScanned"`
+	TotalMatched     int64           `json:"totalMatched"`
+	BufferSize       int             `json:"bufferSize"`
+	BufferCapacity   int             `json:"bufferCapacity"`
 	PartitionOffsets map[int32]int64 `json:"partitionOffsets,omitempty"`
 }
 
@@ -131,12 +131,14 @@ type streamSession struct {
 	connectionID string
 	topic        string
 
-	client     *kgo.Client
+	client      *kgo.Client
 	closeClient func()
 
 	req    ConsumeParams
 	ctx    context.Context
 	cancel context.CancelFunc
+	// schemaClient 非 nil 时按 req.Schema 挂载 SR 解码（StartStream 时构建）。
+	schemaClient *schemaRegistryClient
 
 	mu                 sync.Mutex
 	ring               *ringBuffer
@@ -149,10 +151,10 @@ type streamSession struct {
 
 // StreamRegistry 管理全部流式会话。
 type StreamRegistry struct {
-	mu      sync.Mutex
-	next    int64
+	mu       sync.Mutex
+	next     int64
 	sessions map[string]*streamSession
-	Emitter StreamEmitter // nil 安全
+	Emitter  StreamEmitter // nil 安全
 }
 
 // NewStreamRegistry 创建会话注册表。
@@ -212,6 +214,18 @@ func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	// schema 挂载：SR 客户端在会话创建期构建一次（失败即 start 失败）。
+	// wire format 解码仅支持 Confluent：provider=glue → 业务错（Phase 3 门禁）。
+	var schemaClient *schemaRegistryClient
+	if params.Schema != nil {
+		if err := s.schemaMountSupported(params.ConnectionID, params.Schema.Registry, "consume"); err != nil {
+			return nil, err
+		}
+		schemaClient, err = s.confluentClientFor(params.ConnectionID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	client, closeClient, err := s.consumeClient(params.ConnectionID, consumeOpts...)
 	if err != nil {
 		return nil, err
@@ -228,6 +242,7 @@ func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 		req:                params,
 		ctx:                sessionCtx,
 		cancel:             cancel,
+		schemaClient:       schemaClient,
 		ring:               newRingBuffer(StreamRingCapacity),
 		partitionOffsets:   map[int32]int64{},
 		lastActivityUnixMs: now,
@@ -432,6 +447,11 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 		r.emitError(session, err.Error())
 		return
 	}
+	// schema 挂载（Phase 2）：per-session 解码器（SR 客户端 + 元数据缓存）。
+	var schemaDec *schemaDecoder
+	if session.req.Schema != nil && session.schemaClient != nil {
+		schemaDec = newSchemaDecoder(session.schemaClient, session.req.Schema)
+	}
 
 	batch := make([]ConsumedMessage, 0, StreamBatchSize)
 	ticker := time.NewTicker(StreamBatchFlush)
@@ -450,8 +470,13 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 		default:
 		}
 
-		fetches := session.client.PollRecords(session.ctx, StreamBatchSize)
-		if fetchErr := fetches.Err(); fetchErr != nil {
+		// poll 以 200ms 为上限：PollRecords 无记录时会一直阻塞在 ctx 上，
+		// 若直接用 session.ctx，ticker 分支永远得不到调度，batch 无法按时
+		// flush（Phase 1 遗留：ring/事件只在"消息持续流动"时才推送）。
+		pollCtx, pollCancel := context.WithTimeout(session.ctx, StreamBatchFlush)
+		fetches := session.client.PollRecords(pollCtx, StreamBatchSize)
+		pollCancel()
+		if fetchErr := fetches.Err(); fetchErr != nil && !isDeadline(fetchErr) {
 			r.emitError(session, fetchErr.Error())
 			select {
 			case <-session.ctx.Done():
@@ -481,12 +506,28 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 			decoded := false
 			decodeErr := ""
 			valueDecoded := false
+			var recordSchemaInfo *schemaValueInfo
 			ensureValueDecoded := func() {
 				if valueDecoded {
 					return
 				}
 				valueDecoded = true
 				value, decoded, decodeErr = decodeConsumeValue(record.Value, decodeMethod, decompressMethod)
+				if schemaDec != nil {
+					out, info, schemaErr := schemaDec.decode(session.ctx, value)
+					if schemaErr != nil {
+						if decodeErr == "" {
+							decodeErr = "schema: " + schemaErr.Error()
+						} else {
+							decodeErr = decodeErr + "; schema: " + schemaErr.Error()
+						}
+						return
+					}
+					value = out
+					decoded = true
+					info.Subject = firstNonEmpty(info.Subject, trimSpace(session.req.Schema.Subject))
+					recordSchemaInfo = &info
+				}
 			}
 			if fieldFiltersNeedValue(session.req.FieldFilters) {
 				ensureValueDecoded()
@@ -499,7 +540,7 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 			session.mu.Unlock()
 
 			ensureValueDecoded()
-			batch = append(batch, messageFromRecord(record, value, decoded, decodeErr, false))
+			batch = append(batch, messageFromRecordWithSchema(record, value, decoded, decodeErr, false, recordSchemaInfo))
 			if len(batch) >= StreamBatchSize {
 				r.flush(session, &batch)
 			}

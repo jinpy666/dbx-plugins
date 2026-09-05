@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Build the DBX web docker image with the workspace plugins baked in.
 #
+# The bundled-plugin list (ssh/ldap/files/kafka) lives in deploy/web/Dockerfile
+# (Stage 2/3 COPY + packaging loops + plugins.tsv); this script passes the
+# whole workspace as build context and needs no per-plugin changes.
+#
 # Two build contexts are used:
 #   .                 -> this workspace (plugins + deploy/web)
 #   host (named)      -> host/ submodule checkout, trimmed copy prepared here

@@ -119,8 +119,9 @@ func normalizePartitionUpdates(partitions map[string]int32) (map[int][]string, e
 	return result, nil
 }
 
-// parseOffsetTime 解析 offsetTime：earliest/latest/unix ms/RFC3339
-// （tinyrdm parseKafkaOffsetTime :2076 的契约子集）。
+// parseOffsetTime 解析 offsetTime（Phase 2 全策略；常量对齐 Kafka ListOffsets
+// timestamp 语义：-1 latest / -2 earliest / -3 max timestamp / -4 log start，
+// 实现走 kadm 对应方法）。
 func parseOffsetTime(value string) (mode string, millis int64, err error) {
 	raw := trimSpace(value)
 	normalized := strings.ToLower(raw)
@@ -129,14 +130,22 @@ func parseOffsetTime(value string) (mode string, millis int64, err error) {
 		return "latest", 0, nil
 	case "earliest", "start", "beginning":
 		return "earliest", 0, nil
+	case "max-timestamp", "max_timestamp", "maxtimestamp", "max":
+		return "max-timestamp", 0, nil
+	case "log-start", "log_start", "logstart":
+		return "log-start", 0, nil
 	}
 	if parsed, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+		// 负数整数与策略名冲突（-1/-2/-3/-4 是协议保留值），拒绝。
+		if parsed < 0 {
+			return "", 0, errf("offsetTime must be earliest, latest, max-timestamp, log-start, unix milliseconds, or RFC3339")
+		}
 		return "timestamp", parsed, nil
 	}
 	if ts, parseErr := time.Parse(time.RFC3339, raw); parseErr == nil {
 		return "timestamp", ts.UnixMilli(), nil
 	}
-	return "", 0, errf("offsetTime must be earliest, latest, unix milliseconds, or RFC3339")
+	return "", 0, errf("offsetTime must be earliest, latest, max-timestamp, log-start, unix milliseconds, or RFC3339")
 }
 
 // mutationResultsTopic create/update 类响应映射（resource=topic）。
@@ -229,10 +238,11 @@ func aclPatternType(value string) (kmsg.ACLResourcePatternType, error) {
 	}
 }
 
-// aclOperationType 归一化 ACL operation。
+// aclOperationType 归一化 ACL operation（list/delete filter 空 = any 任意；
+// create 路径由 aclBuilderFromACL 拒绝 any）。
 func aclOperationType(value string) (kmsg.ACLOperation, error) {
 	switch strings.ToLower(trimSpace(value)) {
-	case "any":
+	case "", "any":
 		return kmsg.ACLOperationAny, nil
 	case "all":
 		return kmsg.ACLOperationAll, nil

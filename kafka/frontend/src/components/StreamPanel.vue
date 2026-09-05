@@ -5,8 +5,9 @@
 // 自动滚动在用户上滚时暂停，回到底部恢复。
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Pause, Play, Square } from "@lucide/vue";
-import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type StreamStatus } from "../lib/api";
+import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaSubject, type StreamStatus } from "../lib/api";
 import { appendStreamRows, formatTimestamp, previewText } from "../lib/kafkaModel";
+import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
 const MAX_ROWS = 1000;
@@ -14,6 +15,8 @@ const MAX_ROWS = 1000;
 const props = defineProps<{
   topic: string;
   canWrite: boolean;
+  /** 连接 SR provider（Phase P）：glue 时 schema 挂载区禁用并提示（管理面 only）。 */
+  srProvider?: string;
 }>();
 
 const emit = defineEmits<{
@@ -35,6 +38,54 @@ const matchMode = ref<MatchMode>("contains");
 const limit = ref("100");
 const scrollBox = ref<HTMLElement>();
 
+// schema mount（Phase 2：流式消费同样支持 SR 解码挂载，version 空 = latest）
+const schemaEnabled = ref(false);
+const schemaSubjects = ref<SchemaSubject[]>([]);
+const schemaSubject = ref("");
+const schemaVersionText = ref("");
+const schemaFormat = ref<"avro" | "json">("avro");
+// Phase P：Glue 仅管理面（消息编解码仅 Confluent wire format，后端 -32000 拒绝），
+// 前端同步禁用挂载区并提示（保留 discoverability，不隐藏）。
+const glueSchemaDisabled = computed(() => props.srProvider === "glue");
+watch(glueSchemaDisabled, (disabled) => {
+  if (disabled) schemaEnabled.value = false;
+});
+const schemaVersions = computed(() => {
+  const subject = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
+  const latest = subject?.latestVersion ?? 0;
+  return Array.from({ length: Math.max(latest, 0) }, (_unused, index) => latest - index);
+});
+
+async function loadSchemaSubjects() {
+  try {
+    const response = await kafkaApi.schemaSubjectsList();
+    schemaSubjects.value = response.subjects ?? [];
+  } catch {
+    schemaSubjects.value = [];
+  }
+}
+
+watch(schemaEnabled, (enabled) => {
+  if (enabled && schemaSubjects.value.length === 0) void loadSchemaSubjects();
+});
+
+watch(schemaSubject, () => {
+  schemaVersionText.value = "";
+  const found = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
+  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as "avro" | "json") ?? "avro";
+});
+
+function buildSchemaAttach(): SchemaAttach | undefined {
+  if (glueSchemaDisabled.value) return undefined;
+  if (!schemaEnabled.value || !schemaSubject.value) return undefined;
+  const version = Number.parseInt(schemaVersionText.value, 10);
+  return {
+    subject: schemaSubject.value,
+    ...(Number.isFinite(version) && version > 0 ? { version } : {}),
+    format: schemaFormat.value,
+  };
+}
+
 // -- lifecycle ------------------------------------------------------------------
 
 async function start() {
@@ -50,6 +101,7 @@ async function start() {
       offsetStrategy: "latest" as OffsetStrategy,
       limit: positiveInt(limit.value, 100),
       ...(filterText.value.trim() ? { filter: filterText.value.trim(), matchMode: matchMode.value } : {}),
+      ...(buildSchemaAttach() ? { schema: buildSchemaAttach() } : {}),
     });
     sessionId.value = response.sessionId;
     rows.value = [];
@@ -108,10 +160,12 @@ function applyStatus(status: StreamStatus) {
 // -- event ingestion（App.vue handleEvent 转发）-----------------------------------
 
 function pushEvent(event: KafkaStreamMessagesEvent | KafkaStreamErrorEvent) {
-  if ("error" in event) {
-    if (event.sessionId === sessionId.value) emit("error", t("stream.statusError", { error: String(event.error) }));
-    return;
-  }
+    // 事件内嵌错误先经 friendlyKafkaError 归一（与 App 错误横幅同源规则），
+    // 未映射的原文兜底保留。
+    if ("error" in event) {
+      if (event.sessionId === sessionId.value) emit("error", t("stream.statusError", { error: friendlyKafkaError(String(event.error)) }));
+      return;
+    }
   if (event.sessionId !== sessionId.value) return;
   applyStatus({
     paused: event.paused,
@@ -191,8 +245,8 @@ onBeforeUnmount(() => {
   window.clearInterval(statusTimer);
 });
 
-function positiveInt(value: string, fallback: number): number {
-  const parsed = Number.parseInt(value.trim(), 10);
+function positiveInt(value: unknown, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
@@ -223,6 +277,33 @@ defineExpose({ pushEvent });
         <span>{{ t("messages.limit") }}</span>
         <input v-model="limit" type="number" min="1" />
       </label>
+      <template v-if="schemaEnabled">
+        <label class="field">
+          <span>{{ t("messages.schemaSubject") }}</span>
+          <select v-model="schemaSubject" :disabled="glueSchemaDisabled">
+            <option value="">{{ t("acls.anyValue") }}</option>
+            <option v-for="subject in schemaSubjects" :key="subject.subject" :value="subject.subject">{{ subject.subject }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>{{ t("messages.schemaVersion") }}</span>
+          <select v-model="schemaVersionText" :disabled="glueSchemaDisabled">
+            <option value="">{{ t("messages.schemaLatest") }}</option>
+            <option v-for="version in schemaVersions" :key="version" :value="String(version)">{{ version }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>{{ t("schemas.colFormat") }}</span>
+          <select v-model="schemaFormat" :disabled="glueSchemaDisabled">
+            <option value="avro">avro</option>
+            <option value="json">json</option>
+          </select>
+        </label>
+      </template>
+      <label class="checkbox">
+        <input v-model="schemaEnabled" type="checkbox" :disabled="glueSchemaDisabled" :title="glueSchemaDisabled ? t('messages.schemaGlueDisabled') : undefined" />
+        <span>{{ t("messages.schemaMount") }}</span>
+      </label>
       <button v-if="!sessionActive" class="primary-button compact" type="button" :disabled="starting || !topic" @click="start">
         <Play aria-hidden="true" />{{ t("stream.start") }}
       </button>
@@ -242,6 +323,7 @@ defineExpose({ pushEvent });
       </label>
     </div>
 
+    <p v-if="glueSchemaDisabled" class="hint" style="padding: 0 8px">{{ t("messages.schemaGlueDisabled") }}</p>
     <p class="hint" style="padding: 4px 8px 0">{{ t("stream.sessionHint") }}</p>
 
     <div class="stream-meta">
@@ -252,8 +334,9 @@ defineExpose({ pushEvent });
       <span>{{ t("stream.buffer", { count: bufferSize }) }}</span>
       <span v-if="droppedRows > 0" class="badge badge-warn">{{ t("stream.dropped", { count: droppedRows }) }}</span>
       <span class="tab-spacer" />
-      <button class="qb-add" type="button" :disabled="!sessionActive" @click="loadOlder">{{ t("stream.loadOlder") }}</button>
-      <button class="qb-add" type="button" :disabled="!sessionActive" @click="loadNewer">{{ t("stream.loadNewer") }}</button>
+      <!-- P2-4：分页按钮 ≥32px 热区（原 36×20px 易脱靶），禁用态带说明 title -->
+      <button class="qb-add stream-pager" type="button" :disabled="!sessionActive" :title="t('stream.loadOlder')" @click="loadOlder">{{ t("stream.loadOlder") }}</button>
+      <button class="qb-add stream-pager" type="button" :disabled="!sessionActive" :title="t('stream.loadNewer')" @click="loadNewer">{{ t("stream.loadNewer") }}</button>
     </div>
 
     <div class="stream-log">
@@ -277,3 +360,24 @@ defineExpose({ pushEvent });
     </div>
   </section>
 </template>
+
+<style scoped>
+/* P2-4：环形缓冲「更早/更新」按钮 ≥32px 热区（原 .qb-add 20px 高易脱靶）。 */
+.stream-pager {
+  min-height: 32px;
+  padding: 4px 14px;
+  font-size: 11px;
+}
+/* P2 统一禁用态：cursor + Glue 下 schema 挂载复选框可见禁用（dark/light 随令牌）。 */
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+.checkbox input[type="checkbox"]:disabled {
+  opacity: 0.45;
+}
+.checkbox input[type="checkbox"]:disabled + span {
+  opacity: 0.55;
+}
+</style>

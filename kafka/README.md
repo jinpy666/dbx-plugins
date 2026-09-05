@@ -9,9 +9,14 @@ JSON/CSV 导出。能力重写自 tiny-rdm 的 Kafka 实现（取其消费语义
 
 ## 状态
 
-**Phase 1 实施中**（2026-09-05 启动，三路并行：backend / frontend /
-scaffold）。本期不做：Schema Registry、Kerberos、ZooKeeper 发现
-（见 IMPL_PLAN §0.2 Phase 2 登记）。
+**商用级可用**（2026-09-05 单日完成 Phase 1 + Phase 2，三路 agent 并行 +
+主线收口）：45 个 sidecar 方法、Schema Registry（Confluent 兼容含 Redpanda）、
+Kerberos/GSSAPI、ZooKeeper 发现、ag-grid 表格过滤检索、Schemas/Monitor 面板、
+七语 440 键。验证：backend 单测 98 例、前端 49 例、docker 双容器 smoke
+S1-S11（10 PASS / 1 合法 SKIP）、`.dbxp` 打包成功。AWS Glue SR 管理面同日第三轮落地
+（tinyrdm 双 SR 后端全覆盖；消息编解码按 tinyrdm 口径仅 Confluent wire format）。
+Phase 3 登记：OAUTHBEARER、PROTOBUF 载荷、幂等/事务生产参数
+（见 IMPL_PLAN §0.2 / §11.5）。
 
 ## 技术形态
 
@@ -51,7 +56,32 @@ python3 scripts/smoke_container.py          # 加 --keep 保留容器调试
 python3 scripts/smoke_test.py
 ```
 
-环境变量：`DBX_PLUGIN_SIDECAR`（指定 sidecar 二进制，默认
+## 本地快速连接（可测试环境）
+
+用一个本地 PLAINTEXT 集群立刻测试插件连接（`scripts/dev-cluster.sh`，
+包装 `docker-compose.kafka-test.yml`）：
+
+```bash
+# 1. 起集群（等真实 metadata 就绪 + 幂等建种子 topic + 打印连接参数，
+#    容器保持运行）
+bash scripts/dev-cluster.sh up
+
+# 2. 宿主连接表单填：Bootstrap servers = 127.0.0.1:9092，
+#    Security protocol = PLAINTEXT（无 SASL/TLS，无凭据）。
+#    sidecar 经宿主拨号，宿主在本机故直连可用，无需隧道/代理。
+
+# 3. 测完回收（容器 + 卷）
+bash scripts/dev-cluster.sh down
+```
+
+`scripts/dev-cluster.sh status` 查看容器/端口状态与真实 metadata 探活；
+`seed` 幂等重建种子 topic。种子 topic：`dbx-smoke-events`、
+`dbx-smoke-binary`、`dbx-smoke-filter`、`dbx-smoke-stream`、
+`dbx-smoke-export`。可选 Schema Registry（smoke S11）：`http://127.0.0.1:19081`。
+
+## 环境变量
+
+`DBX_PLUGIN_SIDECAR`（指定 sidecar 二进制，默认
 `backend/bin/dbx-plugin-kafka`）、`KAFKA_TEST_HOST/PORT`（默认
 127.0.0.1:9092）、`KAFKA_TEST_REQUIRE=1`（CI 中把环境类 SKIP 转为 FAIL）。
 测试容器为 PLAINTEXT，无凭据。

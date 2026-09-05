@@ -71,6 +71,7 @@ class SidecarClient:
         self.next_id = 1
         self.events: list[dict] = []
         self._pending: dict[int, dict] = {}
+        self.stderr_tail = None  # deque[str], populated by start()
 
     @classmethod
     def start(cls, binary: str | None = None, data_dir: str | None = None, timeout: float = 20.0) -> "SidecarClient":
@@ -87,7 +88,23 @@ class SidecarClient:
             stderr=subprocess.PIPE,
             env=env,
         )
-        return cls(process, timeout)
+        client = cls(process, timeout)
+        # Drain stderr in the background: with stderr as a pipe nobody reading
+        # it would eventually block the sidecar once the OS pipe buffer fills;
+        # keep a small tail for diagnostics on close().
+        import collections
+        import threading
+
+        tail: collections.deque = collections.deque(maxlen=200)
+
+        def _drain_stderr() -> None:
+            assert process.stderr
+            for raw in iter(process.stderr.readline, b""):
+                tail.append(raw.decode(errors="replace").rstrip())
+
+        threading.Thread(target=_drain_stderr, daemon=True, name="sidecar-stderr").start()
+        client.stderr_tail = tail
+        return client
 
     # -- low-level NDJSON ----------------------------------------------------
 
@@ -97,13 +114,38 @@ class SidecarClient:
         self.process.stdin.flush()
 
     def _read_line(self, deadline: float) -> dict | None:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise SidecarError("timeout waiting for sidecar line")
-        line = self.process.stdout.readline()  # type: ignore[union-attr]
-        if not line:
-            return None
-        text = line.decode(errors="replace").strip()
+        """Read one protocol line, bounded by `deadline`.
+
+        select() on the raw fd instead of a plain readline(): readline() has
+        no timeout, so an idle stream session (no lines at all) would block
+        this reader forever even past the deadline.
+        """
+        import os as _os
+        import selectors as _selectors
+
+        buffer: bytes = getattr(self, "_read_buf", b"")
+        while b"\n" not in buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._read_buf = buffer
+                raise SidecarError("timeout waiting for sidecar line")
+            selector = _selectors.DefaultSelector()
+            selector.register(self.process.stdout.raw, _selectors.EVENT_READ)  # type: ignore[union-attr]
+            try:
+                ready = selector.select(timeout=remaining)
+            finally:
+                selector.close()
+            if not ready:
+                self._read_buf = buffer
+                raise SidecarError("timeout waiting for sidecar line")
+            chunk = _os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
+                raise SidecarError("sidecar closed stdout")
+            buffer += chunk
+        self._read_buf = b""
+        raw_line, _, rest = buffer.partition(b"\n")
+        self._read_buf = rest
+        text = raw_line.decode(errors="replace").strip()
         if not text:
             return None
         try:

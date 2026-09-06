@@ -21,4 +21,19 @@ describe("friendlyKafkaError", () => {
     const raw = "totally unknown broker quirk";
     expect(friendlyKafkaError(raw)).toBe(raw);
   });
+
+  // Phase 3 F2（§12.7）：MSK/OAUTHBEARER 失败类（无凭据/region 缺失）先于通用
+  // SASL 认证类给出针对性可行动文案。
+  it("maps msk/oauth failure classes with actionable text (Phase 3 F2)", () => {
+    const credential = friendlyKafkaError("msk iam: unable to load AWS credentials (no IMDS)");
+    expect(credential).not.toContain("unable to load AWS credentials");
+    expect(credential).toBe(friendlyKafkaError("OAUTHBEARER token source msk_iam: no credential found"));
+    const region = friendlyKafkaError("msk_region is required for MSK IAM");
+    expect(region).not.toBe("msk_region is required for MSK IAM");
+    expect(region).toBe(friendlyKafkaError("region missing for aws msk"));
+    // region 类优先命中（错误串同时含 region 与 credential 字样时不落错类）。
+    expect(region).toBe(friendlyKafkaError("msk_region is required"));
+    // 普通 SASL 认证失败不被 msk 规则误吞。
+    expect(friendlyKafkaError("SASL authentication failed")).not.toBe(credential);
+  });
 });

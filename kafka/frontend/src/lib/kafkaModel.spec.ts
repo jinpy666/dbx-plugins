@@ -532,3 +532,295 @@ describe("modal keydown decision (Esc close + Tab focus trap)", () => {
     expect(decideModalKeydown("Tab", true, 4, 99)).toEqual({ kind: "focus", index: 3 });
   });
 });
+
+// == Phase 3 H 路：F4 Flow 生成器固定向量 / 占位符展开 / F5 树模型 /
+//    F2 表单联动 / F6-4 分区校验（新增，均纯函数） ==============================
+
+import {
+  buildSchemaTree,
+  clampFlowCount,
+  clampFlowIntervalMs,
+  expandTemplate,
+  filterMessagesByKeyword,
+  formatTimestamp,
+  generateAvroRandom,
+  matchingSchemaSubjects,
+  mulberry32,
+  oauthFormVisibility,
+  oauthRequiresSaslSsl,
+  partitionInputIssue,
+  timestampFilterTextComparator,
+  timestampIso,
+} from "./kafkaModel";
+
+describe("mulberry32 (F4 fixed-seed RNG)", () => {
+  // 固定向量（照 zstd 预生成向量范式：实现 + 种子 42 的序列锁定，防算法漂移）。
+  it("produces the locked sequence for seed 42", () => {
+    const rng = mulberry32(42);
+    const sequence = [rng(), rng(), rng(), rng(), rng()];
+    expect(sequence).toEqual([
+      0.6011037519201636,
+      0.44829055899754167,
+      0.8524657934904099,
+      0.6697340414393693,
+      0.17481389874592423,
+    ]);
+  });
+
+  it("is deterministic per seed and stays in [0,1)", () => {
+    const left = mulberry32(7);
+    const right = mulberry32(7);
+    for (let index = 0; index < 32; index += 1) {
+      const a = left();
+      const b = right();
+      expect(a).toBe(b);
+      expect(a).toBeGreaterThanOrEqual(0);
+      expect(a).toBeLessThan(1);
+    }
+    expect(mulberry32(8)()).not.toBe(mulberry32(7)());
+  });
+});
+
+const ORDER_AVRO_SCHEMA = {
+  type: "record",
+  name: "Order",
+  fields: [
+    { name: "orderId", type: "string" },
+    { name: "amount", type: "double" },
+    { name: "quantity", type: "int" },
+    { name: "paid", type: "boolean" },
+    { name: "status", type: { type: "enum", name: "Status", symbols: ["NEW", "PAID", "CANCELLED"] } },
+    { name: "tags", type: { type: "array", items: "string" } },
+    { name: "meta", type: { type: "map", values: "string" } },
+    { name: "ref", type: ["null", "string"], default: null },
+    { name: "day", type: { type: "int", logicalType: "date" } },
+    { name: "ts", type: { type: "long", logicalType: "timestamp-millis" } },
+    { name: "uid", type: { type: "string", logicalType: "uuid" } },
+  ],
+};
+
+describe("generateAvroRandom (F4 schema_random)", () => {
+  // 固定向量：seed=7 + now=1700000000000 的完整生成值锁定。
+  it("matches the locked vector for the Order schema (seed 7)", () => {
+    const out = generateAvroRandom(JSON.stringify(ORDER_AVRO_SCHEMA), mulberry32(7), 1_700_000_000_000);
+    expect(out).toEqual({
+      value:
+        '{"orderId":"alpha-155","amount":97.69,"quantity":699,"paid":false,"status":"PAID","tags":["beta-597","delta-332"],"meta":{"k0":"delta-566"},"ref":"alpha-431","day":19675,"ts":1700000000000,"uid":"484f3e32-248c-41e8-9af9-ed025601c567"}',
+    });
+  });
+
+  it("covers record/array/map/union/enum/fixed and logical types", () => {
+    const schema = {
+      type: "record",
+      name: "All",
+      fields: [
+        { name: "unionPicksFirstNonNull", type: ["null", "string", "int"] },
+        { name: "allNullUnion", type: ["null"] },
+        { name: "fixed16", type: { type: "fixed", size: 16, name: "H16" } },
+        { name: "dateDays", type: { type: "int", logicalType: "date" } },
+        { name: "tsMillis", type: { type: "long", logicalType: "timestamp-millis" } },
+        { name: "uid", type: { type: "string", logicalType: "uuid" } },
+        { name: "amount", type: { type: "bytes", logicalType: "decimal", precision: 8, scale: 2 } },
+      ],
+    };
+    const out = generateAvroRandom(JSON.stringify(schema), mulberry32(3), 1_700_000_000_000);
+    expect("error" in out).toBe(false);
+    const value = JSON.parse((out as { value: string }).value) as Record<string, unknown>;
+    // union 取非 null 首支（string）；全 null union 只能是 null。
+    expect(typeof value.unionPicksFirstNonNull).toBe("string");
+    expect(value.allNullUnion).toBeNull();
+    // fixed(size 16) → 16 位字符串；date → days 数；timestamp-millis → nowMs。
+    expect(String(value.fixed16)).toHaveLength(16);
+    expect(value.dateDays).toBe(19675);
+    expect(value.tsMillis).toBe(1_700_000_000_000);
+    // uuid 形状；decimal 为数值（goavro 侧编码支持度由后端契约管辖）。
+    expect(String(value.uid)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(typeof value.amount).toBe("number");
+  });
+
+  it("reports deterministic errors for invalid schema text", () => {
+    expect("error" in generateAvroRandom("not json", mulberry32(1))).toBe(true);
+    expect("error" in generateAvroRandom("[]", mulberry32(1))).toBe(true);
+    expect(generateAvroRandom("{}", mulberry32(1))).toEqual({ error: 'avro schema is missing "type"' });
+    // 未知类型在首次生成时抛错（不产出畸形数据）。
+    const out = generateAvroRandom('{"type":"warp"}', mulberry32(1));
+    expect("error" in out && out.error).toContain("warp");
+  });
+});
+
+describe("expandTemplate (F4 template placeholders)", () => {
+  // 固定向量：seed=11 + now=1700000000000。
+  it("matches the locked vector for all placeholder kinds", () => {
+    const out = expandTemplate(
+      '{"id":"{uuid}","n":{int:1,9},"f":{float:0,100},"k":"{pick:gold|silver}","now":"{now}"}',
+      mulberry32(11),
+      1_700_000_000_000,
+    );
+    expect(out).toBe('{"id":"8899d818-977d-46aa-2246-692996dcc594","n":1,"f":74.09,"k":"silver","now":"2023-11-14T22:13:20.000Z"}');
+  });
+
+  it("leaves unknown placeholders and edge cases untouched", () => {
+    const rng = mulberry32(1);
+    expect(expandTemplate('{"keep":"{nope}","multi":"{int:5,5}","empty":"{pick:}","now":"{now}"}', rng, 0)).toBe(
+      '{"keep":"{nope}","multi":"5","empty":"{pick:}","now":"1970-01-01T00:00:00.000Z"}',
+    );
+    expect(expandTemplate("plain", rng, 0)).toBe("plain");
+    // int 边界：min=max 时恒等。
+    for (let index = 0; index < 8; index += 1) {
+      expect(expandTemplate("{int:3,3}", rng, 0)).toBe("3");
+    }
+  });
+});
+
+describe("matchingSchemaSubjects (F4 subject discovery)", () => {
+  it("prefix-matches <topic>-value first and <topic>-key second", () => {
+    const subjects = ["order-events-value", "order-events-key", "order-events-v2-value", "other-value"];
+    expect(matchingSchemaSubjects("order-events", subjects)).toEqual({
+      key: "order-events-key",
+      value: "order-events-value",
+    });
+    expect(matchingSchemaSubjects("order-events", ["order-events-key"])).toEqual({ key: "order-events-key" });
+    expect(matchingSchemaSubjects("missing", subjects)).toEqual({});
+    expect(matchingSchemaSubjects("", subjects)).toEqual({});
+  });
+});
+
+describe("flow parameter clamps (F4)", () => {
+  it("clamps countPerSend into 1..100 with fallback 1", () => {
+    expect(clampFlowCount("1")).toBe(1);
+    expect(clampFlowCount(100)).toBe(100);
+    expect(clampFlowCount(0)).toBe(1);
+    expect(clampFlowCount(101)).toBe(100);
+    expect(clampFlowCount("abc")).toBe(1);
+    expect(clampFlowCount(undefined)).toBe(1);
+    expect(clampFlowCount(-5)).toBe(1);
+  });
+
+  it("clamps intervalMs into 250..10000 with fallback 1000", () => {
+    expect(clampFlowIntervalMs("1000")).toBe(1000);
+    expect(clampFlowIntervalMs(250)).toBe(250);
+    expect(clampFlowIntervalMs(249)).toBe(250);
+    expect(clampFlowIntervalMs(10001)).toBe(10000);
+    expect(clampFlowIntervalMs("")).toBe(1000);
+  });
+});
+
+describe("oauth form visibility (F2 frozen field chain)", () => {
+  it("reveals oauth_token_source only for SASL protocol + OAUTHBEARER", () => {
+    expect(oauthFormVisibility("SASL_SSL", "OAUTHBEARER", "")).toEqual({ oauthTokenSource: true, mskFields: false, staticToken: false });
+    expect(oauthFormVisibility("PLAINTEXT", "OAUTHBEARER", "msk_iam")).toEqual({ oauthTokenSource: false, mskFields: false, staticToken: false });
+    expect(oauthFormVisibility("SASL_SSL", "SCRAM-SHA-512", "msk_iam")).toEqual({ oauthTokenSource: false, mskFields: false, staticToken: false });
+  });
+
+  it("branches msk_* group vs oauth_static_token by token source", () => {
+    expect(oauthFormVisibility("SASL_SSL", "OAUTHBEARER", "msk_iam")).toEqual({ oauthTokenSource: true, mskFields: true, staticToken: false });
+    expect(oauthFormVisibility("SASL_PLAINTEXT", "OAUTHBEARER", "static_token")).toEqual({ oauthTokenSource: true, mskFields: false, staticToken: true });
+    // 未选/非法来源：两组都不可见，仅 token source 选择器可见。
+    expect(oauthFormVisibility("SASL_SSL", "OAUTHBEARER", "bogus")).toEqual({ oauthTokenSource: true, mskFields: false, staticToken: false });
+  });
+
+  it("requires SASL_SSL for OAUTHBEARER (backend -32602 guard)", () => {
+    expect(oauthRequiresSaslSsl("SASL_SSL", "OAUTHBEARER")).toBe(false);
+    expect(oauthRequiresSaslSsl("SASL_PLAINTEXT", "OAUTHBEARER")).toBe(true);
+    expect(oauthRequiresSaslSsl("SASL_SSL", "PLAIN")).toBe(false);
+  });
+});
+
+describe("partitionInputIssue (F6-4 produce partition guard)", () => {
+  it("accepts empty (auto) and in-range partitions", () => {
+    expect(partitionInputIssue("", 3)).toBeNull();
+    expect(partitionInputIssue("  ", 3)).toBeNull();
+    expect(partitionInputIssue("0", 3)).toBeNull();
+    expect(partitionInputIssue("2", 3)).toBeNull();
+  });
+
+  it("rejects non-integers and out-of-range partitions with i18n key fragments", () => {
+    expect(partitionInputIssue("-1", 3)).toBe("partitionInvalid");
+    expect(partitionInputIssue("1.5", 3)).toBe("partitionInvalid");
+    expect(partitionInputIssue("abc", 3)).toBe("partitionInvalid");
+    expect(partitionInputIssue("3", 3)).toBe("partitionOutOfRange");
+    expect(partitionInputIssue("9", 3)).toBe("partitionOutOfRange");
+    // partitionCount 缺省（未拿到 topics/list）不做上界校验。
+    expect(partitionInputIssue("9", undefined)).toBeNull();
+  });
+});
+
+describe("schema tree model (F5)", () => {
+  it("builds a collapsible tree from an AVRO record", () => {
+    const root = buildSchemaTree(JSON.stringify(ORDER_AVRO_SCHEMA))!;
+    expect(root.type).toBe("record");
+    const names = root.children!.map((child) => child.name);
+    expect(names).toEqual(["orderId", "amount", "quantity", "paid", "status", "tags", "meta", "ref", "day", "ts", "uid"]);
+    const status = root.children!.find((child) => child.name === "status")!;
+    expect(status.type).toContain("NEW");
+    // union 节点带分支子节点；逻辑类型在类型标注里。
+    const ref = root.children!.find((child) => child.name === "ref")!;
+    expect(ref.type).toBe("union:string");
+    expect(ref.children!.map((child) => child.name)).toEqual(["[0]", "[1]"]);
+    const day = root.children!.find((child) => child.name === "day")!;
+    expect(day.type).toContain("date");
+  });
+
+  it("renders Avro field defaults and JSON Schema required markers", () => {
+    const avro = buildSchemaTree('{"type":"record","name":"R","fields":[{"name":"c","type":"string","default":"usd"}]}')!;
+    expect(avro.children![0].defaultValue).toBe("usd");
+
+    const json = buildSchemaTree('{"type":"object","properties":{"id":{"type":"string"},"n":{"type":"integer","default":7}},"required":["id"]}')!;
+    expect(json.children!.map((child) => child.name)).toEqual(["id", "n"]);
+    expect(json.children![0].type).toContain("*");
+    expect(json.children![1].defaultValue).toBe("7");
+  });
+
+  it("returns null for PROTOBUF text / broken JSON (text + hint path)", () => {
+    expect(buildSchemaTree('syntax = "proto3";\\nmessage Order {}')).toBeNull();
+    expect(buildSchemaTree("{broken")).toBeNull();
+  });
+});
+
+describe("timestamp tz helpers (F6-3)", () => {
+  it("formats local vs utc and exposes full ISO for cell titles", () => {
+    const ms = Date.UTC(2023, 10, 14, 22, 13, 20);
+    expect(formatTimestamp(ms, "utc")).toBe("2023-11-14 22:13:20");
+    expect(timestampIso(ms)).toBe("2023-11-14T22:13:20.000Z");
+    // local 与 utc 的日期文本按定义逐分量断言（与机器时区无关）。
+    const local = formatTimestamp(ms, "local");
+    const date = new Date(ms);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    expect(local).toBe(`${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`);
+    // 缺省参数 = local（既有调用面行为不变）；非法值兜底。
+    expect(formatTimestamp(ms)).toBe(local);
+    expect(formatTimestamp(undefined)).toBe("—");
+    expect(timestampIso(undefined)).toBe("");
+  });
+
+  it("compares date-filter days after parsing cell text in its tz", () => {
+    const filterDay = new Date(2023, 10, 14);
+    expect(timestampFilterTextComparator(filterDay, "2023-11-14 08:00:00", "local")).toBe(0);
+    expect(timestampFilterTextComparator(filterDay, "2023-11-13 23:59:59", "local")).toBe(-1);
+    expect(timestampFilterTextComparator(filterDay, "2023-11-15 00:00:00", "local")).toBe(1);
+    expect(timestampFilterTextComparator(filterDay, "garbage", "local")).toBe(1);
+    // UTC 文本按 UTC 解析为时刻再取本地日比较。
+    const instant = new Date(Date.UTC(2023, 10, 13, 23, 0, 0));
+    const cellLocalDay = new Date(instant.getFullYear(), instant.getMonth(), instant.getDate());
+    expect(timestampFilterTextComparator(cellLocalDay, "2023-11-13 23:00:00", "utc")).toBe(0);
+  });
+});
+
+describe("filterMessagesByKeyword (F6-1 stream quick filter)", () => {
+  const rows: Array<{ partition: number; offset: number; key: string; valueText: string; headers: Record<string, string> }> = [
+    { partition: 0, offset: 1, key: "alpha", valueText: '{"v":1}', headers: { trace: "t1" } },
+    { partition: 1, offset: 2, key: "beta", valueText: "plain", headers: {} },
+    { partition: 2, offset: 3, key: "gamma", valueText: "gold", headers: {} },
+  ];
+
+  it("filters loaded rows across partition/offset/key/value/headers", () => {
+    expect(filterMessagesByKeyword(rows, "")).toEqual(rows);
+    expect(filterMessagesByKeyword(rows, "  ")).toEqual(rows);
+    expect(filterMessagesByKeyword(rows, "alpha")).toEqual([rows[0]]);
+    // "2" 同时命中 offset=2 与 partition=2（contains 语义，只看已加载行）。
+    expect(filterMessagesByKeyword(rows, "2")).toEqual([rows[1], rows[2]]);
+    expect(filterMessagesByKeyword(rows, "beta")).toEqual([rows[1]]);
+    expect(filterMessagesByKeyword(rows, "TRACE")).toEqual([rows[0]]);
+    expect(filterMessagesByKeyword(rows, "nope")).toEqual([]);
+  });
+});

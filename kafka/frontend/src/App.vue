@@ -69,6 +69,12 @@ const topicsLoading = ref(false);
 const topicsError = ref("");
 const selectedTopic = ref("");
 
+// F6-4：所选 topic 的分区数（topics/list 行已有该字段），供生产面板头部展示
+// 与 partition 上界行内校验；未选中或列表未到时缺省 undefined（不做上界校验）。
+const selectedTopicPartitionCount = computed(() =>
+  topics.value.find((topic) => topic.name === selectedTopic.value)?.partitionCount,
+);
+
 const streamRef = ref<InstanceType<typeof StreamPanel>>();
 const connectionsOpen = ref(false);
 
@@ -427,6 +433,7 @@ onBeforeUnmount(() => {
             :topic="selectedTopic"
             :can-write="canWrite"
             :sr-provider="srProvider"
+            :partition-count="selectedTopicPartitionCount"
             @error="showError"
             @notify="showNotice"
           />

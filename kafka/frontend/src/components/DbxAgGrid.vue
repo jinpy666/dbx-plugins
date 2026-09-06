@@ -39,8 +39,10 @@ const props = withDefaults(
     rowClassRules?: GridOptions["rowClassRules"];
     /** 详情抽屉行点击才打开、选择仅做高亮时置 false。 */
     emitRowClick?: boolean;
+    /** 即时搜索（F6-1）：quickFilterText 只过滤已加载行（防抖在调用方）。 */
+    quickFilter?: string;
   }>(),
-  { compactFields: undefined, rowSelection: "single", rowClassRules: undefined, emitRowClick: true },
+  { compactFields: undefined, rowSelection: "single", rowClassRules: undefined, emitRowClick: true, quickFilter: "" },
 );
 
 const emit = defineEmits<{
@@ -127,6 +129,7 @@ function applyColumns() {
 onMounted(() => {
   if (!host.value) return;
   gridApi = createGrid(host.value, buildOptions());
+  if (props.quickFilter) gridApi.setGridOption("quickFilterText", props.quickFilter);
   resizeObserver = new ResizeObserver((entries) => {
     const width = entries[0]?.contentRect.width ?? 0;
     const next = props.compactFields !== undefined && width > 0 && width < GRID_COMPACT_WIDTH;
@@ -148,6 +151,10 @@ onBeforeUnmount(() => {
 watch(
   () => props.rowData,
   (rows) => gridApi?.setGridOption("rowData", rows),
+);
+watch(
+  () => props.quickFilter,
+  (keyword) => gridApi?.setGridOption("quickFilterText", keyword ?? ""),
 );
 watch(
   () => props.columnDefs,

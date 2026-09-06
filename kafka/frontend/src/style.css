@@ -570,3 +570,17 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .messages-panel .grid-box--fill { min-height: 220px; }
 /* 有结果时表单组区上限高度（内部自滚），把首屏让给结果区：meta + 表格稳定可见。 */
 .messages-panel.has-result .consume-groups { max-height: 46%; overflow-y: auto; }
+
+/* === Phase 3（H 路）：F6 六项 UI 打磨新增公共样式 ============================== */
+/* F6-2/F5：ag-grid 行操作按钮（复制 JSON / 克隆）——cellRenderer 原生 DOM，
+   样式走全局（与 .mini-button 同基线，热区 ≥ 行高）。 */
+.grid-action-button { min-height: 20px; border: 1px solid var(--border); border-radius: 4px; padding: 0 7px; background: var(--background); color: var(--muted-foreground); font-size: 10px; line-height: 1; cursor: pointer; }
+.grid-action-button:hover { background: var(--accent); color: var(--foreground); border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
+/* F6-1：即时搜索输入框（Messages 结果区 / Stream 工具条共用基线）。 */
+.quick-filter-input { min-height: 26px; width: 200px; max-width: 40vw; }
+/* F6-3：本地/UTC 时区切换（工具条小号按钮）。 */
+.tz-toggle { min-height: 24px; border: 1px solid var(--border); border-radius: 4px; padding: 0 8px; background: var(--background); color: var(--muted-foreground); font-size: 10px; cursor: pointer; }
+.tz-toggle.is-utc { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); color: var(--primary); }
+
+/* F6-5：topic 树健康徽标（isHealthy===false 红点；title=N 个分区不健康）。 */
+.tree-health-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 999px; background: var(--destructive); box-shadow: 0 0 0 2px color-mix(in srgb, var(--destructive) 25%, transparent); }

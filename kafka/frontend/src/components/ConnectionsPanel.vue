@@ -81,6 +81,48 @@ function showGlueDetail(status: KafkaConnectionStatus): boolean {
   return isGlueStatus(status) && status.connectionId === getKafkaConnectionId();
 }
 
+// -- OAUTHBEARER / MSK IAM 连接摘要（Phase 3 F2 前端半件）---------------------------
+// manifest 新字段（冻结契约 §12.2.3，json camelCase：oauth_token_source /
+// msk_region / msk_access_key_id / msk_secret_access_key / msk_session_token /
+// oauth_static_token）可能挂在 connection（camelCase）或 external_config
+// （snake_case，照 glue_* 双源模式）；secret 字段走宿主 secret binding 不下发值，
+// 以 connection_secrets 名单判定「已配置」，任何来源都不展示值（照 sr_password /
+// glue_secret_access_key 既有形态）。字段组可见性联动链镜像在
+// kafkaModel.oauthFormVisibility（纯函数有单测）。
+
+interface OauthSummary {
+  tokenSource: string;
+  mskRegion: string;
+  accessKeyId: string;
+  secretAccessKeyConfigured: boolean;
+  sessionTokenConfigured: boolean;
+  staticTokenConfigured: boolean;
+}
+
+const oauthSummary = computed<OauthSummary>(() => {
+  const direct = (props.connection ?? {}) as Record<string, unknown>;
+  const external = (direct.external_config && typeof direct.external_config === "object"
+    ? direct.external_config
+    : {}) as Record<string, unknown>;
+  const sources = [direct, external];
+  const secretNames = Array.isArray(direct.connection_secrets) ? direct.connection_secrets.map(String) : [];
+  const configured = (snake: string, camel: string) =>
+    pickConnectionField(sources, [snake, camel]).length > 0 || secretNames.includes(snake) || secretNames.includes(camel);
+  return {
+    tokenSource: pickConnectionField(sources, ["oauth_token_source", "oauthTokenSource"]),
+    mskRegion: pickConnectionField(sources, ["msk_region", "mskRegion"]),
+    accessKeyId: pickConnectionField(sources, ["msk_access_key_id", "mskAccessKeyId"]),
+    secretAccessKeyConfigured: configured("msk_secret_access_key", "mskSecretAccessKey"),
+    sessionTokenConfigured: configured("msk_session_token", "mskSessionToken"),
+    staticTokenConfigured: configured("oauth_static_token", "oauthStaticToken"),
+  };
+});
+
+/** oauth_token_source 在场才显示 OAUTH 摘要，且仅当前连接行。 */
+function showOauthDetail(status: KafkaConnectionStatus): boolean {
+  return oauthSummary.value.tokenSource !== "" && status.connectionId === getKafkaConnectionId();
+}
+
 // 导入助手状态（仅内存，不持久化）
 const assistantOpen = ref(false);
 const propertiesText = ref("");
@@ -241,6 +283,22 @@ function clearAssistant() {
               </span>
               <span class="badge" :class="glueSummary.sessionTokenConfigured ? 'badge-ok' : 'badge-warn'">
                 {{ t("connections.glueSessionTokenLabel") }}: {{ glueSummary.sessionTokenConfigured ? t("connections.glueConfigured") : t("connections.glueNotConfigured") }}
+              </span>
+            </span>
+            <!-- F2 前端半件：OAUTHBEARER/MSK 摘要（token source + region/key + secret 配置态） -->
+            <span v-if="showOauthDetail(status)" class="inline-actions" style="margin-top: 2px; flex-wrap: wrap; gap: 4px" data-testid="oauth-summary">
+              <span class="badge badge-ok">{{ t("connections.oauthBadge") }}</span>
+              <span class="badge">{{ t("connections.oauthSource", { source: oauthSummary.tokenSource }) }}</span>
+              <span v-if="oauthSummary.mskRegion" class="badge">{{ t("connections.mskRegion", { region: oauthSummary.mskRegion }) }}</span>
+              <span v-if="oauthSummary.accessKeyId" class="badge mono-s">{{ t("connections.mskAccessKeyId", { key: oauthSummary.accessKeyId }) }}</span>
+              <span v-if="oauthSummary.tokenSource === 'msk_iam'" class="badge" :class="oauthSummary.secretAccessKeyConfigured ? 'badge-ok' : 'badge-warn'">
+                {{ t("connections.mskSecretLabel") }}: {{ oauthSummary.secretAccessKeyConfigured ? t("connections.glueConfigured") : t("connections.glueNotConfigured") }}
+              </span>
+              <span v-if="oauthSummary.tokenSource === 'msk_iam'" class="badge" :class="oauthSummary.sessionTokenConfigured ? 'badge-ok' : 'badge-warn'">
+                {{ t("connections.mskSessionTokenLabel") }}: {{ oauthSummary.sessionTokenConfigured ? t("connections.glueConfigured") : t("connections.glueNotConfigured") }}
+              </span>
+              <span v-if="oauthSummary.tokenSource === 'static_token'" class="badge" :class="oauthSummary.staticTokenConfigured ? 'badge-ok' : 'badge-warn'">
+                {{ t("connections.oauthStaticTokenLabel") }}: {{ oauthSummary.staticTokenConfigured ? t("connections.glueConfigured") : t("connections.glueNotConfigured") }}
               </span>
             </span>
           </div>

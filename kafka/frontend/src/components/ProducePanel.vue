@@ -6,11 +6,27 @@
 // （实时 JSON 校验红框+错误提示）→ 发送选项栅格（partition/count/compression/
 // schema 挂载区，Glue 禁用逻辑保留）→ 底部大号主色发送按钮 + 清空按钮；
 // 发送结果渲染为醒目成功条。不写死 inline style，尺寸走 DBX 令牌与 class。
-import { computed, ref, watch } from "vue";
-import { CircleCheck, Send } from "@lucide/vue";
+// Phase 3 F4：Flow 测试数据生成组（mode manual|flow）——零后端改动，复用
+// produce + schema 挂载（version 缺省 = latest）；schema_random 按 subject
+// 前缀发现取 latest schema 生成（仅 AVRO；PROTOBUF/JSON Schema → 行内提示改用
+// template），template 走占位符展开；自动停止：read_only / 校验失败 / 连续失败
+// ≥3。生成器与占位符纯函数在 lib/kafkaModel（固定向量 spec）。
+// Phase 3 F6-4：头部显示所选 topic 分区数，partition 超界行内校验。
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { CircleCheck, Play, Send, Square } from "@lucide/vue";
 import CodeEditor from "./CodeEditor.vue";
-import { kafkaApi, type Compression, type ProduceResult, type SchemaAttach, type SchemaSubject } from "../lib/api";
-import { isInternalTopicName, parseHeadersJson } from "../lib/kafkaModel";
+import { kafkaApi, type Compression, type ProduceResult, type SchemaAttach, type SchemaFormat, type SchemaSubject } from "../lib/api";
+import {
+  clampFlowCount,
+  clampFlowIntervalMs,
+  expandTemplate,
+  generateAvroRandom,
+  isInternalTopicName,
+  matchingSchemaSubjects,
+  mulberry32,
+  parseHeadersJson,
+  partitionInputIssue,
+} from "../lib/kafkaModel";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -18,6 +34,8 @@ const props = defineProps<{
   canWrite: boolean;
   /** 连接 SR provider（Phase P）：glue 时 schema 挂载区禁用并提示（管理面 only）。 */
   srProvider?: string;
+  /** 所选 topic 分区数（F6-4，App 从 topics/list 行透传）：头部展示 + partition 上界校验。 */
+  partitionCount?: number;
 }>();
 
 const emit = defineEmits<{
@@ -45,7 +63,7 @@ const schemaEnabled = ref(false);
 const schemaSubjects = ref<SchemaSubject[]>([]);
 const schemaSubject = ref("");
 const schemaVersionText = ref("");
-const schemaFormat = ref<"avro" | "json">("avro");
+const schemaFormat = ref<SchemaFormat>("avro");
 // Phase P：Glue 仅管理面（消息编解码仅 Confluent wire format，后端 -32000 拒绝），
 // 前端同步禁用挂载区并提示（保留 discoverability，不隐藏）。
 const glueSchemaDisabled = computed(() => props.srProvider === "glue");
@@ -70,7 +88,7 @@ const schemaVersions = computed(() => {
 watch(schemaSubject, () => {
   schemaVersionText.value = "";
   const found = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
-  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as "avro" | "json") ?? "avro";
+  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as SchemaFormat) ?? "avro";
 });
 
 const disabled = computed(() => !props.canWrite || sending.value || !props.topic);
@@ -144,7 +162,13 @@ async function send() {
   // String 归一：type=number 的 v-model 运行时可能给 number，直接 .trim 会抛错。
   const partitionRaw = String(partitionText.value ?? "").trim();
   const partition = partitionRaw === "" ? undefined : Number.parseInt(partitionRaw, 10);
-  if (partition !== undefined && (!Number.isInteger(partition) || partition < 0)) {
+  // F6-4：非负整数 + 分区数上界统一走 partitionInputIssue（行内提示键）。
+  const partitionIssue = partitionInputIssue(partitionRaw, props.partitionCount);
+  if (partitionIssue) {
+    localError.value = t(`produce.${partitionIssue}`);
+    return;
+  }
+  if (partition !== undefined && !Number.isInteger(partition)) {
     localError.value = t("err.partition");
     return;
   }
@@ -175,6 +199,208 @@ async function send() {
     sending.value = false;
   }
 }
+
+// -- Flow 测试数据生成（F4）----------------------------------------------------------
+// mode manual = 现状表单直发；flow = 定时循环生成 + 发送（独立于手动 send 状态）。
+// 自动停止：read_only（canWrite 翻转）、表单校验失败（headers/partition/生成结果
+// 非法）、发送连续失败 ≥3。全部计数与最近 1 条回显只在组内展示，不打扰全局通知。
+
+type FlowSource = "schema_random" | "template";
+
+// flowOn：测试数据生成组开关（勾选 = flow 模式，未勾选 = manual 现状直发）。
+const flowOn = ref(false);
+const flowSource = ref<FlowSource>("schema_random");
+const flowCountText = ref("1");
+const flowIntervalText = ref("1000");
+const flowTemplateText = ref("");
+const flowRunning = ref(false);
+const flowSent = ref(0);
+const flowLastValue = ref("");
+const flowHint = ref("");
+const flowStopping = ref(false);
+
+const flowCount = computed(() => clampFlowCount(flowCountText.value));
+const flowIntervalMs = computed(() => clampFlowIntervalMs(flowIntervalText.value));
+// F6-4：partition 行内校验文本（空输入 = 自动分区合法）。
+const partitionIssueText = computed(() => {
+  const issue = partitionInputIssue(String(partitionText.value ?? ""), props.partitionCount);
+  return issue ? t(`produce.${issue}`) : "";
+});
+// mode=flow 且挂载相关时复用手动组的 schema 挂载选择？不——schema_random 自主
+// 发现 subject（前缀匹配），无需用户先勾选挂载区；template 不挂 schema。
+const flowDisabled = computed(() => !props.canWrite || !props.topic || sending.value);
+
+let flowTimer = 0;
+let flowFailures = 0;
+let flowSeq = 0;
+
+function partitionForFlow(): number | undefined {
+  const raw = String(partitionText.value ?? "").trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+/** 生成单条 value：schema_random 走 Avro 随机生成，template 走占位符展开。 */
+function generateFlowValue(source: FlowSource, schemaText: string | null): string {
+  if (source === "template") {
+    return expandTemplate(flowTemplateText.value, mulberry32((flowSeq + 1) * 7919 + Date.now() % 100000));
+  }
+  const generated = generateAvroRandom(schemaText ?? "", mulberry32((flowSeq + 1) * 104729));
+  if ("error" in generated) throw new Error(generated.error);
+  return generated.value;
+}
+
+/** 启动前置校验：非法时给出行内提示且不启动（不发任何 produce）。 */
+async function preflightFlow(): Promise<{ schemaText: string | null; attachSubject?: string } | null> {
+  flowHint.value = "";
+  if (!props.canWrite) {
+    flowHint.value = t("produce.readOnlyHint");
+    return null;
+  }
+  if (!props.topic) {
+    flowHint.value = t("messages.uiNoTopicSelected");
+    return null;
+  }
+  if (headersInvalid.value) {
+    flowHint.value = t("produce.headersInvalid", { error: headersInvalid.value });
+    return null;
+  }
+  if (partitionInputIssue(String(partitionText.value ?? ""), props.partitionCount)) {
+    flowHint.value = t(`produce.${partitionInputIssue(String(partitionText.value ?? ""), props.partitionCount)}`);
+    return null;
+  }
+  if (flowSource.value === "template") {
+    if (!flowTemplateText.value.trim()) {
+      flowHint.value = t("produce.flowTemplateRequired");
+      return null;
+    }
+    return { schemaText: null };
+  }
+  // schema_random：Glue 挂载被后端拒绝（管理面 only），提前行内提示。
+  if (glueSchemaDisabled.value) {
+    flowHint.value = t("messages.schemaGlueDisabled");
+    return null;
+  }
+  // subject 发现：subjects/list 行前缀匹配 <topic>-value（优先）/ <topic>-key。
+  const response = await kafkaApi.schemaSubjectsList();
+  const subjects = response.subjects ?? [];
+  const matched = matchingSchemaSubjects(props.topic, subjects.map((row) => row.subject));
+  const subjectName = matched.value ?? matched.key;
+  if (!subjectName) {
+    flowHint.value = t("produce.flowNoSubject", { topic: props.topic });
+    return null;
+  }
+  const row = subjects.find((entry) => entry.subject === subjectName);
+  const format = (row?.formats ?? ["avro"])[0] ?? "avro";
+  // 命中 PROTOBUF / JSON Schema subject → 行内提示改用 template（前端只做 AVRO 生成）。
+  if (format !== "avro") {
+    flowHint.value = t("produce.flowSchemaNotAvro", { subject: subjectName, format });
+    return null;
+  }
+  const detail = await kafkaApi.schemaGet(subjectName);
+  const schemaText = detail.schema ?? "";
+  // 生成器预演一条：schema 结构不支持时启动即失败，不如不启动。
+  const probe = generateAvroRandom(schemaText, mulberry32(1));
+  if ("error" in probe) {
+    flowHint.value = t("produce.flowGenerateFailed", { error: probe.error });
+    return null;
+  }
+  return { schemaText, attachSubject: subjectName };
+}
+
+function stopFlow(reason?: "manual" | "failures" | "readonly") {
+  if (flowTimer) {
+    window.clearInterval(flowTimer);
+    flowTimer = 0;
+  }
+  if (!flowRunning.value) return;
+  flowRunning.value = false;
+  if (reason === "failures") flowHint.value = t("produce.flowAutoStoppedFailures");
+  else if (reason === "readonly") flowHint.value = t("produce.readOnlyHint");
+}
+
+/** 单 tick：生成 countPerSend 条并逐条 produce（count=1，逐条独立生成数据）。 */
+async function runFlowTick(schemaText: string | null, schemaAttach?: SchemaAttach) {
+  const seq = ++flowSeq;
+  const headers = parseHeadersJson(headersText.value);
+  if ("error" in headers) {
+    flowHint.value = t("produce.headersInvalid", { error: headers.error });
+    stopFlow("failures");
+    return;
+  }
+  for (let index = 0; index < flowCount.value; index += 1) {
+    if (!flowRunning.value) return;
+    let value: string;
+    try {
+      value = generateFlowValue(flowSource.value, schemaText);
+    } catch (cause) {
+      flowHint.value = t("produce.flowGenerateFailed", { error: cause instanceof Error ? cause.message : String(cause) });
+      stopFlow("failures");
+      return;
+    }
+    try {
+      await kafkaApi.messagesProduce({
+        topic: props.topic,
+        value,
+        ...(key.value ? { key: key.value } : {}),
+        ...(Object.keys(headers.headers).length > 0 ? { headers: headers.headers } : {}),
+        ...(partitionForFlow() !== undefined ? { partition: partitionForFlow() } : {}),
+        ...(compression.value !== "none" ? { compression: compression.value } : {}),
+        ...(schemaAttach ? { schema: schemaAttach } : {}),
+      });
+      flowSent.value += 1;
+      flowFailures = 0;
+      flowLastValue.value = value.length > 200 ? `${value.slice(0, 200)}…` : value;
+    } catch (cause) {
+      flowFailures += 1;
+      emit("error", cause instanceof Error ? cause.message : String(cause));
+      // 发送连续失败 ≥3 → 自动停止（read_only 由 canWrite watcher 兜底）。
+      if (flowFailures >= 3) {
+        stopFlow("failures");
+        return;
+      }
+    }
+    if (seq !== flowSeq) return;
+  }
+}
+
+async function startFlow() {
+  if (flowRunning.value || flowDisabled.value) return;
+  emit("error", "");
+  const preflight = await preflightFlow();
+  if (preflight === null) return;
+  flowSent.value = 0;
+  flowLastValue.value = "";
+  flowFailures = 0;
+  flowRunning.value = true;
+  const schemaAttach: SchemaAttach | undefined =
+    flowSource.value === "schema_random" && preflight.attachSubject
+      ? { subject: preflight.attachSubject, format: "avro" }
+      : undefined;
+  const runTick = () => void runFlowTick(preflight.schemaText, schemaAttach);
+  runTick();
+  flowTimer = window.setInterval(runTick, flowIntervalMs.value);
+}
+
+watch(
+  () => props.canWrite,
+  (writable) => {
+    // read_only 翻转（宿主/策略层）→ 自动停止。
+    if (!writable && flowRunning.value) stopFlow("readonly");
+  },
+);
+
+watch(
+  () => props.topic,
+  () => {
+    // topic 切换：生成上下文（subject 前缀/模板校验）失效，直接停。
+    stopFlow();
+    flowHint.value = "";
+  },
+);
+
+onBeforeUnmount(() => stopFlow());
 </script>
 
 <template>
@@ -185,6 +411,9 @@ async function send() {
         <span>{{ t("messages.topic") }}</span>
         <div class="produce-topic-row">
           <input :value="topic" type="text" class="mono" readonly />
+          <span v-if="partitionCount !== undefined && partitionCount > 0" class="badge" :title="t('produce.partitionCountTitle')">
+            {{ t("produce.partitionCount", { count: partitionCount }) }}
+          </span>
           <span v-if="topicInternal" class="badge badge-internal">{{ t("tree.internal") }}</span>
         </div>
       </div>
@@ -237,9 +466,10 @@ async function send() {
       </div>
 
       <div class="produce-options">
-        <label class="field">
+        <label class="field" :class="{ 'is-invalid': Boolean(partitionIssueText) }">
           <span>{{ t("produce.partition") }}</span>
           <input v-model="partitionText" type="number" min="0" :placeholder="t('produce.partitionAny')" :disabled="disabled" spellcheck="false" />
+          <span v-if="partitionIssueText" class="form-error" data-testid="partition-issue">{{ partitionIssueText }}</span>
         </label>
         <label class="field">
           <span>{{ t("produce.count") }} (≤1000)</span>
@@ -280,11 +510,69 @@ async function send() {
               <select v-model="schemaFormat" :disabled="disabled || glueSchemaDisabled">
                 <option value="avro">avro</option>
                 <option value="json">json</option>
+                <option value="protobuf">protobuf</option>
               </select>
             </label>
           </div>
           <p v-if="glueSchemaDisabled" class="hint">{{ t("messages.schemaGlueDisabled") }}</p>
         </div>
+      </div>
+
+      <!-- F4 Flow 测试数据生成：mode manual=现状直发；flow=定时生成+发送。
+           启停按钮/运行徽标/累计计数与最近 1 条回显只在组内展示。 -->
+      <div class="produce-flow" data-testid="flow-group">
+        <div class="produce-flow-head">
+          <label class="checkbox">
+            <input v-model="flowOn" type="checkbox" :disabled="disabled" data-testid="flow-toggle" />
+            <span>{{ t("produce.flowMode") }}</span>
+          </label>
+          <span v-if="flowRunning" class="badge badge-ok produce-flow-badge" data-testid="flow-badge">
+            <span class="flow-dot" aria-hidden="true" />{{ t("produce.flowRunning") }}
+          </span>
+          <span v-if="flowRunning" class="produce-flow-counter">{{ t("produce.flowSent", { count: flowSent }) }}</span>
+          <span class="produce-head-spacer"></span>
+          <button v-if="!flowRunning" class="qb-add" type="button" :disabled="flowDisabled" :title="t('produce.flowStart')" data-testid="flow-start" @click="startFlow">
+            <Play aria-hidden="true" />{{ t("produce.flowStart") }}
+          </button>
+          <button v-else class="qb-add" type="button" :title="t('produce.flowStop')" data-testid="flow-stop" @click="stopFlow('manual')">
+            <Square aria-hidden="true" />{{ t("produce.flowStop") }}
+          </button>
+        </div>
+        <div class="produce-flow-grid" :class="{ muted: !flowOn }">
+          <label class="field">
+            <span>{{ t("produce.flowSource") }}</span>
+            <select v-model="flowSource" :disabled="disabled || flowRunning">
+              <option value="schema_random">{{ t("produce.flowSourceSchemaRandom") }}</option>
+              <option value="template">{{ t("produce.flowSourceTemplate") }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>{{ t("produce.flowCountPerSend") }}</span>
+            <input v-model="flowCountText" type="number" min="1" max="100" :disabled="disabled || flowRunning" />
+          </label>
+          <label class="field">
+            <span>{{ t("produce.flowIntervalMs") }}</span>
+            <input v-model="flowIntervalText" type="number" min="250" max="10000" step="50" :disabled="disabled || flowRunning" />
+          </label>
+        </div>
+        <div v-if="flowOn && flowSource === 'template'" class="produce-editor-block">
+          <div class="produce-editor-head">
+            <span>{{ t("produce.flowTemplateLabel") }}</span>
+            <span class="hint">{{ t("produce.flowTemplateHint") }}</span>
+          </div>
+          <CodeEditor
+            v-model="flowTemplateText"
+            language="json"
+            :disabled="disabled"
+            :placeholder="t('produce.flowTemplatePlaceholder')"
+            min-height="96px"
+            max-height="200px"
+          />
+        </div>
+        <p v-if="flowHint" class="form-error" data-testid="flow-hint">{{ flowHint }}</p>
+        <p v-if="flowRunning && flowLastValue" class="hint produce-flow-last mono-s" data-testid="flow-last">
+          {{ t("produce.flowLastMessage") }}: {{ flowLastValue }}
+        </p>
       </div>
 
       <div v-if="lastResult" class="produce-success" role="status">
@@ -464,5 +752,46 @@ async function send() {
 }
 .produce-ghost-button:disabled {
   opacity: 0.45;
+}
+/* F4 Flow 组：头部（开关+徽标+计数+启停）一行，参数栅格复用 produce-options 基线。 */
+.produce-flow {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.produce-flow-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.produce-flow-badge {
+  gap: 5px;
+}
+.flow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--success);
+  animation: flow-pulse 1.2s ease-in-out infinite;
+}
+@keyframes flow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.produce-flow-counter {
+  color: var(--primary);
+  font-size: 11px;
+}
+.produce-flow-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+.produce-flow-last {
+  overflow-wrap: anywhere;
 }
 </style>

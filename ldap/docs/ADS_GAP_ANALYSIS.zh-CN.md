@@ -4,7 +4,9 @@
 > Schema Browser / Search / Import-Export / Batch Operations）。
 > 状态标记：✅ 已有 ｜ 🔶 部分（有差距）｜ ❌ 缺失。
 > 优先级：P0 = 下一轮就做；P1 = 近期；P2 = 远期/按需。
-> 本文件是追赶路线的唯一对账表；落地一项更新一项（状态 + 落地记录链接）。
+> 本文件是 **ADS 侧**追赶路线唯一对账表（PLA 对标见
+> `PLA_GAP_ANALYSIS.zh-CN.md`，两表并轨同一 M5/M6/M7 框架，M6 扩容以
+> IMPL_PLAN §9 更新后的表述为准）；落地一项更新一项（状态 + 落地记录链接）。
 
 ## 1. 连接方式与网络
 
@@ -82,6 +84,7 @@
 | 二进制属性（图片/hex/base64 查看器） | ✅ | ❌（textarea 原样） | ❌ | P1：base64/hex 查看器 + 图片预览 |
 | 密码修改扩展操作（passwd） | ✅ | ❌（走 modify userPassword） | 🔶 | P2：RFC 3062 extend |
 | 条目复制/粘贴、书签 | ✅ | ❌ | ❌ | P2 |
+| 子树删除（递归 + 子条目计数确认） | ✅ | ❌（仅单条删除） | ❌ | **P1：`ldap/entry/delete` 加 recursive + Tree Delete 控件回退递归（此前漏项，收编见 PLA 对账表 N1）** |
 | DN 重命名/移动子树 | ✅ | ✅ modifyDn | ✅ | — |
 
 ## 7. 导入 / 导出
@@ -121,13 +124,14 @@
 | 列宽持久化 | ✅ | ✅ | ✅ | — |
 | UI 自动化测试 | ❌（手工/ SWTbots） | 🔶 vitest 单测 + mock 走查；本轮补组件测试 + 浏览器走查脚本（scripts/ui_test.mjs，入 test.sh） | ✅（本轮） | 持续：关键流 e2e（shared/host-e2e） |
 
-## 11. 追赶路线（并入 IMPL_PLAN M5/M6）
+## 11. 追赶路线（并入 IMPL_PLAN M5/M6/M7）
 
 - **M5-a（本轮）**：TLS 字段联动显隐 + 连接字段排版重排；≠ 运算符；
   UI 测试双轨（组件测试 + ui_test.mjs 走查脚本）。
 - **M5-b**：NOT 组 UI；连接检查 `ldap/check`（network/bind 分级）；
   搜索历史；LDIF 编辑生效。
-- **M6**：LDIF 导入；结果批量操作；新条目 objectClass 模板；
-  二进制属性查看器。
+- **M6（扩容后，与 PLA 对账表 N1–N4 并轨）**：LDIF 导入；结果批量操作；
+  新条目 objectClass 模板（N4）；二进制属性查看器 + 上传（N3）；
+  子树删除（N1）；密码哈希辅助（N2）。任务分解见 PLA 对账表 §7（L6-x）。
 - **M7（按需）**：mTLS 客户端证书；CRAM-MD5；referral 策略；服务器端排序；
   digest realm；DSML。

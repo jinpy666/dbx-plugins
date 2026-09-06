@@ -433,3 +433,46 @@ ModifyDnDialog / DeleteEntryDialog 遮罩已接入 `decideBackdropClose` 共享�
 | 观察项 | 4 | 13 |
 
 **收敛判定：未达零新发现**（4 条 P2），但 R4 十条修复中 9 条完整通过、1 条部分修复（P2-18 结果表半边），主旅程与全部回归矩阵无回退；新发现均为打磨项，无阻断与数据丢失级问题。第 6 轮建议只针对 P2-22 ～ P2-25 修复后做点验，可收敛。
+
+## 八、第 6 轮（收敛点验，2026-09-06）
+
+> 最终判定轮：只点验第 5 轮 4 条 P2（P2-22 ～ P2-25）的 R6 修复标注，并对 5 条已收口项
+> （P1-3 / P2-13 / P2-17 / P2-20 / P2-21）做收敛抽查，确认无回退。不做全面重扫，
+> 只记录不改代码。本轮全程 0 未捕获 page error、0 console error。
+
+### 环境表
+
+| 项 | 值 |
+| --- | --- |
+| 轮次 | 第 6 轮收敛点验（2026-09-06，工作区无并行改动；R6 修复为未提交工作区改动） |
+| Dev server | 本轮新起 `vite --port 5292 --strictPort`（ldap/frontend，结束已 kill），未跑 build |
+| 自动化 | playwright-core 1.63 + 系统 Chrome（headless，channel=chrome），装于 `/tmp/uiscan-ldap-r6`（未进项目依赖） |
+| 断言规模 | R6 点验 4 项 + 收敛抽查 5 项，共 9 项断言全部通过；单测基线 `pnpm test` 23 文件 292 用例全绿（较 R5 基线 291 新增 1 条，即 P2-22 的接线断言单测，与标注吻合） |
+| 证据 | 全部为断言输出与 DOM 属性读取（未截图）；导出文件经 playwright download 事件捕获即弃 |
+
+### R6 修复点验结论表（R5 标注 4 条）
+
+| 项 | 点验结论 | 证据（断言摘要） |
+| --- | --- | --- |
+| P2-22 表头 aria-sort 接线 | ✅ 真修好 | 搜索后 `.result-header button[aria-sort]` 计数 4（dn + 3 动态列）；dn 列默认 ascending，点击翻转 descending，再点还原 ascending；动态列 none → 点击后 ascending。死代码 `ariaSortFor()` 已接入模板（`ResultTable.vue` L218/L222 `:aria-sort`），并有接线断言单测（`ResultTable.spec.ts` L45，防再犯「标注已修、实际未接线」） |
+| P2-23 LDIF dn 实时提示 | ✅ 真修好 | 编辑态切 LDIF → 改 `dn:` 行 → **不切回表单**，`.hint` 实时出现「LDIF 中的 dn 行不能用于重命名条目——改名请使用「Modify DN」…」（`watch([ldifText, ldifMode])`，`EntryEditorDialog.vue` L128-133）；spec L281-292 同路径单测覆盖 |
+| P2-24 连接切换状态重置 | ✅ 代码路径通过（真机留待） | 代码审查：`syncConnectionContext`（`App.vue` L486-505）以模块级 `lastSyncedConnectionId` 检测切换，`switched` 分支关闭编辑器/删除/ModifyDN 三弹窗、清空 results/resultCount/resultTruncated/resultAtLimit/hasSearched/searchModel；树随 baseDn watch 重载（baseDn 相同的连接间切换树不重载，仍属 mock 单连接的已知限制）。补充注入验证：init 脚本包装 `onContextChange` 下发新 connectionId → 已开的编辑器关闭、结果表 3 行清空、恢复空态。**真机多连接表现留待宿主环境复验**（同 R5 备注） |
+| P2-25 删除/改名后结果联动 | ✅ 真修好 | 代码路径：`confirmDelete`/`confirmRename` 调 `refreshResultsAfterWrite(matcher)`（`App.vue` L191-195），受影响 DN 仍在结果中时重放最近一次搜索。浏览器实测：搜索 `ou=services` 得 3 行 → 树上展开并删除 `cn=web` → 原条目行从结果中消失（3 → 2 行，cn=ldap 保留），树同步消失，通知「条目已删除」；无残留行、无双击 entry not found。删除后重搜补足下一批属分页聚合预期行为 |
+
+### 收敛抽查结果表（已收口项复跑，5 条）
+
+| 项 | 抽查结论 | 断言摘要 |
+| --- | --- | --- |
+| P1-3 导出截断告知 | ✅ 无回退 | 右键导出 ou=people → LDIF 实收 1001 行 `dn:`（含 1000 users + ou，不再静默 500），通知「已导出 LDIF」 |
+| P2-13 仅改 dn 无变更通知 | ✅ 无回退 | LDIF 内仅改 dn 行保存 → 通知「没有需要保存的修改」、编辑器关闭；重搜无 ghost 条目（uid=ghost0010 计数 0） |
+| P2-17 弹窗 role=dialog | ✅ 无回退 | 编辑器/删除/ModifyDN/Schema/连接 5 个弹窗逐一打开：`[role=dialog][aria-modal=true]` 各恰 1 个，aria-label 均存在 |
+| P2-20 RDN 预检 | ✅ 无回退 | ModifyDN 填 `cn=bad,dn` → 行内红字「RDN 无效：请使用 属性=值 形式…」+ 确认按钮禁用；改回合法 `cn=services2` → 错误消失、确认恢复可用 |
+| P2-21 预设删除确认 | ✅ 无回退 | 删除预设触发原生 confirm，文案完整「确定删除搜索预设「R6点验预设」？此操作不可撤销。」；接受后通知「预设已删除」，未阻断正常流 |
+
+### 收敛判定
+
+第 6 轮零新发现，扫描收敛。R5 的 4 条 P2（P2-22 ～ P2-25）修复全部属实：3 条浏览器实测通过，
+1 条（P2-24）代码路径 + 注入模拟通过、真机多连接表现留待宿主复验（延续 R5 备注，不构成新缺陷）；
+5 条抽查项无回退；单测基线 23 文件 292 用例全绿。六轮累计：P0 × 0、P1 × 3、P2 × 25、观察项 13，
+全部 P0/P1/P2 均已收口。后续 UI 扫描仅在宿主契约变更（`scripts/host-sync.sh` 同步）或插件前端
+大改时按需重开，建议优先复验 P2-24 的真机多连接场景。

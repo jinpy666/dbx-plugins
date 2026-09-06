@@ -12,6 +12,7 @@
  * container degradation to the minimal column set.
  */
 import type { ColDef, ValueFormatterParams } from "ag-grid-community";
+import { ref } from "vue";
 import type {
   GroupMember,
   GroupOffsetRow,
@@ -24,8 +25,44 @@ import type {
   TopicOffsetRow,
   TopicPartitionInfo,
 } from "./api";
-import { formatTimestamp, headersPreview, previewText } from "./kafkaModel";
+import { formatTimestamp, timestampFilterTextComparator, timestampIso, headersPreview, previewText, type TimestampTz } from "./kafkaModel";
 import { t, workbenchLocale } from "./i18n";
+
+// -- timestamp timezone（F6-3：本地/UTC 切换，localStorage `kafka.ts.tz` 记忆）-----
+// 行映射（to*Rows）与列 valueFormatter 共同消费该 ref：MessagesPanel 切换后
+// computed 重建列与行，时间戳单元格即时换区；宿主 webview 禁存储时静默降级。
+
+export const TIMESTAMP_TZ_STORAGE_KEY = "kafka.ts.tz";
+
+function loadStoredTimestampTz(): TimestampTz {
+  try {
+    return localStorage.getItem(TIMESTAMP_TZ_STORAGE_KEY) === "utc" ? "utc" : "local";
+  } catch {
+    return "local";
+  }
+}
+
+export const workbenchTimestampTz = ref<TimestampTz>(loadStoredTimestampTz());
+
+export function setWorkbenchTimestampTz(tz: TimestampTz): void {
+  workbenchTimestampTz.value = tz === "utc" ? "utc" : "local";
+  try {
+    localStorage.setItem(TIMESTAMP_TZ_STORAGE_KEY, workbenchTimestampTz.value);
+  } catch {
+    /* 存储不可用：仅内存态 */
+  }
+}
+
+export function toggleWorkbenchTimestampTz(): TimestampTz {
+  const next: TimestampTz = workbenchTimestampTz.value === "utc" ? "local" : "utc";
+  setWorkbenchTimestampTz(next);
+  return next;
+}
+
+/** 单元格 title：完整 ISO-8601（行内 raw.timestamp → ISO；缺失返回空串不悬停）。 */
+export function timestampIsoTooltip(params: { data?: { raw?: { timestamp?: number } } | null }): string {
+  return timestampIso(params.data?.raw?.timestamp);
+}
 
 // -- view models ----------------------------------------------------------------
 
@@ -139,7 +176,7 @@ export function toMessageRows(messages: KafkaMessage[]): MessageRow[] {
     id: `${message.partition}:${message.offset}`,
     partition: message.partition,
     offset: message.offset,
-    timestampText: formatTimestamp(message.timestamp),
+    timestampText: formatTimestamp(message.timestamp, workbenchTimestampTz.value),
     keyText: previewText(message.key, 60),
     valueText: previewText(message.valueText, 160),
     headersText: headersPreview(message.headers),
@@ -225,7 +262,7 @@ export function toTopicOffsetRows(rows: TopicOffsetRow[]): TopicOffsetVm[] {
   return rows.map((row) => ({
     partition: row.partition,
     offset: row.offset,
-    timestampText: formatTimestamp(row.timestamp),
+    timestampText: formatTimestamp(row.timestamp, workbenchTimestampTz.value),
     leaderEpoch: row.leaderEpoch === undefined || row.leaderEpoch === null ? "—" : String(row.leaderEpoch),
     raw: row,
   }));
@@ -263,6 +300,63 @@ function textColumn(field: string, headerKey: string, extra: Partial<ColDef> = {
   return { field, headerName: t(headerKey), sortable: true, resizable: true, filter: "agTextColumnFilter", ...extra };
 }
 
+/**
+ * 时间戳列（F6-6）：agDateColumnFilter（ag-grid community 自带）+ 比较器按
+ * 生成时区解析单元格文本；单元格文本 = formatTimestamp(tz)，title 悬停完整 ISO。
+ */
+function timestampColumn(headerKey: string, extra: Partial<ColDef> = {}): ColDef {
+  return {
+    field: "timestampText",
+    headerName: t(headerKey),
+    sortable: true,
+    resizable: true,
+    filter: "agDateColumnFilter",
+    filterParams: {
+      // 比较器捕获当前 tz（列在 computed 内构建，tz/locale 切换都会重建）。
+      comparator: (filterLocalDateAtMidnight: Date, cellValue: unknown) =>
+        timestampFilterTextComparator(filterLocalDateAtMidnight, cellValue, workbenchTimestampTz.value),
+    },
+    cellClass: "mono-s",
+    tooltipValueGetter: timestampIsoTooltip,
+    ...extra,
+  };
+}
+
+/**
+ * 行操作列（F6-2 复制 JSON / F5 克隆）：cellRenderer 返回原生 button DOM
+ * （DbxAgGrid 是 vanilla createGrid，不走 Vue 组件渲染器）。不排序/过滤。
+ */
+function actionColumn<T>(
+  label: string,
+  titleKey: string,
+  onAction: (data: T) => void,
+  extra: Partial<ColDef<T>> = {},
+): ColDef<T> {
+  return {
+    colId: `action-${label}`,
+    headerName: "",
+    sortable: false,
+    resizable: false,
+    filter: false,
+    suppressMovable: true,
+    width: 64,
+    cellRenderer: (params: { data?: T | null }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "grid-action-button";
+      button.textContent = label;
+      button.title = t(titleKey);
+      button.setAttribute("aria-label", t(titleKey));
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (params.data) onAction(params.data);
+      });
+      return button;
+    },
+    ...extra,
+  };
+}
+
 function numberColumn(field: string, headerKey: string, extra: Partial<ColDef> = {}): ColDef {
   return {
     field,
@@ -296,15 +390,17 @@ function formatNumberCell(value: unknown): string {
   return formatter.format(num);
 }
 
-export function messageColumns(): ColDef<MessageRow>[] {
+export function messageColumns(options: { onCopyJson?: (row: MessageRow) => void } = {}): ColDef<MessageRow>[] {
   return [
     numberColumn("partition", "messages.colPartition", { maxWidth: 90 }),
     numberColumn("offset", "messages.colOffset", { maxWidth: 120 }),
-    textColumn("timestampText", "messages.colTimestamp", { minWidth: 150, cellClass: "mono-s" }),
+    timestampColumn("messages.colTimestamp", { minWidth: 150 }),
     textColumn("keyText", "messages.colKey", { cellClass: "mono-s" }),
     textColumn("valueText", "messages.colValue", { flex: 2, minWidth: 180, tooltipField: "valueText" }),
     textColumn("headersText", "messages.colHeaders", { cellClass: "mono-s", tooltipField: "headersText" }),
     textColumn("schemaText", "messages.colSchema", { cellClass: "mono-s", minWidth: 120 }),
+    // F6-2：行操作「复制 JSON」（传入回调才出列，窄容器降级集不含它）。
+    ...(options.onCopyJson ? [actionColumn<MessageRow>("{}", "messages.copyRowJson", options.onCopyJson)] : []),
   ];
 }
 
@@ -394,7 +490,7 @@ export function topicOffsetColumns(): ColDef<TopicOffsetVm>[] {
   return [
     numberColumn("partition", "topics.colPartition", { maxWidth: 90 }),
     numberColumn("offset", "messages.colOffset", { maxWidth: 130 }),
-    textColumn("timestampText", "messages.colTimestamp", { minWidth: 150, cellClass: "mono-s" }),
+    timestampColumn("messages.colTimestamp", { minWidth: 150 }),
     textColumn("leaderEpoch", "Epoch", { maxWidth: 90, cellClass: "mono-s", headerName: "Epoch" }),
   ];
 }
@@ -408,11 +504,13 @@ export function subjectColumns(): ColDef<SubjectVm>[] {
   ];
 }
 
-export function schemaVersionColumns(): ColDef<SchemaVersionVm>[] {
+export function schemaVersionColumns(options: { onClone?: (row: SchemaVersionVm) => void } = {}): ColDef<SchemaVersionVm>[] {
   return [
     numberColumn("version", "schemas.colVersion", { maxWidth: 100 }),
     numberColumn("id", "schemas.colId", { maxWidth: 110 }),
     textColumn("format", "schemas.colFormat", { maxWidth: 100, cellClass: "mono-s" }),
+    // F5：版本表行操作「克隆」（注册弹窗预填 schema 文本）。
+    ...(options.onClone ? [actionColumn<SchemaVersionVm>("⧉", "schemas.clone", options.onClone)] : []),
   ];
 }
 
@@ -487,6 +585,13 @@ export function savePreferredPageSize(tableKey: string, size: number): void {
 // 消费的键：to / of / page / more / number（行摘要「1 to 50 of 100」与页摘要
 // 「Page 1 of 2」）、firstPage/previousPage/nextPage/lastPage（翻页按钮 aria）、
 // ariaPageSizeSelectorLabel + pageSizeSelectorLabel（页大小选择器）。
+// Phase 3 F6-6（date/number filter 键，从 ag-grid 36.1.0 dist 包内核对的实际
+// 消费点）：dateFormatOoo（DateFilter.setDateComponent 每输入框 placeholder）、
+// before/after（DateFilter.translate 把 lessThan/greaterThan 归一为 before/after）、
+// lessThanOrEqual/greaterThanOrEqual（数字 filter 选项）、inRangeStart/inRangeEnd
+// （resetPlaceholder 的双输入 placeholder）、ariaDateFilterInput（只读日期输入
+// aria）、invalidDate/invalidNumber（dataType 格式化校验文案）、blank/notBlank/
+// empty（零输入选项名）。
 
 export const AG_GRID_LOCALE_KEYS = [
   "searchOoo",
@@ -518,6 +623,19 @@ export const AG_GRID_LOCALE_KEYS = [
   "applyFilter",
   "resetFilter",
   "cancelFilter",
+  "dateFormatOoo",
+  "before",
+  "after",
+  "greaterThanOrEqual",
+  "lessThanOrEqual",
+  "inRangeStart",
+  "inRangeEnd",
+  "ariaDateFilterInput",
+  "invalidDate",
+  "invalidNumber",
+  "blank",
+  "notBlank",
+  "empty",
 ] as const;
 
 type AgLocaleText = Record<(typeof AG_GRID_LOCALE_KEYS)[number], string>;
@@ -553,6 +671,19 @@ const AG_LOCALE_TEXT: Record<string, AgLocaleText> = {
     applyFilter: "Apply",
     resetFilter: "Reset",
     cancelFilter: "Cancel",
+    dateFormatOoo: "yyyy-mm-dd",
+    before: "Before",
+    after: "After",
+    greaterThanOrEqual: "Greater or equal",
+    lessThanOrEqual: "Less or equal",
+    inRangeStart: "From",
+    inRangeEnd: "To",
+    ariaDateFilterInput: "Date Filter Input",
+    invalidDate: "Invalid Date",
+    invalidNumber: "Invalid Number",
+    blank: "Blank",
+    notBlank: "Not blank",
+    empty: "Empty",
   },
   "zh-CN": {
     searchOoo: "搜索…",
@@ -584,6 +715,19 @@ const AG_LOCALE_TEXT: Record<string, AgLocaleText> = {
     applyFilter: "应用",
     resetFilter: "重置",
     cancelFilter: "取消",
+    dateFormatOoo: "年-月-日",
+    before: "早于",
+    after: "晚于",
+    greaterThanOrEqual: "大于等于",
+    lessThanOrEqual: "小于等于",
+    inRangeStart: "起",
+    inRangeEnd: "止",
+    ariaDateFilterInput: "日期过滤输入",
+    invalidDate: "无效日期",
+    invalidNumber: "无效数字",
+    blank: "为空",
+    notBlank: "不为空",
+    empty: "空",
   },
   "zh-TW": {
     searchOoo: "搜尋…",
@@ -615,6 +759,19 @@ const AG_LOCALE_TEXT: Record<string, AgLocaleText> = {
     applyFilter: "套用",
     resetFilter: "重設",
     cancelFilter: "取消",
+    dateFormatOoo: "年-月-日",
+    before: "早於",
+    after: "晚於",
+    greaterThanOrEqual: "大於等於",
+    lessThanOrEqual: "小於等於",
+    inRangeStart: "起",
+    inRangeEnd: "迄",
+    ariaDateFilterInput: "日期過濾輸入",
+    invalidDate: "無效日期",
+    invalidNumber: "無效數字",
+    blank: "空白",
+    notBlank: "非空白",
+    empty: "空",
   },
   es: {
     searchOoo: "Buscar…",
@@ -646,6 +803,19 @@ const AG_LOCALE_TEXT: Record<string, AgLocaleText> = {
     applyFilter: "Aplicar",
     resetFilter: "Restablecer",
     cancelFilter: "Cancelar",
+    dateFormatOoo: "aaaa-mm-dd",
+    before: "Antes de",
+    after: "Después de",
+    greaterThanOrEqual: "Mayor o igual",
+    lessThanOrEqual: "Menor o igual",
+    inRangeStart: "Desde",
+    inRangeEnd: "Hasta",
+    ariaDateFilterInput: "Entrada de filtro de fecha",
+    invalidDate: "Fecha no válida",
+    invalidNumber: "Número no válido",
+    blank: "En blanco",
+    notBlank: "No en blanco",
+    empty: "Vacío",
   },
   it: {
     searchOoo: "Cerca…",
@@ -677,6 +847,19 @@ const AG_LOCALE_TEXT: Record<string, AgLocaleText> = {
     applyFilter: "Applica",
     resetFilter: "Reimposta",
     cancelFilter: "Annulla",
+    dateFormatOoo: "aaaa-mm-gg",
+    before: "Prima del",
+    after: "Dopo il",
+    greaterThanOrEqual: "Maggiore o uguale",
+    lessThanOrEqual: "Minore o uguale",
+    inRangeStart: "Da",
+    inRangeEnd: "A",
+    ariaDateFilterInput: "Input filtro data",
+    invalidDate: "Data non valida",
+    invalidNumber: "Numero non valido",
+    blank: "Vuoto",
+    notBlank: "Non vuoto",
+    empty: "Nessun valore",
   },
   ja: {
     searchOoo: "検索…",
@@ -708,6 +891,19 @@ const AG_LOCALE_TEXT: Record<string, AgLocaleText> = {
     applyFilter: "適用",
     resetFilter: "リセット",
     cancelFilter: "キャンセル",
+    dateFormatOoo: "yyyy-mm-dd",
+    before: "以前",
+    after: "以降",
+    greaterThanOrEqual: "以上",
+    lessThanOrEqual: "以下",
+    inRangeStart: "開始",
+    inRangeEnd: "終了",
+    ariaDateFilterInput: "日付フィルター入力",
+    invalidDate: "無効な日付",
+    invalidNumber: "無効な数値",
+    blank: "空欄",
+    notBlank: "空欄以外",
+    empty: "空",
   },
   "pt-BR": {
     searchOoo: "Pesquisar…",
@@ -739,6 +935,19 @@ const AG_LOCALE_TEXT: Record<string, AgLocaleText> = {
     applyFilter: "Aplicar",
     resetFilter: "Redefinir",
     cancelFilter: "Cancelar",
+    dateFormatOoo: "aaaa-mm-dd",
+    before: "Antes de",
+    after: "Depois de",
+    greaterThanOrEqual: "Maior ou igual",
+    lessThanOrEqual: "Menor ou igual",
+    inRangeStart: "De",
+    inRangeEnd: "Até",
+    ariaDateFilterInput: "Entrada do filtro de data",
+    invalidDate: "Data inválida",
+    invalidNumber: "Número inválido",
+    blank: "Em branco",
+    notBlank: "Não em branco",
+    empty: "Vazio",
   },
 };
 

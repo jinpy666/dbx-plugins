@@ -13,6 +13,17 @@ const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
   { pattern: /confirm[_ ]?topic/i, key: "err.confirmTopic" },
   { pattern: /allow.?delete|delete.*(dis|not)\s*allowed/i, key: "err.deleteBlocked" },
   { pattern: /read.?only|blocked by policy/i, key: "err.readOnly" },
+  // OAUTHBEARER/MSK IAM 类（Phase 3 F2；先于通用 SASL 认证类——错误串含 msk/oauth
+  // 时给针对性可行动文案，§12.7：无凭据/region 缺失要快速收敛）
+  {
+    pattern: /msk[ _-]?(iam)?[ _-]?region|region (is )?(required|missing)|invalid region/i,
+    key: "err.oauthRegion",
+  },
+  {
+    pattern:
+      /oauthbearer|aws[ _-]?msk|msk[ _-]?iam|generate.*auth.?token|unable to load (aws )?credentials|no (aws )?credential|token source|aws-sdk.*credential|expiredtoken/i,
+    key: "err.oauthCredential",
+  },
   // 认证/TLS 类
   { pattern: /sasl|authentication|scram|badcredentials|result code 49/i, key: "err.auth" },
   { pattern: /certificate|x509|unknown authority|tls.*handshake|ssl/i, key: "err.tls" },

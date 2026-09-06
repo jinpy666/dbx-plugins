@@ -772,14 +772,7 @@ export function propertiesToConnectionForm(properties: ConfluentProperties): Con
 }
 
 // -- display helpers ---------------------------------------------------------------
-
-export function formatTimestamp(ms: number | undefined): string {
-  if (!ms || !Number.isFinite(ms)) return "—";
-  const date = new Date(ms);
-  if (Number.isNaN(date.getTime())) return String(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
+// formatTimestamp / timestampIso 带 tz 语义的实现移到文件后段「时间戳时区」一节。
 
 /** 消息表格 value 预览：单行化 + 截断（详情抽屉看全文）。 */
 export function previewText(text: string | undefined, maxLength = 120): string {
@@ -933,6 +926,595 @@ export function nextFocusIndex(count: number, currentIndex: number, shift: boole
   if (currentIndex < 0 || currentIndex >= count) return shift ? count - 1 : 0;
   return (currentIndex + (shift ? -1 : 1) + count) % count;
 }
+
+// -- 时间戳时区（F6-3）：formatTimestamp 带 tz 参数（缺省 local，行为不变）--------
+
+export type TimestampTz = "local" | "utc";
+
+/**
+ * unix ms → 「YYYY-MM-DD HH:mm:ss」文本。tz=utc 用 UTC 各分量（文本与单元格
+ * title 的完整 ISO 同一时区语义），tz=local 保持既有本地时区行为。
+ */
+export function formatTimestamp(ms: number | undefined, tz: TimestampTz = "local"): string {
+  if (!ms || !Number.isFinite(ms)) return "—";
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return String(ms);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  if (tz === "utc") {
+    return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+  }
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/** unix ms → 完整 ISO-8601（单元格 title 悬停用）；非法值原样字符串化。 */
+export function timestampIso(ms: number | undefined): string {
+  if (!ms || !Number.isFinite(ms)) return "";
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? String(ms) : date.toISOString();
+}
+
+/**
+ * 时间戳列 date filter 比较器（F6-6）：把单元格文本「YYYY-MM-DD HH:mm:ss」
+ * 按其生成时区解析回时间后按天比较（ag-grid 传入本地零点的过滤日期）。
+ * 返回 -1/0/1；无法解析的单元格值排到过滤日期之后（不算命中）。
+ */
+export function timestampFilterTextComparator(filterLocalDateAtMidnight: Date, cellText: unknown, tz: TimestampTz = "local"): number {
+  const text = String(cellText ?? "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return 1;
+  const [, year, month, day, hour, minute, second] = match;
+  const iso =
+    tz === "utc"
+      ? `${year}-${month}-${day}T${hour}:${minute}:${second}Z`
+      : `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return 1;
+  const cell = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  if (cell.getTime() === filterLocalDateAtMidnight.getTime()) return 0;
+  return cell.getTime() > filterLocalDateAtMidnight.getTime() ? 1 : -1;
+}
+
+// -- 即时搜索（F6-1）：通用防抖 + 流式面板已加载行过滤 ---------------------------
+
+/** 防抖：延迟 ms 内重复调用只保留最后一次；返回的 cancel 丢弃未执行调用。 */
+export function debounce<A extends unknown[]>(fn: (...args: A) => void, waitMs: number): ((...args: A) => void) & { cancel: () => void } {
+  let timer: number | undefined;
+  const wrapped = (...args: A) => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => fn(...args), waitMs);
+  };
+  wrapped.cancel = () => window.clearTimeout(timer);
+  return wrapped;
+}
+
+/** 流式面板即时搜索：keyword 按 contains 匹配 partition/offset/key/value/headers 文本。 */
+export function filterMessagesByKeyword<T extends { partition: number; offset: number; key?: string; valueText?: string; headers?: Record<string, string> }>(messages: T[], keyword: string): T[] {
+  const needle = keyword.trim().toLowerCase();
+  if (!needle) return messages;
+  return messages.filter((message) => {
+    const haystack = [
+      String(message.partition),
+      String(message.offset),
+      message.key ?? "",
+      message.valueText ?? "",
+      Object.entries(message.headers ?? {}).map(([key, value]) => `${key}=${value}`).join(","),
+    ].join("\n");
+    return haystack.toLowerCase().includes(needle);
+  });
+}
+
+// -- 复制族（F6-2）：navigator.clipboard 优先，execCommand 兜底 ----------------------
+
+/** 写剪贴板：clipboard API 不可用或拒绝时用隐藏 textarea + execCommand 兜底。 */
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  const value = String(text ?? "");
+  if (!value) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    /* 拒绝/不可用 → 落到 execCommand 兜底 */
+  }
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand("copy");
+    textarea.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+// -- 生产分区校验（F6-4）：partition 超出所选 topic 分区数的行内校验 ----------------
+
+/**
+ * partition 输入校验：空 = 自动分区（合法）；非负整数且 < partitionCount 才合法。
+ * partitionCount 缺省（topic 未带健康度/列表未到）时不做上界校验。
+ * 返回 i18n 键片段（produce.partitionInvalid / produce.partitionOutOfRange）或 null。
+ */
+export function partitionInputIssue(text: string, partitionCount?: number): string | null {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) return "partitionInvalid";
+  if (partitionCount !== undefined && partitionCount > 0 && Number(trimmed) >= partitionCount) return "partitionOutOfRange";
+  return null;
+}
+
+// -- OAUTHBEARER 连接表单联动（F2 前端半件；冻结契约 §12.2.3，json camelCase）------
+
+export type OauthTokenSource = "msk_iam" | "static_token";
+
+/** OAUTHBEARER 各字段组可见性（镜像 manifest visible_when 联动链，供 spec/摘要共用）。 */
+export interface OauthFormVisibility {
+  /** oauth_token_source：security_protocol 含 SASL 且 mechanism=OAUTHBEARER。 */
+  oauthTokenSource: boolean;
+  /** msk_* 组：token source = msk_iam。 */
+  mskFields: boolean;
+  /** oauth_static_token：token source = static_token。 */
+  staticToken: boolean;
+}
+
+const SASL_PROTOCOLS = new Set(["SASL_PLAINTEXT", "SASL_SSL"]);
+
+function normalizeTokenSource(source: string): OauthTokenSource | "" {
+  const normalized = String(source ?? "").trim().toLowerCase();
+  return normalized === "msk_iam" || normalized === "static_token" ? normalized : "";
+}
+
+/** security_protocol × sasl_mechanism × oauth_token_source → 字段组可见性。 */
+export function oauthFormVisibility(securityProtocol: string, saslMechanism: string, oauthTokenSource: string): OauthFormVisibility {
+  const sasl = SASL_PROTOCOLS.has(String(securityProtocol ?? "").trim().toUpperCase());
+  const oauth = String(saslMechanism ?? "").trim().toUpperCase() === "OAUTHBEARER";
+  if (!sasl || !oauth) return { oauthTokenSource: false, mskFields: false, staticToken: false };
+  const source = normalizeTokenSource(oauthTokenSource);
+  return { oauthTokenSource: true, mskFields: source === "msk_iam", staticToken: source === "static_token" };
+}
+
+/** OAUTHBEARER 要求 SASL_SSL（否则后端 -32602）：表单 hint 用。 */
+export function oauthRequiresSaslSsl(securityProtocol: string, saslMechanism: string): boolean {
+  const protocol = String(securityProtocol ?? "").trim().toUpperCase();
+  return String(saslMechanism ?? "").trim().toUpperCase() === "OAUTHBEARER" && protocol !== "SASL_SSL";
+}
+
+// -- Schema 三件套（F5）：模板常量（代码非 i18n）+ 详情树视图 -----------------------
+
+/** 注册弹窗「插入模板」三段静态模板（代码常量，不进 i18n）。 */
+export const SCHEMA_TEMPLATE_AVRO = `{
+  "type": "record",
+  "name": "DemoRecord",
+  "fields": [
+    { "name": "id", "type": "string" },
+    { "name": "amount", "type": "double" },
+    { "name": "quantity", "type": "int" },
+    { "name": "status", "type": { "type": "enum", "name": "Status", "symbols": ["NEW", "PAID", "CANCELLED"] } }
+  ]
+}`;
+
+export const SCHEMA_TEMPLATE_JSON = `{
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "amount": { "type": "number" },
+    "quantity": { "type": "integer" },
+    "status": { "type": "string", "enum": ["NEW", "PAID", "CANCELLED"] }
+  },
+  "required": ["id"]
+}`;
+
+export const SCHEMA_TEMPLATE_PROTOBUF = `syntax = "proto3";
+
+package demo.v1;
+
+message DemoMessage {
+  string id = 1;
+  double amount = 2;
+  int32 quantity = 3;
+  string status = 4;
+}`;
+
+export type SchemaTemplateFormat = "avro" | "json" | "protobuf";
+
+export function schemaTemplateFor(format: SchemaTemplateFormat): string {
+  if (format === "json") return SCHEMA_TEMPLATE_JSON;
+  if (format === "protobuf") return SCHEMA_TEMPLATE_PROTOBUF;
+  return SCHEMA_TEMPLATE_AVRO;
+}
+
+/** schema 树节点（详情区 树/文本 toggle 的递归渲染模型）。 */
+export interface SchemaTreeNode {
+  /** 字段名 / 分支标注（items、values 等）。 */
+  name: string;
+  /** 类型标注（record/string/union:…/logicalType 标尾等）。 */
+  type: string;
+  /** Avro default / JSON Schema default（有才显）。 */
+  defaultValue?: string;
+  children?: SchemaTreeNode[];
+}
+
+/**
+ * AVRO / JSON Schema 文本 → 树模型（F5 树视图）。PROTOBUF 与解析失败返回 null
+ * （调用方保持文本 + 行内提示）。递归覆盖 record/array/map/union/enum/fixed
+ * 与 JSON Schema object/array/enum/default。
+ */
+export function buildSchemaTree(schemaText: string): SchemaTreeNode | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(schemaText);
+  } catch {
+    return null;
+  }
+  return buildSchemaTreeNode("root", parsed, 0);
+}
+
+const SCHEMA_TREE_DEPTH_MAX = 16;
+
+function nodeTypeLabel(node: Record<string, unknown>, fallback: string): string {
+  const logical = typeof node.logicalType === "string" ? ` (${node.logicalType})` : "";
+  return `${fallback}${logical}`;
+}
+
+function buildSchemaTreeNode(name: string, raw: unknown, depth: number): SchemaTreeNode | null {
+  if (depth > SCHEMA_TREE_DEPTH_MAX) return null;
+  // union：取每个分支为子节点（union:第一非 null 分支标注）
+  if (Array.isArray(raw)) {
+    const children = raw
+      .map((branch, index) => buildSchemaTreeNode(`[${index}]`, branch, depth + 1))
+      .filter((branch): branch is SchemaTreeNode => branch !== null);
+    const first = raw.find((branch) => branch !== "null" && !(typeof branch === "object" && branch !== null && (branch as Record<string, unknown>).type === "null"));
+    return { name, type: `union:${avroTypeLabel(first)}`, children };
+  }
+  if (typeof raw === "string") return { name, type: raw };
+  if (typeof raw !== "object" || raw === null) return { name, type: String(raw) };
+  const node = raw as Record<string, unknown>;
+  const type = node.type;
+  const nodeDefault = "default" in node && node.default !== undefined ? stringifyTreeDefault(node.default) : undefined;
+
+  if (typeof type === "string") {
+    const label = nodeTypeLabel(node, type);
+    if (type === "record" || type === "error") {
+      const fields = Array.isArray(node.fields) ? node.fields : [];
+      const children = fields
+        .map((field) => {
+          const entry = field as Record<string, unknown>;
+          const child = buildSchemaTreeNode(String(entry.name ?? "?"), entry, depth + 1);
+          return child;
+        })
+        .filter((child): child is SchemaTreeNode => child !== null);
+      return { name, type: label, children, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+    if (type === "enum") {
+      const symbols = Array.isArray(node.symbols) ? node.symbols.map(String) : [];
+      return { name, type: symbols.length > 0 ? `enum[${symbols.join("|")}]` : "enum", ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+    if (type === "array") {
+      const child = buildSchemaTreeNode("items", node.items, depth + 1);
+      return { name, type: label, children: child ? [child] : [], ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+    if (type === "map") {
+      const child = buildSchemaTreeNode("values", node.values, depth + 1);
+      return { name, type: label, children: child ? [child] : [], ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+    if (type === "fixed") {
+      return { name, type: `${label}[${String(node.size ?? "?")}]`, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+    if (type === "object") {
+      // JSON Schema object：properties → 子节点（required 加 * 标记）。
+      const children = propertiesChildren(node, depth);
+      if (children) {
+        return { name, type: label, children, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+      }
+      return { name, type: label, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+    // 字段包装（{name, type, default}）与基础类型的内嵌逻辑类型。
+    if (node.name !== undefined || node.logicalType !== undefined) {
+      return { name: typeof node.name === "string" ? node.name : name, type: label, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+    return { name, type: label, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+  }
+  if (Array.isArray(type)) {
+    const union = buildSchemaTreeNode(name, type, depth + 1);
+    return union ? { ...union, name, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) } : { name, type: "union" };
+  }
+  if (typeof type === "object" && type !== null) {
+    const inner = buildSchemaTreeNode(name, type, depth + 1);
+    if (inner) return { ...inner, name, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+  }
+  // JSON Schema 形状（type 在子级 / properties / items / enum）。
+  const properties = typeof node.properties === "object" && node.properties !== null ? (node.properties as Record<string, unknown>) : null;
+  if (properties) {
+    const children = propertiesChildren(node, depth);
+    if (children) {
+      return { name, type: typeof node.type === "string" ? node.type : "object", children, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+    }
+  }
+  if ("items" in node) {
+    const child = buildSchemaTreeNode("items", node.items, depth + 1);
+    return { name, type: typeof node.type === "string" ? node.type : "array", children: child ? [child] : [], ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+  }
+  if (Array.isArray(node.enum)) {
+    const symbols = node.enum.map(String);
+    return { name, type: `enum[${symbols.join("|")}]`, ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+  }
+  return { name, type: typeof node.type === "string" ? node.type : typeof node.type === "object" ? "object" : String(node.type ?? "?"), ...(nodeDefault !== undefined ? { defaultValue: nodeDefault } : {}) };
+}
+
+function avroTypeLabel(raw: unknown): string {
+  if (raw === undefined) return "null";
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "object" && raw !== null) {
+    const node = raw as Record<string, unknown>;
+    const base = typeof node.type === "string" ? node.type : "record";
+    return typeof node.logicalType === "string" ? `${base}(${node.logicalType})` : base;
+  }
+  return String(raw);
+}
+
+/** JSON Schema properties → 子节点（required 键名加 * 标记）；无 properties 返回 null。 */
+function propertiesChildren(node: Record<string, unknown>, depth: number): SchemaTreeNode[] | null {
+  const properties = typeof node.properties === "object" && node.properties !== null ? (node.properties as Record<string, unknown>) : null;
+  if (!properties) return null;
+  const required = new Set(Array.isArray(node.required) ? node.required.map(String) : []);
+  return Object.entries(properties)
+    .map(([key, value]) => {
+      const child = buildSchemaTreeNode(key, value, depth + 1);
+      if (child && required.has(key)) child.type = `${child.type} *`;
+      return child;
+    })
+    .filter((child): child is SchemaTreeNode => child !== null);
+}
+
+function stringifyTreeDefault(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// -- Flow 随机测试数据生成（F4；固定种子 RNG + Avro 随机 JSON + 模板占位符）---------
+
+/** mulberry32 PRNG：固定种子 → 固定序列（spec 固定向量断言，照 zstd 向量范式）。 */
+export type RandomSource = () => number;
+
+export function mulberry32(seed: number): RandomSource {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Flow 参数夹持：countPerSend 1..100（默认 1）、intervalMs 250..10000（默认 1000）。 */
+export function clampFlowCount(value: unknown, fallback = 1): number {
+  return clampIntInclusive(value, 1, 100, fallback);
+}
+
+export function clampFlowIntervalMs(value: unknown, fallback = 1000): number {
+  return clampIntInclusive(value, 250, 10000, fallback);
+}
+
+function clampIntInclusive(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+/** topic → 前缀匹配的 key/value subject（`<topic>-key` / `<topic>-value`）。 */
+export function matchingSchemaSubjects(topic: string, subjects: string[]): { key?: string; value?: string } {
+  const clean = String(topic ?? "").trim();
+  const result: { key?: string; value?: string } = {};
+  if (!clean) return result;
+  for (const subject of subjects) {
+    if (subject === `${clean}-key`) result.key = subject;
+    else if (subject === `${clean}-value`) result.value = subject;
+  }
+  return result;
+}
+
+const AVRO_WORDS = ["alpha", "beta", "gamma", "delta", "omega"];
+
+function randomInt(rng: RandomSource, min: number, max: number): number {
+  return min + Math.floor(rng() * (max - min + 1));
+}
+
+function randomString(rng: RandomSource): string {
+  return `${AVRO_WORDS[Math.floor(rng() * AVRO_WORDS.length)]}-${randomInt(rng, 100, 999)}`;
+}
+
+function randomUuid(rng: RandomSource): string {
+  const hex = "0123456789abcdef";
+  let out = "";
+  for (let index = 0; index < 36; index += 1) {
+    if (index === 8 || index === 13 || index === 18 || index === 23) out += "-";
+    else if (index === 14) out += "4";
+    else out += hex[Math.floor(rng() * 16)];
+  }
+  return out;
+}
+
+function daysSinceEpoch(nowMs: number): number {
+  return Math.floor(nowMs / 86400000);
+}
+
+/**
+ * AVRO schema 文本 → 随机 JSON 值（F4 schema_random）。递归覆盖
+ * record/array/map/union（非 null 首支）/enum/fixed/int/long/float/double/
+ * boolean/string/bytes + 逻辑类型 date（days 数）/timestamp-millis（unix ms
+ * 数）/uuid/decimal（数值，最优尽力）。解析失败/空 schema 返回 { error }。
+ */
+export function generateAvroRandom(schemaText: string, rng: RandomSource, nowMs: number = Date.now()): { value: string } | { error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(schemaText);
+  } catch {
+    return { error: "schema is not valid JSON" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { error: "avro schema must be a JSON object" };
+  }
+  if ((parsed as Record<string, unknown>).type === undefined) {
+    return { error: "avro schema is missing \"type\"" };
+  }
+  try {
+    // 顶层直接传整个 schema 节点（{type:"record",…} / {type:"long",logicalType:…}）。
+    return { value: JSON.stringify(generateAvroValue(parsed, rng, nowMs, 0)) };
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : String(cause) };
+  }
+}
+
+const AVRO_GENERATION_DEPTH_MAX = 16;
+
+function generateAvroValue(raw: unknown, rng: RandomSource, nowMs: number, depth: number): unknown {
+  if (depth > AVRO_GENERATION_DEPTH_MAX) throw new Error("avro schema nesting too deep");
+  // union：非 null 首支（契约：union（非 null 首支））。
+  if (Array.isArray(raw)) {
+    const branch = raw.find((entry) => entry !== "null" && !(typeof entry === "object" && entry !== null && (entry as Record<string, unknown>).type === "null"));
+    if (branch === undefined) return null;
+    return generateAvroValue(branch, rng, nowMs, depth + 1);
+  }
+  if (typeof raw === "string") {
+    return generateAvroPrimitive(raw, rng, nowMs);
+  }
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error(`unsupported avro type: ${String(raw)}`);
+  }
+  const node = raw as Record<string, unknown>;
+  const logical = typeof node.logicalType === "string" ? node.logicalType : "";
+  const type = node.type;
+  if (typeof type === "string") {
+    if (logical) return generateAvroLogical(logical, rng, nowMs, node);
+    switch (type) {
+      case "record":
+      case "error": {
+        const fields = Array.isArray(node.fields) ? node.fields : [];
+        const record: Record<string, unknown> = {};
+        for (const field of fields) {
+          const entry = field as Record<string, unknown>;
+          record[String(entry.name ?? "?")] = generateAvroValue(entry.type, rng, nowMs, depth + 1);
+        }
+        return record;
+      }
+      case "enum": {
+        const symbols = Array.isArray(node.symbols) ? node.symbols.map(String) : [];
+        if (symbols.length === 0) throw new Error("avro enum has no symbols");
+        return symbols[Math.floor(rng() * symbols.length)];
+      }
+      case "array": {
+        return Array.from({ length: randomInt(rng, 1, 3) }, () => generateAvroValue(node.items, rng, nowMs, depth + 1));
+      }
+      case "map": {
+        const map: Record<string, unknown> = {};
+        const count = randomInt(rng, 1, 3);
+        for (let index = 0; index < count; index += 1) {
+          map[`k${index}`] = generateAvroValue(node.values, rng, nowMs, depth + 1);
+        }
+        return map;
+      }
+      case "fixed": {
+        const size = Number(node.size ?? 0);
+        let out = "";
+        for (let index = 0; index < Math.max(1, Math.min(size, 64)); index += 1) out += String(randomInt(rng, 0, 9));
+        return out;
+      }
+      default:
+        return generateAvroPrimitive(type, rng, nowMs);
+    }
+  }
+  if (Array.isArray(type) || typeof type === "object") {
+    return generateAvroValue(type, rng, nowMs, depth + 1);
+  }
+  throw new Error(`unsupported avro type: ${String(type)}`);
+}
+
+function generateAvroPrimitive(type: string, rng: RandomSource, nowMs: number): unknown {
+  switch (type) {
+    case "null":
+      return null;
+    case "boolean":
+      return rng() < 0.5;
+    case "int":
+      return randomInt(rng, 0, 999);
+    case "long":
+      return randomInt(rng, 0, 99999);
+    case "float":
+    case "double":
+      return Math.round(rng() * 10000) / 100;
+    case "bytes":
+      return String(randomInt(rng, 1000, 9999));
+    case "string":
+      return randomString(rng);
+    default:
+      throw new Error(`unsupported avro type: ${type}`);
+  }
+}
+
+function generateAvroLogical(logical: string, rng: RandomSource, nowMs: number, node: Record<string, unknown>): unknown {
+  switch (logical) {
+    case "date":
+      return daysSinceEpoch(nowMs);
+    case "timestamp-millis":
+      return nowMs;
+    case "timestamp-micros":
+      return nowMs * 1000;
+    case "time-millis":
+      return nowMs % 86400000;
+    case "time-micros":
+      return (nowMs % 86400000) * 1000;
+    case "uuid":
+      return randomUuid(rng);
+    case "decimal": {
+      const scale = Number(node.scale ?? 0);
+      const base = randomInt(rng, 1, 99999);
+      return scale > 0 ? Math.round(base / Math.pow(10, scale) * Math.pow(10, scale)) / Math.pow(10, scale) : base;
+    }
+    default:
+      // 未知逻辑类型按底层基础类型生成。
+      return generateAvroValue(node.type, rng, nowMs, 1);
+  }
+}
+
+// -- Flow 模板占位符展开（F4 template）----------------------------------------------
+
+const TEMPLATE_INT_PATTERN = /\{int:(-?\d+),(-?\d+)\}/g;
+const TEMPLATE_FLOAT_PATTERN = /\{float:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\}/g;
+const TEMPLATE_PICK_PATTERN = /\{pick:([^}]*)\}/g;
+
+/**
+ * JSON 模板占位符展开：{uuid} {now} {int:min,max} {float:min,max} {pick:a|b|c}。
+ * nowMs 可注入（spec 固定向量）；未知占位符原样保留。
+ */
+export function expandTemplate(text: string, rng: RandomSource, nowMs: number = Date.now()): string {
+  let out = String(text ?? "");
+  out = out.replace(/\{uuid\}/g, () => randomUuid(rng));
+  out = out.replace(/\{now\}/g, () => new Date(nowMs).toISOString());
+  out = out.replace(TEMPLATE_INT_PATTERN, (_match, min: string, max: string) => String(randomInt(rng, Number(min), Number(max))));
+  out = out.replace(TEMPLATE_FLOAT_PATTERN, (_match, min: string, max: string) => {
+    const low = Number(min);
+    const high = Number(max);
+    const value = low + rng() * (high - low);
+    return String(Math.round(value * 100) / 100);
+  });
+  out = out.replace(TEMPLATE_PICK_PATTERN, (_match, choices: string) => {
+    const parts = choices.split("|").filter((part) => part.length > 0);
+    return parts.length === 0 ? _match : parts[Math.floor(rng() * parts.length)];
+  });
+  return out;
+}
+
+// -- 弹层 keydown 决策（P1-2/P1-3：Esc 关闭 + Tab 焦点陷阱；FOCUSABLE_SELECTOR 等见上）--
 
 /** 弹层 keydown 决策：Esc → close；Tab → focus 回绕目标下标；其余 → none。 */
 export type ModalKeydownDecision = { kind: "none" } | { kind: "close" } | { kind: "focus"; index: number };

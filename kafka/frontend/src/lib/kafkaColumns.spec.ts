@@ -17,6 +17,7 @@ import {
   partitionColumns,
   savePreferredPageSize,
   schemaVersionColumns,
+  setWorkbenchTimestampTz,
   subjectColumns,
   toAclRows,
   toGroupOffsetRows,
@@ -31,7 +32,8 @@ import {
   topicColumns,
   topicOffsetColumns,
 } from "./kafkaColumns";
-import { setWorkbenchLocale, messages } from "./i18n";
+import { setWorkbenchLocale, messages, t } from "./i18n";
+import type { MessageRow, SchemaVersionVm } from "./kafkaColumns";
 import type { KafkaMessage } from "./api";
 
 describe("column builders", () => {
@@ -49,9 +51,33 @@ describe("column builders", () => {
     ]);
     for (const col of cols) {
       expect(col.sortable).toBe(true);
-      expect(["agTextColumnFilter", "agNumberColumnFilter"]).toContain(col.filter);
+      // F6-6：时间戳列为 agDateColumnFilter（社区版自带 date filter）。
+      expect(["agTextColumnFilter", "agNumberColumnFilter", "agDateColumnFilter"]).toContain(col.filter);
     }
     expect(cols[0].filter).toBe("agNumberColumnFilter");
+  });
+
+  // F6-6：timestamp 列 date filter 比较器按当前 tz 解析单元格文本按天比较。
+  it("timestamp column uses the date filter with a tz-aware day comparator (F6-6)", () => {
+    setWorkbenchLocale("en");
+    const col = messageColumns().find((def) => def.field === "timestampText")!;
+    expect(col.filter).toBe("agDateColumnFilter");
+    const comparator = (col.filterParams as { comparator: (filterDate: Date, value: unknown) => number }).comparator;
+    const filterDay = new Date(2023, 10, 14); // 本地 2023-11-14 零点
+    // local tz（模块缺省）：14 日当天 → 0；13 日 → 负；15 日 → 正；非时间文本排后。
+    setWorkbenchTimestampTz("local");
+    expect(comparator(filterDay, "2023-11-14 08:00:00")).toBe(0);
+    expect(comparator(filterDay, "2023-11-13 23:59:59")).toBeLessThan(0);
+    expect(comparator(filterDay, "2023-11-15 00:00:01")).toBeGreaterThan(0);
+    expect(comparator(filterDay, "not-a-date")).toBe(1);
+    // utc tz：UTC 文本按 UTC 解析为时刻后取「本地日」与过滤日期的本地零点按天
+    // 比较（与机器时区无关的确定性断言：先求出该时刻的本地零点）。
+    setWorkbenchTimestampTz("utc");
+    const instant = new Date(Date.UTC(2023, 10, 13, 23, 0, 0));
+    const cellLocalDay = new Date(instant.getFullYear(), instant.getMonth(), instant.getDate());
+    expect(comparator(cellLocalDay, "2023-11-13 23:00:00")).toBe(0);
+    expect(comparator(new Date(cellLocalDay.getTime() + 86400000), "2023-11-13 23:00:00")).toBeLessThan(0);
+    setWorkbenchTimestampTz("local");
   });
 
   it("every builder produces header names for the current locale", () => {
@@ -240,6 +266,47 @@ describe("column i18n key existence (P2-12 regression guard)", () => {
         }
       }
     }
+  });
+});
+
+// F6-2/F5：行操作列（cellRenderer 原生 button DOM）渲染产物与回调接线。
+describe("action columns (F6-2 copy JSON / F5 clone)", () => {
+  it("messageColumns adds a copy-JSON action column only when a callback is given", () => {
+    setWorkbenchLocale("en");
+    expect(messageColumns().some((col) => String(col.colId).startsWith("action-"))).toBe(false);
+    const seen: MessageRow[] = [];
+    const cols = messageColumns({ onCopyJson: (row) => seen.push(row) });
+    const action = cols.find((col) => col.field === undefined) as unknown as {
+      cellRenderer: (params: { data?: MessageRow }) => HTMLElement;
+    };
+    expect(action).toBeDefined();
+    const button = action.cellRenderer({ data: toMessageRows([{ topic: "t", partition: 0, offset: 1, timestamp: 1 }])[0] });
+    expect(button.textContent).toBe("{}");
+    expect(button.getAttribute("aria-label")).toBe(t("messages.copyRowJson"));
+    document.body.appendChild(button);
+    button.click();
+    expect(seen).toHaveLength(1);
+    button.remove();
+    // data 缺省时不触发回调。
+    expect(() => action.cellRenderer({ data: undefined })).not.toThrow();
+    expect(seen).toHaveLength(1);
+  });
+
+  it("schemaVersionColumns adds a clone action column wired to the callback", () => {
+    setWorkbenchLocale("en");
+    const seen: number[] = [];
+    const cols = schemaVersionColumns({ onClone: (row) => seen.push(row.version) });
+    const action = cols.find((col) => col.field === undefined) as unknown as {
+      cellRenderer: (params: { data?: SchemaVersionVm }) => HTMLElement;
+    };
+    expect(action).toBeDefined();
+    const button = action.cellRenderer({ data: { version: 2, id: 11, format: "avro", raw: { version: 2, id: 11, format: "avro" } } });
+    expect(button.textContent).toBe("⧉");
+    expect(button.getAttribute("aria-label")).toBe(t("schemas.clone"));
+    document.body.appendChild(button);
+    button.click();
+    expect(seen).toEqual([2]);
+    button.remove();
   });
 });
 

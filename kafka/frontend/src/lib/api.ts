@@ -38,11 +38,15 @@ export interface KafkaMessage {
   schemaVersion?: number;
 }
 
-/** Schema Registry 解码挂载（consume/stream/produce 共用；version 省略 = latest）。 */
+/** Schema Registry 解码挂载（consume/stream/produce 共用；version 省略 = latest）。
+ *  Phase 3 F1：format 枚举随后端扩展为 avro|json|protobuf（前端仅透传/提示，
+ *  PROTOBUF 前端生成与树视图不做，见 §12.2.5/12.2.7/12.6）。 */
+export type SchemaFormat = "avro" | "json" | "protobuf";
+
 export interface SchemaAttach {
   subject: string;
   version?: number;
-  format: "avro" | "json";
+  format: SchemaFormat;
 }
 
 export interface FieldFilter {
@@ -119,6 +123,9 @@ export interface KafkaTopic {
   partitionCount: number;
   replicationFactor: number;
   error?: string;
+  /** F6-4 后端半件（Phase 3，旧 sidecar 可能缺省）：topic 级健康度与不健康分区数。 */
+  isHealthy?: boolean;
+  unhealthyPartitions?: number;
 }
 
 export interface TopicPartitionInfo {
@@ -543,7 +550,7 @@ export const kafkaApi = {
       registry ? { ...base, registry } : base,
     );
   },
-  schemaRegister(subject: string, format: "avro" | "json", schema: string, registry?: SchemaRegistryProvider) {
+  schemaRegister(subject: string, format: SchemaFormat, schema: string, registry?: SchemaRegistryProvider) {
     return callKafka<SchemaRegisterResult>(
       "kafka/schema/register",
       registry ? { subject, format, schema, registry } : { subject, format, schema },

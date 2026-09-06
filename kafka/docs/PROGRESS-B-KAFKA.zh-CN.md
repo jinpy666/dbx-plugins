@@ -499,3 +499,64 @@ manifest：python 断言脚本「manifest conditional fields ok; fields total = 
 3. glue 连接 fixture 的 `glue_auth_mode: "access_key"` 为 mock 装饰值
    （取值面实为 default/static），与真表单无关，本轮未改（保持既有视觉
    断言稳定）。
+
+## 9. Phase 3 特性追赶（2026-09-07，G 路 worktree 并发实施）
+
+> 分支 `phase3/kafka-backend`（commit `4449e36`），契约依据 IMPL_PLAN
+> §12.2（冻结）；对标对象与裁决记录见 IMPL_PLAN §12.0/§12.8。
+
+### 9.1 交付（4 特性 + manifest/协议/fixture）
+
+- **F1 PROTOBUF 编解码**（schema.go）：`decodeSchemaPayload`/
+  `encodeSchemaPayload` 增 protobuf 分支（替换"未实现"报错）；解码
+  base64(FDSet)→`protodesc.NewFiles`→`dynamicpb`→`protojson` 渲染；
+  编码 protojson→`proto.Marshal`→`encodeWireFrame`；消歧三分支（单
+  message / subject 剥 `-key`/`-value` 后缀 PascalCase 尾段唯一命中 /
+  报错列候选全名）；`SchemaRef.Format` 扩为 `avro|json|protobuf`。
+  新依赖 `google.golang.org/protobuf v1.36.12`。
+- **F2 OAUTHBEARER**（新 `oauth.go` + types/client）：取值面 +
+  `NormalizeSASLMechanism`；validateProfile 增 SASL_SSL 约束与
+  token_source 矩阵；TokenProvider 双实现——`msk_iam`
+  （aws-msk-iam-sasl-signer-go v1.0.4，默认链 + 显式 AK/SK 覆盖，照
+  §11.5 Glue 范式）、`static_token`（Expiration=0）；franz-go
+  `pkg/sasl/oauth` 机制层；单次取 token 10s 超时收敛；connSecrets 增
+  msk_secret_access_key/msk_session_token/oauth_static_token（secret
+  binding，不落日志/审计，指纹纳入）。
+- **F3 `kafka/topics/records/clear`**（topics.go + main.go + policy）：
+  ListEndOffsets 取 hw → DeleteRecords(offset=hw)；KIP-107 旧 broker
+  业务错透传；confirmTopic 门禁（复用 ensureTopicDeleteConfirm 语义，
+  不匹配 -32602）；审计 `topics.records.clear`。
+- **12.2.4**：TopicInfo 增 `isHealthy`/`unhealthyPartitions`（topicInfos
+  内按 partitionInfos 同款规则聚合，零额外请求）。
+- manifest：sasl_mechanism +OAUTHBEARER、6 新字段七语全量、visible_when
+  联动链；manifest_contract_test/required_matrix_test 同步扩展（+8 行
+  矩阵）。PROTOCOL：§3.2 records/clear 行、topics/list 健康度、Format
+  枚举 protobuf、§3.8 消歧语义。
+- fixture：`cmd/gen-protobuf-fixture`（无 protoc，descriptorpb 程序化
+  生成）→ `scripts/kafka-seed/protobuf/orders.proto` + `orders_fdset.b64`。
+
+### 9.2 验证
+
+- 基线 109 例全绿 → 最终 128 顶层用例 + 19 子用例全绿（新增 33 例）：
+  protobuf 6（roundtrip 含 int64 字符串已知差异断言 / wire frame 全链路 /
+  消歧三分支 / 坏 FDSet / 非 wire format / 尾段助手）、clear+健康度 5
+  （门禁 6 子用例矩阵 / rows 形状 / 健康聚合）、oauth 8（normalize /
+  provider 选择 / static / msk 校验 / SASL 构建 / lifecycle / JSON 形状）。
+- smoke（主线）：S13 真跑 PASS（confirmTopic 门禁 + 收空 + offsets 收敛
+  + rows 形状）；S15 开门验证 static_token+SASL_SSL 对 PLAINTEXT broker
+  得 -32000 TLS 业务错（参数链/secret binding 贯通）；S14 有据 SKIP
+  （见 §9.3）。全套 test.sh 全绿（package `io.dbx.kafka-0.1.13` dbxp）。
+
+### 9.3 裁决与遗留
+
+- **采纳**：secret 三字段入 connSecrets 而非 Profile（§6 红线，G 路提案
+  经主线裁决采纳）；消歧 PascalCase 严格相等（复数 subject 不命中，
+  PROTOCOL §3.8）；protojson int64 字符串（§12.7 既定，测试锁定）。
+- **S14 降级**：Redpanda 内置 SR 仅接受 .proto 文本形态，base64(FDSet)
+  被当文本解析存储（POST 200 但回读不符）→ 本地无法真跑 roundtrip；F1
+  按 Confluent SR 正确形态实现。遗留：sidecar 双形态兼容（.proto 文本或
+  `GET /schemas/ids/{id}/schema?format=serialized`）以复跑 S14；Confluent
+  references 多文件 schema 的 FDSet 依赖解析。
+- **观察登记**：既有 topics/delete confirmTopic 不匹配 -32000 与
+  PROTOCOL §3.2 -32602 的偏差（Phase 1 遗留）——维持现状，待对齐。
+- 真实 MSK 往返（S15）待真环境；无 IMDS 环境超时实测待做。

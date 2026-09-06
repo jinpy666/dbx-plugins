@@ -390,4 +390,9 @@ GroupsPanel 行级失败横幅被 reload 起手清错误 emit 立即冲掉（sub
 
 观察项 4 条（时间戳时区标注、ACL PatternType 缺 TYPE、生产面板分区数、ja「プロデュース」术语）本轮未动，维持不计级。
 
+> Phase 3 追记（2026-09-07）：观察项中「生产面板分区数」「时间戳时区标注
+> （Messages 面板）」已由 Phase 3 特性追赶收口（IMPL_PLAN §12.8 /
+> PROGRESS-P §9，F6-4 分区数徽标 + 校验、F6-3 本地/UTC toggle）；其余 2
+> 条维持不计级。
+
 验证：`pnpm typecheck` 0 错；`pnpm test` 14 文件 132 用例全绿（基线 118 + MessagesPanel.spec ×4、TopicsPanel.spec ×3、App.spec ×2、TopicTree.spec ×3、kafkaColumns.spec ×2 新增防回归）；playwright（playwright-core 1.63.0 + 系统 Chrome headless `--disable-gpu`，独立实例 `/tmp/uiscan-kafka-r4`，vite :5294）8 项 PASS、0 console error / 0 pageerror；复验截图即删、dev server 已 kill、/tmp 夹具目录工具产物不入库。

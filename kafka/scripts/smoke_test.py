@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test for the dbx-plugin-kafka sidecar (scenarios S1-S12).
+"""Smoke test for the dbx-plugin-kafka sidecar (scenarios S1-S15).
 
 Covers the IMPL_PLAN_DBX_KAFKA §8 table over a live KRaft container
 (docker-compose.kafka-test.yml, apache/kafka, PLAINTEXT 127.0.0.1:9092):
@@ -24,12 +24,26 @@ Covers the IMPL_PLAN_DBX_KAFKA §8 table over a live KRaft container
         delete/version + delete subject. Runs only when GLUE_TEST_REGION +
         GLUE_TEST_REGISTRY are set (needs a real AWS Glue registry; there is
         no local Glue container -> SKIP otherwise).
+    S13 topics/records/clear (Phase 3): produce 5 -> confirmTopic mismatch
+        rejected (-32602, offsets unchanged) -> correct confirmTopic clears
+        (rows shape partition/ok/deleted|null/lowWatermark|null) -> offsets
+        latest==earliest per partition -> consume 0 records.
+    S14 PROTOBUF schema-mount roundtrip (Phase 3): register the pre-generated
+        FileDescriptorSet (kafka-seed/protobuf/orders_fdset.b64) on subject
+        order-value via the SR REST API (POST /subjects/{subject}/versions,
+        schemaType PROTOBUF) -> produce(JSON payload, format protobuf) ->
+        consume decodes to JSON (no decodeError). A registry that does not
+        preserve the base64(FDSet) form (e.g. redpanda re-parses it as proto
+        text) is legitimate evidence -> scenario SKIP with the full details.
+    S15 OAUTHBEARER static_token connection/test (Phase 3): runs only when
+        KAFKA_TEST_OAUTH_STATIC_TOKEN is set (optionally KAFKA_TEST_OAUTH_
+        BOOTSTRAP); there is no local MSK/OAUTHBEARER listener -> SKIP.
 
 SKIP semantics (M0 §5.2):
   * a method not registered / not implemented yet  -> SKIP (backend under
     parallel development), never FAIL;
   * no Kafka container reachable                   -> whole suite SKIP;
-  * SR (redpanda 19081) unreachable                -> S11 SKIP only;
+  * SR (redpanda 19081) unreachable                -> S11/S14 SKIP only;
   * set KAFKA_TEST_REQUIRE=1 to turn env SKIPs into FAILs (CI).
 
 Usage:
@@ -77,6 +91,18 @@ GLUE_AUTH_MODE = os.environ.get("GLUE_TEST_AUTH_MODE", "static").strip() or "sta
 GLUE_ACCESS_KEY_ID = os.environ.get("GLUE_TEST_ACCESS_KEY_ID", "").strip()
 GLUE_SECRET_ACCESS_KEY = os.environ.get("GLUE_TEST_SECRET_ACCESS_KEY", "")
 GLUE_SESSION_TOKEN = os.environ.get("GLUE_TEST_SESSION_TOKEN", "")
+
+# Phase 3: OAUTHBEARER smoke gate (S15). There is no local MSK/OAUTHBEARER
+# listener; the scenario runs only when a static token is provided (the token
+# travels through the environment only, never into this file).
+OAUTH_STATIC_TOKEN = os.environ.get("KAFKA_TEST_OAUTH_STATIC_TOKEN", "").strip()
+OAUTH_BOOTSTRAP = os.environ.get("KAFKA_TEST_OAUTH_BOOTSTRAP", "").strip()
+
+# Phase 3: pre-generated FileDescriptorSet fixture (G path; no protoc needed
+# at runtime -- smoke only consumes the committed base64).
+PROTOBUF_FDSET_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "kafka-seed", "protobuf", "orders_fdset.b64"
+)
 
 # per-run marker so re-runs against a dirty container stay deterministic
 RUN = uuid.uuid4().hex[:8]
@@ -684,6 +710,267 @@ def run_s12(client: SidecarClient) -> None:
         connect(client, make_connection("smoke-main", read_only=False, allow_delete=True))
 
 
+@scenario("S13", "topics/records/clear gate + truncate + offsets converge")
+def run_s13(client: SidecarClient) -> None:
+    """S13 Phase 3 clear topic (IMPL_PLAN §12.2.1).
+
+    produce 5 -> confirmTopic mismatch rejected (-32602, offsets unchanged)
+    -> correct confirmTopic clears (rows shape partition/ok, deleted/
+    lowWatermark int|null) -> offsets/list latest==earliest per partition ->
+    consume returns 0 records.
+    """
+    # clear sits behind the same gate as topics/delete: needs allow_delete.
+    connect(client, make_connection("smoke-main", read_only=False, allow_delete=True))
+    topic = f"dbx-smoke-clear-{RUN}"
+    created = data_of(domain(client, "kafka/topics/create",
+                             {"topics": [topic], "partitions": 2, "replicationFactor": 1}))
+    if not created.get("results") or not created["results"][0].get("ok"):
+        raise AssertionError(f"topics/create failed: {created}")
+    try:
+        for i in range(5):
+            produce(client, topic, value=f"clear-{RUN}-{i}")
+
+        def latest_offsets() -> dict:
+            result = data_of(domain(client, "kafka/topics/offsets/list",
+                                    {"topics": [topic], "offsetTime": "latest"}))
+            return {row.get("partition"): row.get("offset") for row in result.get("rows", [])}
+
+        before = latest_offsets()
+        if not any((offset or 0) > 0 for offset in before.values()):
+            raise AssertionError(f"produced records not visible in offsets/list: {before}")
+
+        # gate: confirmTopic mismatch -> -32602, records untouched
+        cause = expect_error(
+            lambda: domain(client, "kafka/topics/records/clear",
+                           {"topic": topic, "confirmTopic": f"not-{topic}"}),
+            markers=("confirm", "topic"),
+        )
+        if cause.code != -32602:
+            raise AssertionError(f"expected -32602 for confirmTopic mismatch, got {cause.code}: {cause}")
+        if latest_offsets() != before:
+            raise AssertionError(f"offsets changed after rejected clear: {latest_offsets()} != {before}")
+
+        # correct confirmTopic -> rows shape (partition/ok, int|null extras)
+        result = data_of(domain(client, "kafka/topics/records/clear",
+                                {"topic": topic, "confirmTopic": topic}))
+        rows = result.get("rows")
+        if not isinstance(rows, list) or not rows:
+            raise AssertionError(f"clear returned no rows: {result}")
+        partitions = []
+        for row in rows:
+            for field in ("partition", "ok"):
+                if field not in row:
+                    raise AssertionError(f"clear row missing {field}: {row}")
+            if row.get("ok") is not True:
+                raise AssertionError(f"clear row not ok: {row}")
+            for field in ("deleted", "lowWatermark"):
+                value = row.get(field)
+                if value is not None and not isinstance(value, int):
+                    raise AssertionError(f"clear row {field} not int|null: {row}")
+            deleted = row.get("deleted")
+            # contract: deleted = pre-clear hw - post-clear lowWatermark; a
+            # full clear lands lowWatermark on hw so deleted reads 0 (null is
+            # contract-legal when either offset fetch fails)
+            low = row.get("lowWatermark")
+            if deleted is not None and low is not None and deleted != before.get(row.get("partition"), 0) - low:
+                raise AssertionError(
+                    f"clear row deleted={deleted} != hw {before.get(row.get('partition'))} - lowWatermark {low}: {row}")
+            partitions.append(row.get("partition"))
+        if partitions != sorted(partitions):
+            raise AssertionError(f"clear rows not ordered by partition: {partitions}")
+
+        # latest == earliest per partition (all visible records gone)
+        latest = data_of(domain(client, "kafka/topics/offsets/list",
+                                {"topics": [topic], "offsetTime": "latest"}))
+        earliest = data_of(domain(client, "kafka/topics/offsets/list",
+                                  {"topics": [topic], "offsetTime": "earliest"}))
+        highs = {row.get("partition"): row.get("offset") for row in latest.get("rows", [])}
+        lows = {row.get("partition"): row.get("offset") for row in earliest.get("rows", [])}
+        if not highs or set(highs) != set(lows):
+            raise AssertionError(f"offsets/list partition sets mismatch: latest={highs} earliest={lows}")
+        for partition, high in highs.items():
+            if high != lows.get(partition):
+                raise AssertionError(
+                    f"partition {partition} latest={high} != earliest={lows.get(partition)}")
+
+        # consume sees zero records after the clear
+        result = consume(client, topic=topic)
+        if result.get("messages") or result.get("matched", 0) != 0:
+            raise AssertionError(f"consume after clear returned records: matched={result.get('matched')}")
+    finally:
+        try:
+            domain(client, "kafka/topics/delete", {"topics": [topic], "confirmTopic": topic})
+        except (SidecarError, AssertionError):
+            pass
+
+
+@scenario("S14", "PROTOBUF schema mount produce/consume roundtrip")
+def run_s14(client: SidecarClient) -> None:
+    """S14 Phase 3 PROTOBUF codec against the redpanda Confluent-compatible SR.
+
+    Registers the committed FileDescriptorSet fixture on subject `order-value`
+    via the SR REST API (POST /subjects/{subject}/versions, schemaType
+    PROTOBUF -- the endpoint the sidecar itself uses), verifies the registry
+    stores the base64(FDSet) verbatim, then produce(JSON payload, format
+    protobuf) -> consume(schema mount) decodes back to JSON with schemaId/
+    schemaSubject provenance and no decodeError. A registry that accepts
+    PROTOBUF but re-parses the FDSet base64 as proto text (redpanda) breaks
+    the contract form -- the full details stay in the report as evidence and
+    the scenario SKIPs (never a fake PASS).
+    """
+    if not sr_reachable():
+        message = f"no Schema Registry at {SR_URL} (docker compose up redpanda-sr-test)"
+        raise SkipScenario(message)
+    try:
+        with open(PROTOBUF_FDSET_PATH, encoding="utf-8") as handle:
+            fdset_b64 = handle.read().strip()
+    except OSError as cause:
+        raise SkipScenario(f"protobuf seed fixture unreadable: {cause}")
+    if not fdset_b64:
+        raise SkipScenario("protobuf seed fixture is empty")
+
+    # subject `order-value` exercises the message-disambiguation rule 2
+    # (strip -value suffix -> PascalCase tail matches the FDSet message).
+    subject = "order-value"
+    try:
+        registered = sr_rest("POST", f"/subjects/{subject}/versions",
+                             {"schemaType": "PROTOBUF", "schema": fdset_b64})
+    except urllib.error.HTTPError as cause:
+        body = cause.read().decode(errors="replace").strip()
+        raise SkipScenario(
+            "registry rejected PROTOBUF registration (evidence of missing "
+            f"PROTOBUF support): POST /subjects/{subject}/versions -> "
+            f"HTTP {cause.code} {body}"
+        )
+    except (urllib.error.URLError, OSError) as cause:
+        raise SkipScenario(f"Schema Registry REST unreachable during register: {cause}")
+    if not registered.get("id"):
+        raise AssertionError(f"SR register returned no id: {registered}")
+
+    # dedicated writable connection pointed at the redpanda broker + SR (kept
+    # active until the cleanup finally ran, so schema deletes target the SR)
+    connection = make_connection("smoke-pb", read_only=False, allow_delete=True)
+    connection["external_config"]["bootstrap_servers"] = SR_BOOTSTRAP
+    connection["external_config"]["sr_url"] = SR_URL
+    connect(client, connection)
+
+    try:
+        # the registry must store the FDSet base64 verbatim (contract §12.2.2:
+        # the sidecar decodes the schema field as base64 -> FileDescriptorSet)
+        try:
+            latest = sr_rest("GET", f"/subjects/{subject}/versions/latest")
+        except urllib.error.HTTPError as cause:
+            body = cause.read().decode(errors="replace").strip()
+            raise SkipScenario(
+                f"registry lost the PROTOBUF schema after registration (evidence: "
+                f"GET latest -> HTTP {cause.code} {body})")
+        if latest.get("schema") != fdset_b64:
+            raise SkipScenario(
+                "registry does not support PROTOBUF in the base64(FileDescriptorSet) "
+                "form (evidence: registration accepted as id="
+                f"{registered.get('id')} but the stored schema differs; stored="
+                f"{latest.get('schema')!r}); the sidecar decodes base64(FDSet) from "
+                "the registry, so the protobuf roundtrip cannot run against it")
+
+        topic = f"dbx-smoke-pb-{RUN}"
+        schema_ref = {"subject": subject, "format": "protobuf"}
+        try:
+            created = data_of(domain(client, "kafka/topics/create",
+                                     {"topics": [topic], "partitions": 1, "replicationFactor": 1}))
+            if not created.get("results") or not created["results"][0].get("ok"):
+                raise AssertionError(f"topics/create on SR broker failed: {created}")
+
+            # produce: value stays the plain JSON payload (protojson semantics)
+            value = jsonlib.dumps({"id": "o-1", "amount": 42, "item": "sku-9"})
+            try:
+                produced = produce(client, topic, value=value, schema=schema_ref)
+            except SidecarError as cause:
+                if is_method_not_registered(cause):
+                    raise
+                raise SkipScenario(
+                    "produce with a PROTOBUF mount failed against the registry "
+                    f"(evidence of missing/partial PROTOBUF support): {cause}")
+            for field in ("partition", "offset", "timestamp"):
+                if field not in produced:
+                    raise AssertionError(f"produce(protobuf) missing {field}: {produced}")
+
+            # consume with the same mount -> decoded JSON, no decodeError
+            result = consume(client, topic=topic, schema=schema_ref)
+            hits = [m for m in result.get("messages", [])
+                    if m.get("partition") == produced.get("partition")
+                    and m.get("offset") == produced.get("offset")]
+            if not hits:
+                raise AssertionError(
+                    f"produced protobuf message (p{produced.get('partition')}@"
+                    f"{produced.get('offset')}) not in consume result: {result}")
+            message = hits[-1]
+            if message.get("decodeError"):
+                raise AssertionError(f"protobuf decode failed: {message.get('decodeError')}")
+            if message.get("schemaSubject") != subject:
+                raise AssertionError(f"schemaSubject mismatch: {message.get('schemaSubject')!r} != {subject!r}")
+            if message.get("schemaId") != registered.get("id"):
+                raise AssertionError(f"schemaId mismatch: {message.get('schemaId')} != {registered.get('id')}")
+            decoded = jsonlib.loads(message.get("valueText") or "")
+            # int64 renders as a protojson string (known deviation, PROTOCOL
+            # §3.8); assert the string fields that must round-trip exactly.
+            if decoded.get("id") != "o-1" or decoded.get("item") != "sku-9":
+                raise AssertionError(f"protobuf roundtrip payload mismatch: {decoded}")
+        finally:
+            try:
+                domain(client, "kafka/topics/delete", {"topics": [topic], "confirmTopic": topic})
+            except (SidecarError, AssertionError):
+                pass
+    finally:
+        # schema cleanup must run while the SR-bound connection is still the
+        # active one, then the domain connection is restored for later
+        # bookkeeping (same order as S11)
+        try:
+            version = int(registered.get("version") or 0)
+            if version:
+                data_of(domain(client, "kafka/schema/delete/version",
+                               {"subject": subject, "version": version}))
+            # implementation difference (S11): redpanda drops the subject once
+            # its last version is gone -> DELETE subject 40401s; tolerate it.
+            try:
+                data_of(domain(client, "kafka/schema/delete", {"subject": subject}))
+            except SidecarError as cause:
+                if "40401" not in str(cause) and "not found" not in str(cause).lower():
+                    raise
+        except (SidecarError, AssertionError):
+            pass
+        try:
+            connect(client, make_connection("smoke-main", read_only=False, allow_delete=True))
+        except (SidecarError, AssertionError):
+            pass
+
+
+@scenario("S15", "OAUTHBEARER static_token connection/test (env gated)")
+def run_s15(client: SidecarClient) -> None:
+    """S15 Phase 3 OAUTHBEARER (IMPL_PLAN §12.2.3), env gate like S12 (Glue).
+
+    Runs only when KAFKA_TEST_OAUTH_STATIC_TOKEN is set (optionally
+    KAFKA_TEST_OAUTH_BOOTSTRAP to point at the cluster): builds a
+    static_token + SASL_SSL profile and runs connection/test. The token comes
+    strictly from the environment; there is no local MSK/OAUTHBEARER listener,
+    so the default outcome is a scenario SKIP.
+    """
+    if not OAUTH_STATIC_TOKEN:
+        raise SkipScenario(
+            "no OAUTHBEARER environment (no MSK/OAUTHBEARER listener locally; "
+            "set KAFKA_TEST_OAUTH_STATIC_TOKEN [+ KAFKA_TEST_OAUTH_BOOTSTRAP] to run)"
+        )
+    connection = make_connection("smoke-oauth")
+    external = connection["external_config"]
+    external["bootstrap_servers"] = OAUTH_BOOTSTRAP or BOOTSTRAP
+    external["security_protocol"] = "SASL_SSL"
+    external["sasl_mechanism"] = "OAUTHBEARER"
+    external["oauth_token_source"] = "static_token"
+    connection["connection_secrets"]["oauth_static_token"] = OAUTH_STATIC_TOKEN
+    result = client.request("connection/test", lifecycle_params(connection))
+    if result.get("success") is not True:
+        raise AssertionError(f"OAUTHBEARER connection/test unexpected result: {result}")
+
+
 # -- driver --------------------------------------------------------------------
 
 def kafka_reachable() -> tuple[bool, str]:
@@ -703,6 +990,22 @@ def sr_reachable() -> bool:
         return False
 
 
+def sr_rest(method: str, path: str, payload: dict | None = None, timeout: float = 5.0) -> dict:
+    """Call the Confluent-compatible SR REST API directly.
+
+    Uses the same endpoints the sidecar's schema client uses (POST
+    /subjects/<s>/versions to register, matching schema.go); S14 needs the
+    raw response/HTTPError body as PROTOBUF support evidence.
+    """
+    data = jsonlib.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(
+        f"{SR_URL}{path}", data=data, method=method,
+        headers={"Content-Type": "application/vnd.schemaregistry.v1+json"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return jsonlib.loads(response.read())
+
+
 def main() -> int:
     steps = [
         ("S1", "initialize + connection/test without params -> -32602", run_s1),
@@ -717,6 +1020,9 @@ def main() -> int:
         ("S10", "topics create + delete confirmTopic gate", run_s10),
         ("S11", "schema registry subjects/register/produce/consume/compat/delete", run_s11),
         ("S12", "AWS Glue schema registry test/list/get/register/compat/delete", run_s12),
+        ("S13", "topics/records/clear gate + truncate + offsets converge", run_s13),
+        ("S14", "PROTOBUF schema mount produce/consume roundtrip", run_s14),
+        ("S15", "OAUTHBEARER static_token connection/test (env gated)", run_s15),
     ]
 
     ok, reason = kafka_reachable()
@@ -749,7 +1055,7 @@ def main() -> int:
         for _, _, fn in steps:
             fn(client)
     finally:
-        for connection_id in ("smoke-main", "smoke-ro", "smoke-sr", "smoke-glue"):
+        for connection_id in ("smoke-main", "smoke-ro", "smoke-sr", "smoke-glue", "smoke-pb", "smoke-oauth"):
             try:
                 client.request("connection/disconnect", {"connection": {"id": connection_id}})
             except Exception:

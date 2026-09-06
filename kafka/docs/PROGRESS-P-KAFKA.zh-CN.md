@@ -758,3 +758,74 @@ P1 与明确回归项；状态回填见该文档 §6.7。
   P2-21 defineProperty 空集群夹具、P2-22 activeElement 断言、P2-23
   `?big=1` 位点表 `1,250/1,149/1,199`、P2-24 双 live region；复验截图即删、
   dev server 已 kill。第 4 轮观察项 4 条维持不计级未动。
+
+## 9. Phase 3 特性追赶（2026-09-07，H 路 worktree 并发实施）
+
+> 分支 `phase3/kafka-frontend`（commit `8062ab8` + `8d79bca`），契约依据
+> IMPL_PLAN §12.2.5-12.2.7（冻结）；对标对象与裁决记录见 IMPL_PLAN
+> §12.0/§12.8。
+
+### 9.1 交付
+
+- **F4 Flow 随机测试数据生成**：`kafkaModel.ts` 新增 `mulberry32`（固定
+  种子 RNG）、`generateAvroRandom`（record/array/map/union 非 null 首支/
+  enum/fixed + date/timestamp-millis/uuid/decimal）、`expandTemplate`
+  （`{uuid}` `{now}` `{int:min,max}` `{float:min,max}` `{pick:a|b|c}`）、
+  `matchingSchemaSubjects`（`<topic>-key/-value` 前缀发现）、
+  `clampFlowCount/clampFlowIntervalMs`；ProducePanel「测试数据生成」组
+  （flow 开关、来源 schema_random|template、countPerSend/intervalMs、
+  启停 + 运行徽标 + 累计计数 + 最近 1 条回显）；自动停止三条件
+  （read_only watcher、校验失败、连续失败 ≥3）；schema_random 走
+  subjects/list 前缀发现 + schema/get latest + produce schema 挂载
+  （version 缺省），零后端改动；PROTOBUF subject 命中 → 行内提示改
+  template。
+- **F5 Schema 三件套**：版本表行「克隆」（schemaGet 预填注册弹窗、
+  subject 可改）；format 选定后「插入模板」（AVRO/JSON/Protobuf 三段
+  代码常量，protobuf 免 JSON 校验）；详情区 树/文本 toggle + 新组件
+  `SchemaTree.vue`（递归可折叠；`buildSchemaTree` 支持 AVRO 与 JSON
+  Schema properties/required `*`/default；PROTOBUF 返回 null → 文本 +
+  行内提示）。
+- **F6 六项**：① Messages/Stream 表 quickFilter 防抖 150ms（DbxAgGrid
+  增 quickFilter prop）；② 详情抽屉复制 key/value/headers/整条 JSON 四
+  按钮 + 消息表行操作「复制 JSON」（clipboard API + execCommand 兜底，
+  `uiHelpers.ts`）；③ 本地/UTC toggle（localStorage `kafka.ts.tz`，
+  timestamp 列 tz 感知比较器 + 完整 ISO title）；④ 生产面板分区数徽标 +
+  `partitionInputIssue` 超界行内校验（App 透传 partitionCount，第 4 轮
+  观察项收口）；⑤ TopicTree `isHealthy===false` 红点 + title「N 个分区
+  不健康」（消费 topics/list 新字段，无额外请求）；⑥ timestamp 列
+  `agDateColumnFilter`、offset/lag/endOffset 列 number filter，
+  `AG_GRID_LOCALE_KEYS` 补 13 键（从 ag-grid 36.1.0 dist 核对实际消费
+  点，七语内联字典）。
+- **F2 前端半件**：ConnectionsPanel OAUTH/MSK 摘要徽标（token source/
+  region/access key，secret 只显已配置态，照 glue 形态）；
+  `oauthFormVisibility`/`oauthRequiresSaslSsl` 联动链纯函数；
+  `friendlyKafkaError` msk 无凭据/region 缺失映射；三面板 schema 挂载
+  format 枚举扩 `avro|json|protobuf`（§12.1 F1 前端半件）。
+- **mock 桥**：`?msk=1` 开关（照 `?glue=1` 范式，external_config 注入
+  oauth/msk 字段 + connection_secrets）；`degraded-topic` unhealthy 夹具
+  （isHealthy:false + unhealthyPartitions:1）；`orders-proto-value`
+  PROTOBUF subject 夹具；schema register 支持 protobuf。
+- **七语**：新增 50 键 ×7（err 2/tree 1/messages 10/stream 1/produce 23/
+  schemas 6/connections 7）；`i18n.spec.ts` 守卫绿。
+
+### 9.2 验证
+
+- typecheck 0 错；vitest **17 文件 180 用例全绿**（基线 132，新增 48 例）：
+  `kafkaModel.spec` +16（mulberry32 序列锁定 / 生成器固定向量 seed 7 /
+  占位符 / 前缀发现 / Flow 夹持 / OAUTH 联动链 / SASL_SSL 约束 / 分区
+  校验 / 树模型 / tz / date 比较器 / 流式过滤）、`uiHelpers.spec` 新 6
+  （clipboard 双路径失败降级 / debounce）、`ProducePanel.spec` 新 7
+  （fake timers 启停 / 连续失败自停 / PROTOBUF 提示零发送 / schema_random
+  带挂载 / 分区徽标 / 超界拦截 / 界内可发）、`SchemasPanel.spec` 新 4
+  （树渲染 toggle / PROTOBUF 提示 / 模板插入 / 克隆预填）；既有 spec
+  扩展 +15。build ✓。
+- 收口（主线）：test.sh 全绿（含 UI walkthrough 2/2、smoke 15 场景）。
+
+### 9.3 遗留
+
+- StreamPanel 时区显示仍跟随 `formatTimestamp` 缺省 local（契约只要求
+  MessagesPanel toggle），后续统一。
+- decimal 逻辑类型生成器输出数值形状，goavro `NativeFromTextual` 编码
+  需 `*big.Rat`——生成值大概率编码失败（已知差异，登记不动）。
+- 第 4 轮观察项「生产面板不显示分区数」「时间戳时区标注（Messages）」
+  由本轮收口（F6-4/F6-3）；其余观察项维持。

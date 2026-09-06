@@ -581,3 +581,69 @@ fetch 错误指数退避 500ms→30s；**只读策略下禁止 commit**。
   错误串入 friendlyKafkaError 映射（H 路同步）。
 - clear 依赖 AdminClient DeleteRecords（KIP-107），文档标注最低 broker
   版本；不支持时业务错透传。
+
+### 12.8 实施记录与收口（2026-09-07，worktree 双路并发 + 主线收口）
+
+**交付**：
+- **G 路**（branch `phase3/kafka-backend`，commit `4449e36`）：F1 PROTOBUF
+  codec（protobuf 分支替换"未实现"报错、消歧三分支、Format 枚举扩展）、
+  F2 OAUTHBEARER（`oauth.go`：static_token/msk_iam 双 TokenProvider，
+  franz-go `pkg/sasl/oauth` + aws-msk-iam-sasl-signer-go，单次取 token
+  10s 超时）、F3 `kafka/topics/records/clear`（KIP-107 DeleteRecords +
+  confirmTopic 门禁 + 审计）、12.2.4 topics/list `isHealthy`/
+  `unhealthyPartitions`；manifest 6 字段七语 + PROTOCOL 同步 +
+  `cmd/gen-protobuf-fixture`（无 protoc，descriptorpb 程序化生成 FDSet
+  fixture）。
+- **H 路**（branch `phase3/kafka-frontend`，commit `8062ab8`+`8d79bca`）：
+  F4 Flow（mulberry32 固定向量、generateAvroRandom、expandTemplate、
+  subjects/list 前缀发现、启停/自动停止）、F5 Schema 三件套（克隆预填、
+  三格式模板、SchemaTree.vue 树视图）、F6 六项（quickFilter 防抖、复制族
+  + execCommand 兜底、tz 切换持久化、生产分区数徽标、树健康徽标、
+  date/number 列头筛选 + AG_GRID_LOCALE_KEYS 13 键从包内核对）、
+  OAUTH/MSK 表单联动 + `?msk=1` 夹具、friendlyKafkaError msk 映射、
+  50 键 ×7 语。
+- **主线**：smoke S13/S14/S15（smoke_test.py +309 行）；合并两分支
+  （`6b73c3b`/`a4b4fab`）。
+
+**验证证据**：
+- backend：go vet 干净；kafkaconn/lifecycle/store 3 包 ok（基线 109 例 →
+  128 顶层用例 + 19 子用例，新增 33 例）。
+- frontend：typecheck 0 错；vitest 17 文件 180 用例全绿（基线 132，新增
+  48 例）；build ✓。
+- smoke：`total=15 PASS=11 FAIL=0 SKIP=4`（S3 `__consumer_offsets` 既有
+  条件 SKIP、S12 Glue env 门、S14 降级登记见下、S15 OAUTH env 门）；
+  S1-S12 无回归。S15 开门验证：static_token+SASL_SSL+OAUTHBEARER 对本地
+  PLAINTEXT broker 得 `-32000` TLS 业务错（非 -32602），字段链/secret
+  binding/SASL 矩阵贯通。
+- `scripts/test.sh` 全绿：前端三件套 + go vet/test + package
+  `io.dbx.kafka-0.1.13-darwin-arm64.dbxp` + smoke。
+
+**主线裁决记录**：
+1. F2 的 3 个 secret 字段（msk_secret_access_key/msk_session_token/
+   oauth_static_token）入 connSecrets 而非 Profile 结构体——按 §6 凭据
+   红线与 §11.5 Glue 范式，采纳 G 路提案。
+2. PROTOBUF 消歧 PascalCase 为严格相等（`order-value`↔`Order` 命中，
+   复数不命中）——已入 PROTOCOL §3.8。
+3. protojson int64 输出字符串——§12.7 既定已知差异，测试锁定形状。
+4. G 路观察项：既有 topics/delete confirmTopic 不匹配实际 -32000 与
+   PROTOCOL §3.2 的 -32602 存在偏差（Phase 1 遗留，契约外）——维持现状
+   登记遗留；clear 按冻结契约 -32602。
+
+**S14 降级登记（§12.4 预判路径）**：Redpanda 内置 SR 对 PROTOBUF 仅接受
+.proto 源文本形态；对契约冻结的 base64(FileDescriptorSet) 形态会当作
+文本解析存储（证据：POST 注册 200 但 GET 回读为 `syntax = "proto2";`
+非提交内容）。本地容器无法真跑 PROTOBUF roundtrip，S14 有据 SKIP；F1
+编解码按 Confluent SR 正确形态实现（单测覆盖 roundtrip/消歧三分支/坏
+FDSet/非 wire format 载荷）。
+
+**完成定义四件套**：单测（backend +33 / frontend +48）✓；smoke（15 场景，
+SKIP 语义三层）✓；对标/清单（本节 + PROGRESS-B §9 + PROGRESS-P §9）✓；
+七语（manifest 6 字段 ×7 + 前端 50 键 ×7，spec 守卫绿）✓。
+
+**遗留与后续**：
+- F1：sidecar 兼容 SR .proto 文本形态（或 `GET /schemas/ids/{id}/schema?format=serialized`）
+  以复跑 S14；Confluent references 多文件 schema 的 FDSet 依赖解析。
+- F2：真实 MSK 往返（S15 env 门待真环境）；msk signer 无 IMDS 环境超时实测。
+- H：StreamPanel 时区显示跟随缺省 local（未统一 tz toggle）；decimal
+  逻辑类型 goavro 编码限制（已知）。
+- topics/delete confirmTopic 错误码对齐（-32000 vs -32602，契约外遗留）。

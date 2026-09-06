@@ -35,6 +35,22 @@ describe("TopicTree", () => {
     expect(wrapper.find(".tree-error").text()).toBe("boom");
   });
 
+  // P2-18：树错误区与错误横幅同源 friendlyKafkaError——夹具/网络类错误本地化，
+  // 原始串留在 title 悬停；未覆盖错误原文透传且无 title。
+  it("friendly-maps connection errors and keeps the raw string in the title (P2-18)", () => {
+    const wrapper = mount(TopicTree, { props: { topics: [], loading: false, error: "connection lost (fixture error injection)", selectedTopic: "" } });
+    const node = wrapper.find(".tree-error");
+    expect(node.text()).toBe("无法连接 Kafka broker：请检查 bootstrap servers 与网络");
+    expect(node.attributes("title")).toBe("connection lost (fixture error injection)");
+  });
+
+  it("passes unknown errors through unchanged without a hover title (P2-18)", () => {
+    const wrapper = mount(TopicTree, { props: { topics: [], loading: false, error: "boom", selectedTopic: "" } });
+    const node = wrapper.find(".tree-error");
+    expect(node.text()).toBe("boom");
+    expect(node.attributes("title")).toBeFalsy();
+  });
+
   it("filters by keyword and emits select with the topic name", async () => {
     const wrapper = mountTree();
     await wrapper.find(".tree-filter input").setValue("user");

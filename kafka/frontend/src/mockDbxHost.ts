@@ -18,6 +18,10 @@
  *                        big-throughput topic 4 分区共 5000 条消息（纯内存生成，
  *                        无凭据）；consume 未显式 limit 时默认取 5000。
  *                        仅追加种子数据，不改真实桥形状与非 big 模式行为。
+ *   ?audit=denied        审计链夹具：宿主监听就绪后注入 1 条 denied + 1 条 ok
+ *                        kafka/audit 事件（真实链路只在策略拒绝时产生，ro 模式
+ *                        下写入口已禁用而不可达；此参数使 AuditFeed 展示/自动
+ *                        展开/denied 徽标与错误横幅链路可在 mock 中验证）。
  */
 import "./style.css";
 import { compress as lz4Compress } from "lz4js";
@@ -33,6 +37,8 @@ const allowDelete = params.get("nodelete") !== "1";
 const injectError = params.get("err") === "1";
 const glueOnly = params.get("glue") === "1";
 const bigMode = params.get("big") === "1";
+// 审计链夹具（?audit=denied）：见文件头注释。
+const auditDeniedInject = params.get("audit") === "denied";
 // 连接默认 SR provider（无 registry 参数的 kafka/schema/* 调用落到这里）。
 const defaultSrProvider: "confluent" | "glue" = glueOnly ? "glue" : "confluent";
 
@@ -1083,3 +1089,32 @@ window.dbxPlugin = {
 };
 
 export { context, appearance };
+
+// -- audit 链夹具（?audit=denied）--------------------------------------------------
+// 宿主 onEvent 监听就绪后再注入（App.initialize 挂监听前的事件会丢失）：
+// 先 denied（触发 AuditFeed 自动展开 + denied 徽标 + 错误横幅），后 ok（对照行）。
+if (auditDeniedInject) {
+  const poll = window.setInterval(() => {
+    if (eventListeners.size === 0) return;
+    window.clearInterval(poll);
+    window.setTimeout(() => {
+      emitEvent("kafka/audit", {
+        connectionId: context.connectionId,
+        action: "topics/delete",
+        target: "order-events",
+        result: "denied",
+        detail: "connection is read-only (fixture audit injection)",
+      });
+    }, 200);
+    window.setTimeout(() => {
+      emitEvent("kafka/audit", {
+        connectionId: context.connectionId,
+        action: "messages/produce",
+        target: "order-events",
+        result: "ok",
+      });
+    }, 900);
+  }, 100);
+  // 兜底：宿主一直不挂监听就放弃注入，避免孤儿 interval。
+  window.setTimeout(() => window.clearInterval(poll), 15000);
+}

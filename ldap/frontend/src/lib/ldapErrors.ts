@@ -20,9 +20,11 @@ const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
     { pattern: /administr?ative limit|result code 11/i, key: "err.adminLimit" },
     { pattern: /result code 53|unwilling to perform/i, key: "err.unwilling" },
     { pattern: /result code 8|strong(?:er)? auth(?:entication)? required/i, key: "err.strongAuth" },
-    // 网络类先于通用超时：dial i/o timeout 归为"无法连接"更贴切
+    // 网络类先于通用超时：dial i/o timeout 归为"无法连接"更贴切；
+    // "connection lost/closed"（连接中断，含传输层意外断开）同归网络类
+    //（UI 扫描 P2-1：此前英文原文透传三处横幅）。
     {
-        pattern: /result code 200|network error|connection refused|no such host|connection reset|broken pipe|i\/o timeout|eof/i,
+        pattern: /result code 200|network error|connection (?:refused|reset|lost|closed)|no such host|broken pipe|i\/o timeout|eof/i,
         key: "err.network",
     },
     { pattern: /timeout|timed out|deadline exceeded/i, key: "err.timeout" },

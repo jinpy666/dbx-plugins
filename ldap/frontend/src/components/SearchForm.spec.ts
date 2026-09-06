@@ -70,4 +70,36 @@ describe("SearchForm (filter builder)", () => {
     await wrapper.find(".filter-source input").setValue("(uid");
     expect(wrapper.find(".form-error").exists()).toBe(true);
   });
+
+  it("disables the search button while the filter is invalid, with a hint (P2-5)", async () => {
+    const wrapper = await mountForm();
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    await wrapper.find(".filter-source input").setValue("(uid=*0001");
+    const runButton = wrapper.find(".primary-button.compact");
+    expect(runButton.attributes("disabled")).toBeDefined();
+    expect(runButton.attributes("title")).toBe("LDAP 过滤器不合法");
+    await wrapper.find("form").trigger("submit");
+    expect(wrapper.emitted("run")).toBeUndefined();
+    // 恢复合法后按钮解锁。
+    await wrapper.find(".filter-source input").setValue("(uid=*0001)");
+    expect(runButton.attributes("disabled")).toBeUndefined();
+    await wrapper.find("form").trigger("submit");
+    expect(wrapper.emitted("run")).toHaveLength(1);
+  });
+
+  it("flashes the Base DN input when a tree selection rewrites it (P2-7)", async () => {
+    const wrapper = await mountForm();
+    const baseInput = wrapper.find(".field input.mono");
+    expect(baseInput.classes()).not.toContain("base-dn-flash");
+    // 模拟树节点联动（App.selectEntry → applyBaseDn）。
+    (wrapper.vm as unknown as { applyBaseDn: (dn: string) => void }).applyBaseDn("ou=people,dc=demo,dc=dbx");
+    await wrapper.vm.$nextTick();
+    expect((baseInput.element as HTMLInputElement).value).toBe("ou=people,dc=demo,dc=dbx");
+    expect(baseInput.classes()).toContain("base-dn-flash");
+    expect(baseInput.attributes("title")).toBe("Base DN 已跟随选中的树节点");
+    // 初始化回填（highlight=false）与同值回填不触发高亮。
+    (wrapper.vm as unknown as { applyBaseDn: (dn: string, highlight?: boolean) => void }).applyBaseDn("dc=other,dc=dbx", false);
+    await wrapper.vm.$nextTick();
+    expect(baseInput.classes()).not.toContain("base-dn-flash");
+  });
 });

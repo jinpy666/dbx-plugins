@@ -3,7 +3,7 @@
 // 源码模式（RFC 4515 串直接编辑，双向：串→结构尽力解析，失败保持源码模式）
 // + scope/attributes/sizeLimit/pageSize/typesOnly/derefAliases
 // + 预设（结构化条件与过滤器串一并保存，sidecar ldap/presets/* 方法）。
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Play, Save, Trash2 } from "@lucide/vue";
 import { getLdapConnectionId, ldapApi, type LdapSearchPreset, type LdapScope } from "../lib/api";
 import { validateLDAPFilter, buildNodeFilter, collectBuilderErrors, parseFilterStructure, toBuilderRoot, reviveBuilderNode, createBuilderClause, createBuilderGroup, type BuilderGroup } from "../lib/ldapFilter";
@@ -117,9 +117,26 @@ function switchToBuilder() {
 
 // -- base DN / fields ---------------------------------------------------------
 
-function applyBaseDn(next: string) {
+// 树节点联动改写 Base DN 的一次性高亮（UI 扫描 P2-7：此前静默改写，
+// 整树搜索悄然变单条目搜索）。变化时高亮 1.6s + title 说明。
+const baseDnHighlighted = ref(false);
+let baseDnHighlightTimer = 0;
+
+// highlight=false 供初始化/自动定位使用（首次回填不算"跟随选中"），
+// 并取消进行中的高亮。
+function applyBaseDn(next: string, highlight = true) {
+  const changed = next !== draft.value.baseDn && next.trim() !== "";
   draft.value.baseDn = next;
+  window.clearTimeout(baseDnHighlightTimer);
+  if (!changed || !highlight) {
+    baseDnHighlighted.value = false;
+    return;
+  }
+  baseDnHighlighted.value = true;
+  baseDnHighlightTimer = window.setTimeout(() => (baseDnHighlighted.value = false), 1600);
 }
+
+onBeforeUnmount(() => window.clearTimeout(baseDnHighlightTimer));
 
 defineExpose({ applyBaseDn });
 
@@ -266,7 +283,15 @@ const derefOptions = computed(() => [
   <form class="search-form" @submit.prevent="run">
     <label class="field">
       <span>{{ t("search.baseDn") }}</span>
-      <input v-model="draft.baseDn" type="text" class="mono" :disabled="disabled" spellcheck="false" />
+      <input
+        v-model="draft.baseDn"
+        type="text"
+        class="mono"
+        :class="{ 'base-dn-flash': baseDnHighlighted }"
+        :title="baseDnHighlighted ? t('search.baseFollowed') : undefined"
+        :disabled="disabled"
+        spellcheck="false"
+      />
     </label>
     <label class="field">
       <span>{{ t("search.scope") }}</span>
@@ -275,7 +300,12 @@ const derefOptions = computed(() => [
       </select>
     </label>
     <div class="field" style="justify-content: flex-end">
-      <button class="primary-button compact" type="submit" :disabled="disabled || running" :title="activeFilter() || t('search.filterAll')">
+      <button
+        class="primary-button compact"
+        type="submit"
+        :disabled="disabled || running || !filterValid"
+        :title="!filterValid ? t('search.filterInvalid') : activeFilter() || t('search.filterAll')"
+      >
         <Play aria-hidden="true" />{{ running ? t("search.running") : t("search.run") }}
       </button>
       <span v-if="!filterValid" class="form-error">{{ builderMode ? builderErrorMessage : t("search.filterInvalid") }}</span>

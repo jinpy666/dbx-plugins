@@ -7,6 +7,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ChevronsLeft, ChevronsRight, HardDrive, RefreshCw, Search, X } from "@lucide/vue";
 import type { KafkaTopic } from "../lib/api";
 import { filterTopics, sortTopics } from "../lib/kafkaModel";
+import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -101,6 +102,11 @@ const filterInput = ref<HTMLInputElement | null>(null);
 
 const visible = computed(() => filterTopics(sortTopics(props.topics), keyword.value));
 
+// P2-18：树错误区与 App 错误横幅同源——friendlyKafkaError 友好化正文，
+// 未覆盖/与原文不同时把原始串留在 title 悬停里供排查。
+const friendlyError = computed(() => (props.error ? friendlyKafkaError(props.error) : ""));
+const errorDetail = computed(() => (props.error && friendlyError.value !== props.error ? props.error : ""));
+
 function isInternal(topic: KafkaTopic): boolean {
   return topic.isInternal === true || topic.name.startsWith("_");
 }
@@ -172,7 +178,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
         />
         <button v-if="keyword" class="icon-button" :title="t('close')" @click="clearFilter"><X /></button>
       </div>
-      <div v-if="error" class="tree-error">{{ error }}</div>
+      <div v-if="error" class="tree-error" :title="errorDetail">{{ friendlyError }}</div>
       <div v-else-if="loading && topics.length === 0" class="tree-state">{{ t("tree.loading") }}</div>
       <div v-else-if="visible.length === 0" class="tree-state">
         {{ keyword ? t("tree.noMatch", { keyword }) : t("tree.empty") }}

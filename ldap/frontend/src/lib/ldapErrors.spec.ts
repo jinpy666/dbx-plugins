@@ -26,6 +26,13 @@ describe("friendlyLdapError", () => {
         expect(friendlyLdapError("dial tcp 10.0.0.1:636: i/o timeout")).not.toBe("");
     });
 
+    it("maps connection lost / closed transport failures to the network message (P2-1)", () => {
+        const raw = "connection lost (fixture error injection)";
+        expect(friendlyLdapError(raw)).not.toBe(raw);
+        expect(friendlyLdapError(raw)).toBe(friendlyLdapError("connection reset"));
+        expect(friendlyLdapError("ldap: connection closed unexpectedly")).not.toContain("connection closed");
+    });
+
     it("passes unknown messages through unchanged", () => {
         const raw = "some completely unknown sidecar failure";
         expect(friendlyLdapError(raw)).toBe(raw);

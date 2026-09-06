@@ -44,3 +44,27 @@ sn: Seed
 uid: seedpw
 userPassword: dummy-seeded-value-not-a-real-secret
 
+# Fixture for smoke scenario S14 (binary attribute round-trip): a tiny valid
+# JPEG (8x8, 627 bytes, generated with Go image/jpeg) as jpegPhoto. Base64
+# with RFC 2849 folding (continuation lines start with one space). The smoke
+# scenario S14 embeds the same constant and round-trips it via entry/modify +
+# entry/get; this seeded entry serves manual binary-attribute display checks.
+# (Bitnami imports custom LDIF only on first data-dir init: recreate the
+# container/volume to pick this entry up.)
+dn: uid=seedphoto,ou=People,dc=example,dc=org
+objectClass: inetOrgPerson
+cn: Seed Photo
+sn: Photo
+uid: seedphoto
+jpegPhoto:: /9j/2wCEAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0
+ KSEiMEExNDk7Pj4+JS5ESUM8SDc9PjsBCgsLDg0OHBAQHDsoIig7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7
+ Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7O//AABEIAAgACAMBIgACEQEDEQH/xAGiAAAB
+ BQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNR
+ YQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldY
+ WVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TF
+ xsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQF
+ BgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVi
+ ctEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqC
+ g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl
+ 5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AKmjeDvu/u/0ra/4Q7/pn+lbWjfw1t15+IzCvz7l
+ 5PmmI+qrU//Z

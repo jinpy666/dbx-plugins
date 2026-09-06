@@ -10,7 +10,10 @@ import { parseLdif, serializeEntriesToLdif } from "../lib/ldif";
 import { attrRowsToAttributes, diffChanges, type AttrRowDraftSource } from "../lib/ldapDiff";
 import { joinRdnAndParent, isLikelyRdn, splitFirstDnRdn } from "../lib/dn";
 import { useModalA11y, decideBackdropClose } from "../lib/modal";
+import { looksBinaryAttribute } from "../lib/binaryValue";
 import { t } from "../lib/i18n";
+import PasswordAttributeEditor from "./PasswordAttributeEditor.vue";
+import BinaryValueEditor from "./BinaryValueEditor.vue";
 
 export interface AttrRowDraft extends AttrRowDraftSource {
   /** 源值自身含换行：编辑后按行重切分为多值（歧义提示用）。 */
@@ -186,6 +189,28 @@ function addRow() {
   rows.value.push({ name: "", valuesText: "" });
 }
 
+// M6 N2/N3：按属性名分流行编辑器——密码属性走哈希编辑器（userPassword/
+// unicodePwd 等 *password* 命名），二进制属性（jpegPhoto/*Certificate 等，
+// looksBinaryAttribute 启发式）走查看/上传组件，其余保持多行文本。
+// LDIF 模式始终是纯文本，不走分流。
+type RowEditorKind = "password" | "binary" | "text";
+function editorKind(name: string): RowEditorKind {
+  const key = name.trim().toLowerCase();
+  if (!key) return "text";
+  if (key === "userpassword" || key === "unicodepwd" || key.endsWith("password")) return "password";
+  if (looksBinaryAttribute(key)) return "binary";
+  return "text";
+}
+
+function rowValues(row: AttrRowDraft): string[] {
+  return row.valuesText === "" ? [] : row.valuesText.split("\n");
+}
+
+// 随机生成的明文只在通知里出现一次（不进 rows、不进 LDIF、不落盘）。
+function onPlainGenerated(plain: string) {
+  emit("notify", t("ldap.passwordEditor.plainNotice", { plain }));
+}
+
 function removeRow(index: number) {
   rows.value.splice(index, 1);
 }
@@ -276,8 +301,24 @@ function onBackdropClick() {
           <div v-for="(row, index) in rows" :key="index" class="attr-row">
             <input v-model="row.name" type="text" name="attr-name" :placeholder="t('editor.attribute')" :disabled="!editable" spellcheck="false" />
             <span class="attr-value-cell">
-              <textarea v-model="row.valuesText" rows="2" :placeholder="t('editor.values')" :disabled="!editable" spellcheck="false" />
-              <small v-if="row.multiline" class="multiline-hint">{{ t("editor.multilineHint") }}</small>
+              <PasswordAttributeEditor
+                v-if="editorKind(row.name) === 'password'"
+                :model-value="row.valuesText"
+                :disabled="!editable"
+                @update:model-value="row.valuesText = $event"
+                @plain-generated="onPlainGenerated"
+              />
+              <BinaryValueEditor
+                v-else-if="editorKind(row.name) === 'binary'"
+                :attribute-name="row.name"
+                :model-value="rowValues(row)"
+                :disabled="!editable"
+                @update:model-value="row.valuesText = $event.join('\n')"
+              />
+              <template v-else>
+                <textarea v-model="row.valuesText" rows="2" :placeholder="t('editor.values')" :disabled="!editable" spellcheck="false" />
+                <small v-if="row.multiline" class="multiline-hint">{{ t("editor.multilineHint") }}</small>
+              </template>
             </span>
             <button :title="t('editor.removeAttribute')" :disabled="!editable" @click="removeRow(index)"><Trash2 /></button>
           </div>

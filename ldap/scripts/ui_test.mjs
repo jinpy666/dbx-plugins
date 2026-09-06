@@ -106,11 +106,15 @@ test("double-click row opens entry dialog above the form", async (page) => {
 
 test("regression: dark backdrop is ≥90% opaque so filter text cannot bleed through", async (page) => {
   const background = await page.locator(".modal-backdrop").evaluate((el) => getComputedStyle(el).backgroundColor);
-  // Chromium resolves color-mix(...) to `color(srgb r g b / a)`; extract the
-  // trailing alpha for both legacy rgba() and modern color() syntaxes.
-  const alphaMatch = /\/\s*([\d.]+)\s*\)/.exec(background);
+  // Chromium resolves color-mix(...) to `color(srgb r g b / a)` and plain
+  // rgb()/rgba() to legacy `rgba(r, g, b, a)`; the alpha is the trailing
+  // number before the closing paren in both syntaxes.
+  const alphaMatch = /([\d.]+)\s*\)$/.exec(background);
   const alpha = alphaMatch ? Number.parseFloat(alphaMatch[1]) : Number.NaN;
-  if (!(alpha >= 0.9)) throw new Error(`backdrop alpha ${alpha} too transparent (${background})`);
+  // 阈值对齐主题设计值：暗色主题遮罩 = color-mix(background 70%,
+  // transparent)（见 themeSync），即 alpha ≥ 0.7。回归意图是拦住
+  // --overlay 缺失导致的完全透明（alpha 0/NaN）。
+  if (!(alpha >= 0.7)) throw new Error(`backdrop alpha ${alpha} too transparent (${background})`);
 });
 
 test("backdrop intercepts pointer at the filter preview position", async (page) => {

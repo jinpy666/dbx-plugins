@@ -80,11 +80,11 @@
 | 树关键字过滤 | ✅ | ✅（远程子树过滤） | ✅ | — |
 | 条目查看/编辑（表单） | ✅ | ✅ 属性增删改 + 多值行 | ✅ | — |
 | LDIF 视图（直接编辑生效） | ✅ | 🔶 只读 LDIF tab | 🔶 | P1：LDIF 编辑 → apply |
-| 新条目向导（objectClass 模板） | ✅ | 🔶 空白新增（objectClass 手填） | 🔶 | P1：按 objectClass 的 must 属性模板 |
-| 二进制属性（图片/hex/base64 查看器） | ✅ | ❌（textarea 原样） | ❌ | P1：base64/hex 查看器 + 图片预览 |
-| 密码修改扩展操作（passwd） | ✅ | ❌（走 modify userPassword） | 🔶 | P2：RFC 3062 extend |
+| 新条目向导（objectClass 模板） | ✅ | ✅ 模板向导 + schema must 铺开（M6-N4） | ✅ | JSON 自定义模板引擎不做 |
+| 二进制属性（图片/hex/base64 查看器） | ✅ | ✅ 预览/hex/PEM 三视图 + 上传（M6-N3） | ✅ | — |
+| 密码修改扩展操作（passwd） | ✅ | ❌（走 modify userPassword，前端哈希辅助已落地 M6-N2） | 🔶 | P2：RFC 3062 extend |
 | 条目复制/粘贴、书签 | ✅ | ❌ | ❌ | P2 |
-| 子树删除（递归 + 子条目计数确认） | ✅ | ❌（仅单条删除） | ❌ | **P1：`ldap/entry/delete` 加 recursive + Tree Delete 控件回退递归（此前漏项，收编见 PLA 对账表 N1）** |
+| 子树删除（递归 + 子条目计数确认） | ✅ | ✅ 递归删除（Tree Delete 控件 + 回退）+ childrenCount 确认（M6-N1，收编自 PLA 对账表） | ✅ | — |
 | DN 重命名/移动子树 | ✅ | ✅ modifyDn | ✅ | — |
 
 ## 7. 导入 / 导出

@@ -63,6 +63,29 @@ const pressEscape = () => {
 };
 
 describe("EntryEditorDialog", () => {
+  it("routes password attributes to the hash editor (M6 N2)", () => {
+    const wrapper = trackEditor({
+      canWrite: true,
+      open: true,
+      entry: { dn: "uid=bob,dc=demo,dc=dbx", attributes: { uid: ["bob"], userPassword: ["{SSHA}abcd"] } },
+    });
+    expect(wrapper.find(".password-editor").exists()).toBe(true);
+    expect(wrapper.find(".password-editor").attributes("data-scheme")).toBe("{SSHA}");
+    const rows = attrRows(wrapper);
+    const uidRow = rows.find((row) => (row.find("input").element as HTMLInputElement).value === "uid")!;
+    expect(uidRow.find("textarea").exists()).toBe(true);
+  });
+
+  it("routes binary attributes to the binary viewer/uploader (M6 N3)", () => {
+    const wrapper = trackEditor({
+      canWrite: true,
+      open: true,
+      entry: { dn: "uid=bob,dc=demo,dc=dbx", attributes: { uid: ["bob"], jpegPhoto: ["/9j/4AAQSkZJRg=="] } },
+    });
+    expect(wrapper.find(".binary-editor").exists()).toBe(true);
+    expect(wrapper.find(".binary-editor img.binary-preview").exists()).toBe(true);
+  });
+
   it("renders nothing while closed", () => {
     const wrapper = trackEditor({ canWrite: true, open: false, entry: demoEntry });
     expect(wrapper.find(".modal-backdrop").exists()).toBe(false);

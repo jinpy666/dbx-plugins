@@ -38,18 +38,18 @@
 
 | 能力 | PLA | 本插件 | 状态 | 计划 |
 | --- | --- | --- | --- | --- |
-| 模板化新建条目 | ✅ 核心卖点：JSON 模板（user_account/ou/o/mail_account/dns_domain）+ `templates/custom` 目录 + force_may | 🔶 空白新增（objectClass 手填） | 🔶 | P1：N4（§7）objectClass must 模板 + 内置常用模板，不做完整模板引擎 |
+| 模板化新建条目 | ✅ 核心卖点：JSON 模板（user_account/ou/o/mail_account/dns_domain）+ `templates/custom` 目录 + force_may | ✅ 新建向导：4 内置模板 + 空白、schema must 铺开（M6-N4 已实施） | ✅ | 剩余：JSON 自定义模板引擎不做（§6） |
 | uid/gid 自动编号 | ✅ template.getnextnumber（uidnumber/gidnumber 起始值） | ❌ | ❌ | P2：并入 N4 模板变量 `{autoNumber}`（OpenLDAP 无 DNA 插件时常用） |
-| 密码哈希编码 | ✅ 21 种（`Attribute/Password/*`：SSHA/SSHA256/512、argon2i/id、bcrypt、sha256crypt…） | ❌ 原值写入（后端无任何哈希实现，grep 证实） | ❌ | **P1：N2（§7）提级**——Web Crypto 覆盖 sha/ssha/sha256/ssha256/sha512/ssha512 + clear；argon2/bcrypt 等 PHP 特化为不追赶 |
-| 密码校验 | ✅ `entry/password/check`（modal：userpassword-check） | ❌ | ❌ | P1：随 N2——用"DN + 明文 bind 验证"语义，**不用** Compare 扩展（§0 非目标） |
-| 随机密码生成 | ✅（v1 随机生成） | ❌ | ❌ | P1：随 N2（前端生成，进剪贴板不入日志） |
-| 二进制属性查看 | ✅ JpegPhoto/Certificate 显示（`Attribute/Binary/*`）+ user image 路由 | ❌（textarea 原样） | ❌ | P1：N3（§7），扩 ADS 已列"查看器" |
-| 二进制属性上传 | 🔶 v2 README 列 outstanding（jpegPhoto create/delete 未完成） | ❌ | ❌ | P1：N3（§7）上传；PLA v2 自己也没做完，本插件一次做到位 |
-| LDIF 导入 | ✅ `Import/LDIF.php` + `entry/import/process/{type}` | ❌ | ❌ | P0/P1：已在 ADS 对账表 M6 ✅ 路线 |
+| 密码哈希编码 | ✅ 21 种（`Attribute/Password/*`：SSHA/SSHA256/512、argon2i/id、bcrypt、sha256crypt…） | ✅ 前端 Web Crypto：{SSHA}/{SSHA256}/{SSHA512}/{SHA}/{SHA256}/{SHA512}/{CLEARTEXT}（M6-N2 已实施；argon2/bcrypt 等不追赶） | ✅ | — |
+| 密码校验 | ✅ `entry/password/check`（modal：userpassword-check） | 🔶 协议路径已验（smoke：{SSHA} 写入后 DN+明文 bind 成功）；前端"校验密码"入口未做 | 🔶 | P2：编辑器加校验按钮（bind 语义） |
+| 随机密码生成 | ✅（v1 随机生成） | ✅ 密码编辑器内随机生成 + 一次性明文提示（M6-N2 已实施） | ✅ | — |
+| 二进制属性查看 | ✅ JpegPhoto/Certificate 显示（`Attribute/Binary/*`）+ user image 路由 | ✅ 图片预览 / hex / PEM 三视图（M6-N3 已实施） | ✅ | — |
+| 二进制属性上传 | 🔶 v2 README 列 outstanding（jpegPhoto create/delete 未完成） | ✅ 文件上传（5MB 前端拦截）+ 多值管理（M6-N3 已实施，超越 PLA v2） | ✅ | — |
+| LDIF 导入 | ✅ `Import/LDIF.php` + `entry/import/process/{type}` | ❌ | ❌ | P0/P1：已在 ADS 对账表 M6 ✅ 路线（本轮未做） |
 | LDIF 导出 | ✅ `Export/LDIF.php` | ✅（结果 + 子树，另有 CSV/JSON） | ✅ | — |
 | 条目复制/移动 | ✅ `entry/copy-move`（跨 DN） | ❌ | ❌ | P2：已在 ADS 对账表 |
-| 子树删除 | ✅ delete modal + `ajax/subordinates` 子条目计数确认（v1 递归删除） | ❌ 仅单条删除（后端 grep 无 tree-delete 控件/递归删除） | ❌ | **P1：N1（§7），ADS 对账表漏项，本文件收编** |
-| objectClass 补加引导 | ✅ `entry/objectclass/add`（补 objectClass 带出 must 属性） | 🔶 手工编辑可实现，无 schema 引导 | 🔶 | P1：并入 N4（schemaCache must/may 已有） |
+| 子树删除 | ✅ delete modal + `ajax/subordinates` 子条目计数确认（v1 递归删除） | ✅ sidecar（Tree Delete 控件 + 回退递归）+ 前端确认框（childrenCount + 递归勾选）（M6-N1 已实施） | ✅ | — |
+| objectClass 补加引导 | ✅ `entry/objectclass/add`（补 objectClass 带出 must 属性） | ✅ 向导内 objectClass 增删即时重算 must/may（M6-N4 已实施） | ✅ | 已有条目编辑态补 objectClass 引导 P2 |
 | 条目重命名/移动 | ✅ rename modal | ✅ modifyDn（newParentDn 支持） | ✅ | — |
 
 ## 4. 搜索 / Schema / 信息面
@@ -91,6 +91,9 @@
 
 ### N1 子树删除（P1，L6-1）
 
+> **状态：已实施（完整闭环）**（M6 任务 N1，2026-09-06：sidecar 契约 + 单测 +
+> smoke S13 + 前端 DeleteEntryDialog 子条目计数与递归勾选 + 七语）。
+
 - **现状**：`ldap/entry/delete` 仅单条；后端无 tree-delete 控件/递归实现。
 - **目标**：前端删除确认列出子条目数（对齐 PLA `ajax/subordinates` 语义），
   支持递归删除。
@@ -102,10 +105,14 @@
   （返回 unavailable/unwillingToPerform）则回退**先序自底向上**逐层删除
   （sub 搜索按深度排序，上限 1000 条防误删）。两路径均受只读门禁 + 写
   白名单 + 审计约束（审计记一条聚合记录：action=subtree_delete，含条数）。
-- **DoD**：单测（控件挂载/回退排序/上限）；smoke S12；前端确认弹窗 +
+- **DoD**：单测（控件挂载/回退排序/上限）；smoke S13；前端确认弹窗 +
   七语；ADS/PLA 对账表状态更新。
 
 ### N2 密码哈希辅助（P1，L6-2，提级）
+
+> **状态：已实施**（M6 任务 N2，2026-09-06：`lib/passwordHash.ts` +
+> `PasswordAttributeEditor` 接入 EntryEditorDialog + 25 单测/组件测试 +
+> smoke S12 + 七语。前端"校验密码"入口为 P2，协议路径 smoke 已验）。
 
 - **现状**：`userPassword` 原值写入，无哈希、无校验、无随机生成。写错
   哈希格式（如裸明文入 OpenLDAP）账号即失效。
@@ -124,9 +131,13 @@
   复用现有 dial/bind 基建，不引入 Compare/passwd 扩展操作（守住 §0 非目标；
   RFC 3062 passwd extend 维持 ADS 对账表 P2 不变）。
 - **DoD**：lib 单测（向量：RFC 2307 `userPassword` 格式往返）；组件测试；
-  smoke S11；审计脱敏断言；七语。
+  smoke S12；审计脱敏断言；七语。
 
 ### N3 二进制属性查看 + 上传（P1，L6-3，扩 ADS 已列"查看器"）
+
+> **状态：已实施**（M6 任务 N3，2026-09-06：`lib/binaryValue.ts` +
+> `BinaryValueEditor` 接入 EntryEditorDialog + 37 单测/组件测试 +
+> smoke S14 + 七语）。
 
 - **现状**：二进制值以 textarea 原样（base64）呈现。
 - **目标**：EntryEditor 二进制语法属性（jpegPhoto `1.3.6.1.4.1.1466.115.121.1.28`、
@@ -136,10 +147,14 @@
 - **技术要点**：schema 缓存按 syntax OID 识别二进制属性，schema 不可用时
   按属性名启发式（jpegPhoto/photo/*Certificate）；上传单值上限 5MB（前端
   拦截，防 stdio-jsonl 消息过大）；base64 读写往返现有二进制通道语义不变。
-- **DoD**：组件测试（预览/上传/大小拦截）；smoke S13（种子数据加 jpegPhoto
+- **DoD**：组件测试（预览/上传/大小拦截）；smoke S14（种子数据加 jpegPhoto
   样例，读回 base64 一致）；浏览器走查入 ui_test.mjs；七语。
 
 ### N4 模板化新建 + objectClass 补加引导（P1，L6-4，扩 ADS 已列"模板"）
+
+> **状态：已实施**（M6 任务 N4，2026-09-06：`lib/newEntryTemplates.ts` +
+> `NewEntryWizard` 接管树「新增子条目」入口 + 22 单测/组件测试 + 七语；
+> 编辑态补 objectClass 引导为 P2）。
 
 - **现状**：空白新增（objectClass 手填，无 must 引导）。
 - **目标**：① 新建向导：选 objectClass（schema 缓存驱动）→ 自动铺 must
@@ -151,19 +166,25 @@
   改动；uid/gid 自动编号（P2）留 `{autoNumber}` 变量位，本期不做。
 - **DoD**：组件测试（must 铺开/校验）；浏览器走查；七语；对账表更新。
 
-### Smoke 场景增补（S11–S14，入 scripts/smoke_test.py）
+### Smoke 场景增补（S12–S14，入 scripts/smoke_test.py）
+
+> 编号说明：S11 已被更早交付的 rootDse namingContexts 场景（auto baseDn
+> 原语）占用，本节场景编号顺延为 S12–S14。
 
 | # | 场景 | 断言 |
 |---|---|---|
-| S11 | 密码哈希写入（{SSHA}）→ DN+明文 bind 验证 → 审计无值泄漏 | bind 成功；audit 仅 password_modify 动作 |
-| S12 | 父条目下挂 2 层子树 → childrenCount → recursive delete | 子 DN 全部消失；审计一条聚合 |
-| S13 | jpegPhoto 上传（<5MB）→ entry/get 读回 | base64 一致 |
-| S14 | 服务端不支持 tree-delete 控件的回退路径（容器禁用控件模拟） | 回退递归删除成功 |
+| S12 | 密码哈希写入（{SSHA}）→ DN+明文 bind 验证 → 审计无值泄漏 | bind 成功；审计/事件不含明文与哈希值 |
+| S13 | 父条目下挂 2 层子树 → childrenCount → recursive delete | 子 DN 全部消失；审计一条聚合（`subtree_delete` + `deletedCount`） |
+| S14 | jpegPhoto 写入（种子样例同源常量）→ entry/get 读回 | base64 一致 |
+
+> 测试容器 OpenLDAP 不下发 Tree Delete 控件，S13 实际验证的即回退路径
+> （自底向上逐条删除）；控件挂载与不支持回码判定由后端单测覆盖
+> （`backend/internal/ldapconn/subtree_test.go`）。
 
 ### 归属总览
 
 | 批次 | 内容 |
 | --- | --- |
 | M5-b（ADS 既有，不变） | NOT 组 UI、`ldap/check` 分级、搜索历史、LDIF 编辑生效 |
-| M6（扩容后） | LDIF 导入、结果批量操作、**N4 模板化新建**、**N3 二进制查看+上传**、**N1 子树删除**、**N2 密码哈希辅助** |
+| M6（扩容后） | LDIF 导入（未做）、结果批量操作（未做）、**N4 模板化新建 ✅**、**N3 二进制查看+上传 ✅**、**N1 子树删除 ✅**、**N2 密码哈希辅助 ✅**（2026-09-06） |
 | M7（按需） | mTLS、CRAM-MD5、referral、服务器端排序、digest realm、DSML、schema 语法/匹配规则透出、uid 定位 DN、uid/gid 自动编号、属性显示排序、datetime 统一格式化 |

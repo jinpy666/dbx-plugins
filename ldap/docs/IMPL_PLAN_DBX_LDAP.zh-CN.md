@@ -136,7 +136,8 @@ DN 白名单约束（§6）。方法未注册返回 -32601。
 | `ldap/schema` | GetSchemaMetadata(:472) | `refresh?`（默认走缓存） | `{attributeTypes:[…], objectClasses:[…]}`；缓存落 `cache/schema-<hash>.json` |
 | `ldap/entry/add` | AddEntry(:508) | `dn`、`attributes:{attr:[v…]}` | `{success:true}`；写白名单 + 值转义 |
 | `ldap/entry/modify` | ModifyEntry(:553) | `dn`、`changes:[{operation:add/replace/delete, attribute, values[]}]` | `{success:true}`；屏蔽属性拒绝修改 |
-| `ldap/entry/delete` | DeleteEntry(:606) | `dn` | `{success:true}` |
+| `ldap/entry/delete` | DeleteEntry(:606) | `dn`、`recursive?`（缺省 false 单条语义；true 删整棵子树：优先 Tree Delete 控件 `1.2.840.113556.1.4.805`，服务端不支持（unavailableCriticalExtension/unavailable/unwillingToPerform）回退自底向上逐条删除，条目上限 1000 超限报错不删；写白名单只校验目标 DN） | `{success:true}`；recursive 审计聚合为一条 `subtree_delete`（含 `deletedCount`） |
+| `ldap/entry/childrenCount` | —（N1 新增：删除确认子条目计数） | `dn` | `{count, truncated?}`（scope=one、filter `(objectClass=*)`、上限 5000，风格同 `ldap/count`）；白名单约束同读操作 |
 | `ldap/entry/modifyDn` | ModifyDN(:641) | `dn`、`newRdn`、`newParentDn?`、`deleteOldRdn` | `{success:true}`；新旧 DN 均过写白名单 |
 | `ldap/connections/statuses` | ConnectionStatuses(:695) | — | `{statuses:[{connectionId, state:connected/idle/error, lastError?, lastUsedAt}]}` |
 | `ldap/presets/list` / `save` / `remove` | SearchPreset（前端 store） | `preset:{id,name,baseDn,filter,scope,attributes,sizeLimit}` 等 | 本地 `presets.json` CRUD |
@@ -267,7 +268,7 @@ ssh-sftp mcp.rs 语义）、`mcp/settings/get|set`（写白名单策略）；敏
 
 对账表：`docs/ADS_GAP_ANALYSIS.zh-CN.md`（ADS 侧唯一路线来源）+
 `docs/PLA_GAP_ANALYSIS.zh-CN.md`（PLA 侧唯一路线来源，含任务分解 L6-x 与
-smoke S11–S14）；两表并轨同一框架，落地一项更新一项。
+smoke S12–S14，S11 为先期 rootDse 场景）；两表并轨同一框架，落地一项更新一项。
 M5-a：TLS 字段联动显隐 + 连接字段排版重排；filter 构建器 ≠ 运算符；
 UI 测试双轨（vitest 组件测试 + `scripts/ui_test.mjs` 浏览器走查入 test.sh）。
 M5-b：NOT 组 UI、`ldap/check` 分级连接检查、搜索历史、LDIF 编辑生效。

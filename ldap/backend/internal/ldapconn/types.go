@@ -267,6 +267,18 @@ type LDAPModifyEntryRequest struct {
 type LDAPDeleteEntryRequest struct {
 	ConnectionID string `json:"connectionId"`
 	DN           string `json:"dn"`
+	// Recursive 为 true 时删除 dn 及其整棵子树（N1：优先服务端 Tree Delete
+	// 控件，不支持时回退自底向上逐条删除，条目上限 1000）；缺省 false
+	// 保持单条语义，完全向后兼容。
+	Recursive bool `json:"recursive,omitempty"`
+}
+
+// LDAPChildrenCountRequest 对应 ldap/entry/childrenCount（N1：删除确认框
+// 子条目计数）：dn 下直接子条目数（scope=one、filter (objectClass=*)），
+// 计数上限 5000，超出以 truncated 标记（与 ldap/count 同风格）。
+type LDAPChildrenCountRequest struct {
+	ConnectionID string `json:"connectionId"`
+	DN           string `json:"dn"`
 }
 
 // LDAPModifyDNRequest 对应 ldap/entry/modifyDn（tiny-rdm :168-174，NewSuperior→NewParentDN 语义不变）。
@@ -296,8 +308,11 @@ type LDAPConnectionStatus struct {
 // Result 语义（operations 契约）：ok | denied | error。
 type AuditRecord struct {
 	ConnectionID string `json:"connectionId"`
-	Action       string `json:"action"` // add-entry | modify-entry | delete-entry | modify-dn | read-policy | write-policy
+	Action       string `json:"action"` // add-entry | modify-entry | delete-entry | subtree_delete | modify-dn | read-policy | write-policy
 	Target       string `json:"target"`
 	Result       string `json:"result"` // success | blocked | error
 	Detail       string `json:"detail,omitempty"`
+	// DeletedCount 仅 recursive 子树删除的聚合审计携带（删除条目数，含目标
+	// 自身；单条删除/拒绝路径不出现）。
+	DeletedCount int `json:"deletedCount,omitempty"`
 }

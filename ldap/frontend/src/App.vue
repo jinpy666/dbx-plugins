@@ -17,9 +17,11 @@ import ResultTable from "./components/ResultTable.vue";
 import EntryEditorDialog from "./components/EntryEditorDialog.vue";
 import DeleteEntryDialog from "./components/DeleteEntryDialog.vue";
 import ModifyDnDialog from "./components/ModifyDnDialog.vue";
+import NewEntryWizard from "./components/NewEntryWizard.vue";
 import SchemaPanel from "./components/SchemaPanel.vue";
 import ConnectionsPanel from "./components/ConnectionsPanel.vue";
 import AuditFeedPanel from "./components/AuditFeedPanel.vue";
+import { deriveSchemaMetadata, useLdapSchemaCache } from "./lib/schemaCache";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 
 interface ConnectionSummary {
@@ -71,6 +73,15 @@ const modifyDnSource = ref("");
 const modifyDnSubmitting = ref(false);
 const schemaOpen = ref(false);
 const connectionsOpen = ref(false);
+
+// M6 N4：新建条目走模板向导（树「新增子条目」入口），schema 用独立
+// 进程内缓存（与 SearchForm/SchemaPanel 同款，per-connection TTL 30min）。
+const wizardOpen = ref(false);
+const wizardParentDn = ref("");
+const wizardSchemaCache = useLdapSchemaCache({
+  loader: () => ldapApi.schema().then((result) => deriveSchemaMetadata(result.attributeTypes, result.objectClasses)),
+});
+const wizardSchema = computed(() => ({ objectClassAttributes: wizardSchemaCache.objectClassAttributes.value }));
 
 // 审计事件流（ldap/audit → 最近操作面板）；横幅/通知仍保留作为即时反馈。
 const auditItems = ref<AuditFeedItem[]>([]);
@@ -259,9 +270,22 @@ async function openEntry(dn: string) {
 }
 
 function openAddChild(parentDn: string) {
-  editorEntry.value = undefined;
-  editorParentDn.value = parentDn;
-  editorOpen.value = true;
+  wizardParentDn.value = parentDn || baseDn.value;
+  wizardOpen.value = true;
+  void wizardSchemaCache.ensureLoaded(connectionId.value);
+}
+
+// 向导提交 = 空白新增的模板化版本：payload 由向导铺好 must 属性。
+async function onWizardCreate(payload: { dn: string; attributes: Record<string, string[]> }) {
+  ldapError.value = "";
+  try {
+    await ldapApi.entryAdd(payload.dn, payload.attributes);
+    wizardOpen.value = false;
+    showNotice(t("editor.added"));
+    treeRef.value?.invalidate(parentOf(payload.dn));
+  } catch (cause) {
+    showError(cause);
+  }
 }
 
 function onEditorSaved(dn: string, mode_: "add" | "edit") {
@@ -290,12 +314,15 @@ function askDelete(dn: string) {
   deleteOpen.value = true;
 }
 
-async function confirmDelete() {
+async function confirmDelete(options?: { recursive?: boolean }) {
   if (!deleteDn.value || deleteSubmitting.value) return;
   deleteSubmitting.value = true;
   ldapError.value = "";
   try {
-    await ldapApi.entryDelete(deleteDn.value);
+    // 递归标志由确认框勾选（有子条目才出现）；sidecar 优先走 Tree Delete
+    // 控件、不支持时回退自底向上逐层删除（上限 1000 条）。
+    const recursive = options?.recursive === true;
+    await ldapApi.entryDelete(deleteDn.value, recursive);
     deleteOpen.value = false;
     showNotice(t("deleteDialog.deleted"));
     treeRef.value?.invalidate(parentOf(deleteDn.value));
@@ -493,6 +520,7 @@ function syncConnectionContext() {
     editorOpen.value = false;
     deleteOpen.value = false;
     modifyDnOpen.value = false;
+    wizardOpen.value = false;
     results.value = [];
     resultCount.value = 0;
     resultTruncated.value = false;
@@ -645,6 +673,13 @@ onBeforeUnmount(() => {
       :submitting="modifyDnSubmitting"
       @close="modifyDnOpen = false"
       @confirm="confirmRename"
+    />
+    <NewEntryWizard
+      :open="wizardOpen"
+      :parent-dn="wizardParentDn"
+      :schema="wizardSchema"
+      @submit="onWizardCreate"
+      @cancel="wizardOpen = false"
     />
     <SchemaPanel :open="schemaOpen" :connection-id="getLdapConnectionId()" @close="schemaOpen = false" @error="showError" />
     <ConnectionsPanel :open="connectionsOpen" :disabled="!ready" @close="connectionsOpen = false" @error="showError" />

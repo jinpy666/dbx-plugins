@@ -242,17 +242,21 @@ func ensureLDAPWriteAllowed(profile Profile, dn string, attrs []string) error {
 	return nil
 }
 
-// firstBlockedLDAPAttribute 返回 attrs 中第一个被屏蔽的属性（tiny-rdm :1892 原样；
-// BlockedAttributes 为配置追加项，与默认表取并集）。
+// firstBlockedLDAPAttribute 返回 attrs 中第一个被屏蔽的属性。屏蔽列表以
+// 连接配置 blocked_attributes 为准（IMPL_PLAN §6.2「blocked_attributes 覆盖
+// 默认表」；manifest 下发完整可编辑列表，管理员可移除默认项，如 N2 密码
+// 写入需移除 userPassword）；未配置时兜底默认表 11 项（Profile 化改造点：
+// 不再与默认表无条件并集——并集语义下配置永远无法移除默认项）。
 func firstBlockedLDAPAttribute(profile Profile, attrs []string) string {
 	if len(attrs) == 0 {
 		return ""
 	}
-	blocked := map[string]struct{}{}
-	for _, attr := range defaultLDAPBlockedAttributes {
-		blocked[strings.ToLower(strings.TrimSpace(attr))] = struct{}{}
+	blockedList := profile.BlockedAttributes
+	if len(blockedList) == 0 {
+		blockedList = DefaultLDAPBlockedAttributes()
 	}
-	for _, attr := range profile.BlockedAttributes {
+	blocked := map[string]struct{}{}
+	for _, attr := range blockedList {
 		blocked[strings.ToLower(strings.TrimSpace(attr))] = struct{}{}
 	}
 	for _, attr := range attrs {

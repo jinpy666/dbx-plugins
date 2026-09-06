@@ -5,7 +5,8 @@
 //	connection/test | connection/connect | connection/disconnect      （生命周期）
 //	kafka/brokers/list | kafka/brokers/config
 //	kafka/topics/list | describe | create | delete | partitions/update |
-//	  config/get | config/alter | offsets/list
+//	  config/get | config/alter | offsets/list | records/clear  （Phase 3
+//	  records/clear 为 critical 门禁）
 //	kafka/groups/list | describe | offsets/list | delete | offsets/reset
 //	kafka/acls/list | create | delete
 //	kafka/messages/produce | consume | export
@@ -119,6 +120,8 @@ func (h *pluginHandler) Handle(
 		return h.topicConfigAlter(params)
 	case "kafka/topics/offsets/list":
 		return h.topicOffsetsList(params)
+	case "kafka/topics/records/clear":
+		return h.topicsRecordsClear(params)
 
 	case "kafka/groups/list":
 		return h.groupsList(params)
@@ -359,6 +362,20 @@ func (h *pluginHandler) topicOffsetsList(params json.RawMessage) (any, *dbxplugi
 		return nil, perr
 	}
 	result, err := h.svc.ListTopicOffsets(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+// topicsRecordsClear 实现 kafka/topics/records/clear（Phase 3，critical 门禁
+// 在 Service 层：read_only/allow_delete 与门 + confirmTopic → -32602）。
+func (h *pluginHandler) topicsRecordsClear(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req kafkaconn.TopicRecordsClearRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.ClearTopicRecords(getContext(), req)
 	if err != nil {
 		return nil, bizError(err)
 	}

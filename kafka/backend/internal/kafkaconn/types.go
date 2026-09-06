@@ -30,6 +30,10 @@ const (
 	SASLMechanismSCRAMSHA256 = "SCRAM-SHA-256"
 	SASLMechanismSCRAMSHA512 = "SCRAM-SHA-512"
 	SASLMechanismGSSAPI      = "GSSAPI"
+	// SASLMechanismOAUTHBEARER（Phase 3，IMPL_PLAN §12.2.3）：机制层用
+	// franz-go pkg/sasl/oauth；token 来源见 OauthTokenSource 取值面。
+	// 仅允许 SASL_SSL（validateRequiredCombination 约束）。
+	SASLMechanismOAUTHBEARER = "OAUTHBEARER"
 
 	// ConnectionSource 取值面（connection_source 字段）。
 	ConnectionSourceBootstrap = "bootstrap"
@@ -45,6 +49,13 @@ const (
 	// sidecar 不提供）。
 	GlueAuthModeDefault = "default"
 	GlueAuthModeStatic  = "static"
+
+	// OauthTokenSource 取值面（oauth_token_source 字段，Phase 3 OAUTHBEARER）：
+	// msk_iam = AWS MSK IAM 签名 token（signer.GenerateAuthToken，凭据默认链
+	// 或显式 AK/SK 覆盖，照 §11.5 Glue auth_mode=default 范式）；
+	// static_token = 静态 token 直供（oauth_static_token secret）。
+	OauthTokenSourceMSKIAM = "msk_iam"
+	OauthTokenSourceStatic = "static_token"
 )
 
 // NormalizeSchemaRegistry 归一化 schema_registry 开关；空保留为空（旧连接
@@ -97,6 +108,24 @@ func NormalizeSASLMechanism(value string) string {
 		return SASLMechanismSCRAMSHA512
 	case SASLMechanismGSSAPI:
 		return SASLMechanismGSSAPI
+	case SASLMechanismOAUTHBEARER:
+		return SASLMechanismOAUTHBEARER
+	default:
+		return ""
+	}
+}
+
+// NormalizeOauthTokenSource 归一化 oauth_token_source；空值回退 msk_iam
+// （主用 MSK IAM；仅显式选择 static_token 才走静态 token），未知值返回空串
+// （validateRequiredCombination 报参数错）。
+func NormalizeOauthTokenSource(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return OauthTokenSourceMSKIAM
+	case OauthTokenSourceMSKIAM:
+		return OauthTokenSourceMSKIAM
+	case OauthTokenSourceStatic:
+		return OauthTokenSourceStatic
 	default:
 		return ""
 	}
@@ -110,7 +139,8 @@ type Profile struct {
 	BootstrapServers []string `json:"bootstrapServers"`
 	// SecurityProtocol：PLAINTEXT | SSL | SASL_PLAINTEXT | SASL_SSL（§4 默认 PLAINTEXT）。
 	SecurityProtocol string `json:"securityProtocol"`
-	// SASLMechanism：PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI（含 SASL 时必填）。
+	// SASLMechanism：PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI |
+	// OAUTHBEARER（含 SASL 时必填）。
 	SASLMechanism         string `json:"saslMechanism,omitempty"`
 	Username              string `json:"username,omitempty"`
 	TLSCACert             string `json:"tlsCaCert,omitempty"`
@@ -149,6 +179,17 @@ type Profile struct {
 	GlueRegistryName string `json:"glueRegistryName,omitempty"`
 	GlueAuthMode     string `json:"glueAuthMode,omitempty"`
 	GlueAccessKeyID  string `json:"glueAccessKeyId,omitempty"`
+
+	// --- Phase 3（IMPL_PLAN §12.2.3）：OAUTHBEARER 连接参数。非凭据字段入
+	// Profile；凭据（msk_secret_access_key/msk_session_token/oauth_static_token）
+	// 不在此结构，见 connSecrets。 ---
+	// OauthTokenSource：msk_iam（默认）| static_token。
+	OauthTokenSource string `json:"oauthTokenSource,omitempty"`
+	// MSKRegion：MSK IAM 签名所需 AWS region（token_source=msk_iam 必填）。
+	MSKRegion string `json:"mskRegion,omitempty"`
+	// MSKAccessKeyID：可选显式覆盖默认凭据链（照 §11.5 Glue auth_mode=default
+	// 范式；与 MSKSecretAccessKey 须成对出现）。
+	MSKAccessKeyID string `json:"mskAccessKeyID,omitempty"`
 }
 
 // kerberosEnabled 报告连接是否启用 GSSAPI。
@@ -203,6 +244,10 @@ func NormalizeProfile(p Profile) Profile {
 	p.GlueRegistryName = strings.TrimSpace(p.GlueRegistryName)
 	p.GlueAuthMode = strings.TrimSpace(p.GlueAuthMode)
 	p.GlueAccessKeyID = strings.TrimSpace(p.GlueAccessKeyID)
+	// Phase 3：OAUTHBEARER 参数（token_source 归一化到取值面）。
+	p.OauthTokenSource = NormalizeOauthTokenSource(p.OauthTokenSource)
+	p.MSKRegion = strings.TrimSpace(p.MSKRegion)
+	p.MSKAccessKeyID = strings.TrimSpace(p.MSKAccessKeyID)
 
 	servers := make([]string, 0, len(p.BootstrapServers))
 	for _, server := range p.BootstrapServers {
@@ -256,7 +301,7 @@ func (p Profile) Validate() error {
 }
 
 // validateRequiredCombination 是 manifest required_when 矩阵的后端兜底校验
-//（宿主连接对话框会拦可见必填字段，但 MCP/import 等非对话框写路径与纵深
+// （宿主连接对话框会拦可见必填字段，但 MCP/import 等非对话框写路径与纵深
 // 防御仍需 sidecar 复核；矩阵与 manifest §9 一致）。缺失 →
 // *InvalidParamsError（main.go 映射 -32602）。
 //
@@ -264,8 +309,11 @@ func (p Profile) Validate() error {
 //   - schema_registry=confluent → sr_url 必填
 //   - schema_registry=aws_glue → glue_region/glue_registry_name 必填；
 //     glue_auth_mode=static 时 AK/SK 必填（token 可选）
-//   - SASL 非 GSSAPI → sasl username/password 必填
+//   - SASL 非 GSSAPI/OAUTHBEARER → sasl username/password 必填
 //   - GSSAPI → kerberos principal/keytab 必填
+//   - OAUTHBEARER（Phase 3）→ security_protocol 必须为 SASL_SSL；
+//     token_source=msk_iam → mskRegion 必填；static_token → oauthStaticToken
+//     必填；msk 显式 AK/SK 须成对（可选覆盖默认链）
 func validateRequiredCombination(p Profile, s connSecrets) error {
 	switch p.SchemaRegistry {
 	case SchemaRegistryConfluent:
@@ -288,6 +336,29 @@ func validateRequiredCombination(p Profile, s connSecrets) error {
 			}
 		}
 	}
+	// OAUTHBEARER（Phase 3 §12.2.3）：SASL_SSL 约束 + token 来源矩阵
+	//（违者 -32602；放在 hasSASL 块外，覆盖 protocol 配错的全部组合）。
+	if p.SASLMechanism == SASLMechanismOAUTHBEARER {
+		if p.SecurityProtocol != SecurityProtocolSASLSSL {
+			return &InvalidParamsError{Msg: fmt.Sprintf("OAUTHBEARER requires security_protocol SASL_SSL (got %s)", p.SecurityProtocol)}
+		}
+		switch p.OauthTokenSource {
+		case OauthTokenSourceMSKIAM:
+			if strings.TrimSpace(p.MSKRegion) == "" {
+				return &InvalidParamsError{Msg: "mskRegion is required when oauthTokenSource is \"msk_iam\""}
+			}
+			// 显式静态凭据可选覆盖默认链；给了一半 → 参数错。
+			if (strings.TrimSpace(p.MSKAccessKeyID) == "") != (strings.TrimSpace(s.MSKSecretAccessKey) == "") {
+				return &InvalidParamsError{Msg: "mskAccessKeyID and mskSecretAccessKey must be provided together to override the default AWS credential chain"}
+			}
+		case OauthTokenSourceStatic:
+			if strings.TrimSpace(s.OauthStaticToken) == "" {
+				return &InvalidParamsError{Msg: "oauthStaticToken is required when oauthTokenSource is \"static_token\""}
+			}
+		default:
+			return &InvalidParamsError{Msg: "oauthTokenSource must be msk_iam or static_token"}
+		}
+	}
 	if p.hasSASL() {
 		switch p.SASLMechanism {
 		case SASLMechanismGSSAPI:
@@ -297,6 +368,8 @@ func validateRequiredCombination(p Profile, s connSecrets) error {
 			if strings.TrimSpace(p.KerberosKeytabPath) == "" {
 				return &InvalidParamsError{Msg: "kerberosKeytabPath is required for GSSAPI"}
 			}
+		case SASLMechanismOAUTHBEARER:
+			// 不需要 SASL 账密（token 即凭据；矩阵见上方 OAUTHBEARER 块）。
 		default:
 			if p.Username == "" {
 				return &InvalidParamsError{Msg: fmt.Sprintf("sasl username is required for %s", p.SecurityProtocol)}
@@ -398,6 +471,12 @@ type TopicInfo struct {
 	PartitionCount    int    `json:"partitionCount"`
 	ReplicationFactor int    `json:"replicationFactor"`
 	Error             string `json:"error,omitempty"`
+	// isHealthy / unhealthyPartitions（Phase 3 §12.2.4，additive 无开关）：
+	// 分区级判定复用 partitionInfos 同款规则（leader 有效 + ISR=replicas +
+	// 无 offline），topic 级 = 全分区健康；unhealthyPartitions = 不健康分区数
+	//（树徽标 title 用）。topic 元数据加载失败（Error 非空）时 isHealthy=false。
+	IsHealthy           bool `json:"isHealthy"`
+	UnhealthyPartitions int  `json:"unhealthyPartitions"`
 }
 
 // TopicsListResult 对应 kafka/topics/list。
@@ -491,6 +570,33 @@ type TopicOffsetRow struct {
 // TopicOffsetsListResult 对应 kafka/topics/offsets/list。
 type TopicOffsetsListResult struct {
 	Rows []TopicOffsetRow `json:"rows"`
+}
+
+// TopicRecordsClearRequest 对应 kafka/topics/records/clear（Phase 3，
+// critical 门禁：与 topics/delete 同级——read_only/allow_delete 与门 +
+// confirmTopic 单 topic 确认）。
+type TopicRecordsClearRequest struct {
+	ConnectionID string `json:"connectionId"`
+	Topic        string `json:"topic"`
+	// ConfirmTopic 必须与 topic 同名（复用 ensureTopicDeleteConfirm 单 topic
+	// 语义，防误清空）。
+	ConfirmTopic string `json:"confirmTopic,omitempty"`
+}
+
+// TopicRecordsClearRow 单分区清空结果行（Phase 3 §12.2.1）。
+// Deleted/LowWatermark 为 long|null：任一段 offset 取不到时置 null
+// （指针 nil → JSON null），不影响其他分区。
+type TopicRecordsClearRow struct {
+	Partition    int32  `json:"partition"`
+	Deleted      *int64 `json:"deleted"`
+	LowWatermark *int64 `json:"lowWatermark"`
+	OK           bool   `json:"ok"`
+	Error        string `json:"error,omitempty"`
+}
+
+// TopicRecordsClearResult 对应 kafka/topics/records/clear。
+type TopicRecordsClearResult struct {
+	Rows []TopicRecordsClearRow `json:"rows"`
 }
 
 // --- groups ---

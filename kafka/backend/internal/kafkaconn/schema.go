@@ -6,7 +6,8 @@ package kafkaconn
 //     REST —— 含 Redpanda 内置 SR；AWS Glue 登记 Phase 3 不做）；
 //   - Confluent wire format：magic byte 0 + 4 字节大端 schemaID + 载荷；
 //   - AVRO 编解码（goavro：JSON 文本 ⇄ 二进制）、JSON Schema 校验
-//     （jsonschema-go）、PROTOBUF 编解码不实现（明确报错）；
+//     （jsonschema-go）、PROTOBUF 编解码（Phase 3，§12.2.2：FDSet 动态消息
+//     ⇄ JSON，protojson 渲染）；
 //   - 版本 LCS 逐行 diff（语义 hunks/summary）；
 //   - 兼容性 get/set/check、register/delete、subjects/versions 列表；
 //   - per-consume 元数据缓存（tinyrdm metadata cache 思路：一次消费内按
@@ -18,6 +19,7 @@ package kafkaconn
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -29,9 +31,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	jsonschema "github.com/google/jsonschema-go/jsonschema"
 	goavro "github.com/linkedin/goavro/v2"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // confluentWireMagicByte 是 Confluent wire format 魔数字节。
@@ -302,7 +312,7 @@ type SchemaRef struct {
 	Subject string `json:"subject,omitempty"`
 	// Version 可空（=latest；consume 时配合 subject 定位元数据）。
 	Version int64 `json:"version,omitempty"`
-	// Format：avro | json（可空 = 按注册元数据的 schemaType）。
+	// Format：avro | json | protobuf（可空 = 按注册元数据的 schemaType）。
 	Format string `json:"format,omitempty"`
 }
 
@@ -1011,8 +1021,9 @@ func normalizeConfluentSchemaType(schemaType string) string {
 }
 
 // encodeSchemaPayload 把 JSON 文本载荷编码为对应格式的二进制载荷
-// （AVRO：goavro；JSON：Schema 校验后原样；PROTOBUF：未实现）。
-func encodeSchemaPayload(text []byte, schema, format string) ([]byte, error) {
+// （AVRO：goavro；JSON：Schema 校验后原样；PROTOBUF：protojson → 动态消息）。
+// subject 仅 PROTOBUF 分支用于 message 消歧，可空（单 message FDSet 不需要）。
+func encodeSchemaPayload(text []byte, schema, format, subject string) ([]byte, error) {
 	switch strings.ToUpper(strings.TrimSpace(format)) {
 	case "", "AVRO":
 		codec, err := goavro.NewCodec(schema)
@@ -1030,15 +1041,16 @@ func encodeSchemaPayload(text []byte, schema, format string) ([]byte, error) {
 		}
 		return text, nil
 	case "PROTOBUF":
-		return nil, errf("protobuf schema payload encoding is not implemented")
+		return encodeProtobufPayload(text, schema, subject)
 	default:
 		return nil, errf("schema format must be AVRO, JSON, or PROTOBUF")
 	}
 }
 
-// decodeSchemaPayload 把二进制载荷解码回 JSON 文本（AVRO：goavro；
-// JSON：Schema 校验后原样；PROTOBUF：未实现）。
-func decodeSchemaPayload(payload []byte, schema, format string) ([]byte, error) {
+// decodeSchemaPayload 把二进制载荷解码回 JSON 文本（AVRO：goavro；JSON：
+// Schema 校验后原样；PROTOBUF：动态消息 → protojson）。
+// subject 仅 PROTOBUF 分支用于 message 消歧，可空。
+func decodeSchemaPayload(payload []byte, schema, format, subject string) ([]byte, error) {
 	switch strings.ToUpper(strings.TrimSpace(format)) {
 	case "", "AVRO":
 		codec, err := goavro.NewCodec(schema)
@@ -1056,10 +1068,175 @@ func decodeSchemaPayload(payload []byte, schema, format string) ([]byte, error) 
 		}
 		return payload, nil
 	case "PROTOBUF":
-		return nil, errf("protobuf schema payload decoding is not implemented")
+		return decodeProtobufPayload(payload, schema, subject)
 	default:
 		return nil, errf("schema format must be AVRO, JSON, or PROTOBUF")
 	}
+}
+
+// --- PROTOBUF 载荷编解码（Phase 3，IMPL_PLAN §12.2.2） ---
+//
+// SR 元数据事实：PROTOBUF subject 的 schema 字段 = base64(FileDescriptorSet)，
+// SchemaMeta.SchemaType="PROTOBUF"。解码走 dynamicpb 动态消息 + protojson
+// 渲染；编码走 protojson 反序列化 + proto.Marshal（wire frame 打包由调用方
+// encodeWireFrame(meta.ID) 复用）。int64/枚举的 JSON 表示与 Confluent 序列化
+// 器存在已知差异（protojson 输出 proto 字段名），登记不强行对齐（§12.7）。
+
+// decodeProtobufPayload 把 protobuf 二进制载荷解码为 JSON 文本。
+func decodeProtobufPayload(payload []byte, fdsetB64, subject string) ([]byte, error) {
+	desc, err := resolveProtobufMessage(fdsetB64, subject)
+	if err != nil {
+		return nil, err
+	}
+	msg := dynamicpb.NewMessage(desc)
+	if err := proto.Unmarshal(payload, msg); err != nil {
+		return nil, fmt.Errorf("decode protobuf payload: %w", err)
+	}
+	out, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("render protobuf payload as JSON: %w", err)
+	}
+	return out, nil
+}
+
+// encodeProtobufPayload 把 JSON 文本载荷（protojson 语义）编码为 protobuf
+// 二进制。
+func encodeProtobufPayload(text []byte, fdsetB64, subject string) ([]byte, error) {
+	desc, err := resolveProtobufMessage(fdsetB64, subject)
+	if err != nil {
+		return nil, err
+	}
+	msg := dynamicpb.NewMessage(desc)
+	if err := (protojson.UnmarshalOptions{}).Unmarshal(text, msg); err != nil {
+		return nil, fmt.Errorf("encode protobuf JSON payload: %w", err)
+	}
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("encode protobuf payload: %w", err)
+	}
+	return out, nil
+}
+
+// resolveProtobufMessage 从 base64(FileDescriptorSet) + subject 约定选出目标
+// message 描述符（消歧按序三分支，§12.2.2）：
+//  1. FDSet 恰含 1 个 message → 用之；
+//  2. subject 约定匹配：剥 "-key"/"-value" 后缀取尾段，PascalCase 后唯一
+//     命中 message 全名尾段 → 用之；
+//  3. 仍无法唯一 → 报错并列出候选全名（进 decodeError，不中断消费）。
+func resolveProtobufMessage(fdsetB64, subject string) (protoreflect.MessageDescriptor, error) {
+	files, err := protobufFilesFromSchema(fdsetB64)
+	if err != nil {
+		return nil, err
+	}
+	messages := collectProtobufMessages(files)
+	if len(messages) == 0 {
+		return nil, errf("protobuf FileDescriptorSet contains no message")
+	}
+	if len(messages) == 1 {
+		return messages[0], nil
+	}
+	// 分支 2：subject 约定匹配（-key/-value 后缀 + PascalCase 尾段）。
+	if tail := protobufSubjectTail(subject); tail != "" {
+		want := pascalCase(tail)
+		var matched []protoreflect.MessageDescriptor
+		for _, message := range messages {
+			full := string(message.FullName())
+			if nameTail := messageFullNameTail(full); nameTail == want {
+				matched = append(matched, message)
+			}
+		}
+		if len(matched) == 1 {
+			return matched[0], nil
+		}
+	}
+	names := make([]string, 0, len(messages))
+	for _, message := range messages {
+		names = append(names, string(message.FullName()))
+	}
+	sort.Strings(names)
+	return nil, errf("protobuf schema contains multiple messages and subject %q does not identify exactly one (strip -key/-value suffix, PascalCase tail match); candidates: %s",
+		subject, strings.Join(names, ", "))
+}
+
+// protobufFilesFromSchema base64(FileDescriptorSet) → protoregistry.Files。
+func protobufFilesFromSchema(fdsetB64 string) (*protoregistry.Files, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(fdsetB64))
+	if err != nil {
+		return nil, fmt.Errorf("decode protobuf FileDescriptorSet base64: %w", err)
+	}
+	var fdset descriptorpb.FileDescriptorSet
+	if err := proto.Unmarshal(raw, &fdset); err != nil {
+		return nil, fmt.Errorf("parse protobuf FileDescriptorSet: %w", err)
+	}
+	files, err := protodesc.NewFiles(&fdset)
+	if err != nil {
+		return nil, fmt.Errorf("build protobuf descriptors: %w", err)
+	}
+	return files, nil
+}
+
+// collectProtobufMessages 遍历 FDSet 全部文件收集 message 描述符（含嵌套）。
+func collectProtobufMessages(files *protoregistry.Files) []protoreflect.MessageDescriptor {
+	var appendNested func(md protoreflect.MessageDescriptor)
+	var messages []protoreflect.MessageDescriptor
+	appendNested = func(md protoreflect.MessageDescriptor) {
+		for i := 0; i < md.Messages().Len(); i++ {
+			nested := md.Messages().Get(i)
+			messages = append(messages, nested)
+			appendNested(nested)
+		}
+	}
+	files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		for i := 0; i < fd.Messages().Len(); i++ {
+			md := fd.Messages().Get(i)
+			messages = append(messages, md)
+			appendNested(md)
+		}
+		return true
+	})
+	return messages
+}
+
+// protobufSubjectTail 剥 subject 的 "-key"/"-value" 后缀并取尾段
+// （"orders-value" → "orders"、"com.dbx.test.orders-key" → "orders"）。
+func protobufSubjectTail(subject string) string {
+	base := strings.TrimSpace(subject)
+	for _, suffix := range []string{"-key", "-value"} {
+		if strings.HasSuffix(base, suffix) {
+			base = strings.TrimSuffix(base, suffix)
+			break
+		}
+	}
+	if i := strings.LastIndexAny(base, "./"); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.TrimSpace(base)
+}
+
+// messageFullNameTail 取 message 全名尾段（"com.dbx.test.Order" → "Order"）。
+func messageFullNameTail(full string) string {
+	if i := strings.LastIndex(full, "."); i >= 0 {
+		return full[i+1:]
+	}
+	return full
+}
+
+// pascalCase 把 snake/kebab/空格分隔词转 PascalCase（"orders" → "Orders"、
+// "order_items" → "OrderItems"），用于 subject 约定匹配 message 名。
+func pascalCase(value string) string {
+	words := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '_' || r == '-' || r == ' ' || r == '.'
+	})
+	var b strings.Builder
+	for _, word := range words {
+		runes := []rune(word)
+		if len(runes) == 0 {
+			continue
+		}
+		b.WriteRune(unicode.ToUpper(runes[0]))
+		b.WriteString(string(runes[1:]))
+	}
+	return b.String()
 }
 
 // validateJSONSchemaPayload 校验 JSON 载荷是否符合 JSON Schema
@@ -1212,7 +1389,7 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 	} else {
 		format = normalizeConfluentSchemaType(meta.SchemaType)
 	}
-	decoded, err := decodeSchemaPayload(payload, meta.Schema, format)
+	decoded, err := decodeSchemaPayload(payload, meta.Schema, format, meta.Subject)
 	if err != nil {
 		return nil, schemaValueInfo{}, err
 	}
@@ -1231,7 +1408,7 @@ func encodeForProduce(ctx context.Context, client *schemaRegistryClient, ref *Sc
 		return nil, SchemaGetResult{}, err
 	}
 	format := normalizeConfluentSchemaType(firstNonEmpty(ref.Format, meta.SchemaType))
-	encoded, err := encodeSchemaPayload(payload, meta.Schema, format)
+	encoded, err := encodeSchemaPayload(payload, meta.Schema, format, subject)
 	if err != nil {
 		return nil, SchemaGetResult{}, err
 	}

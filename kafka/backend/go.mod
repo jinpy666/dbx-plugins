@@ -3,6 +3,7 @@ module io.dbx.kafka.plugin
 go 1.24.0
 
 require (
+	github.com/aws/aws-msk-iam-sasl-signer-go v1.0.4
 	github.com/aws/aws-sdk-go-v2/config v1.33.3
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.3
 	github.com/aws/aws-sdk-go-v2/service/glue v1.157.0
@@ -19,6 +20,7 @@ require (
 	github.com/twmb/franz-go/pkg/kadm v1.17.2
 	github.com/twmb/franz-go/pkg/kmsg v1.12.0
 	github.com/twmb/franz-go/pkg/sasl/kerberos v1.1.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (

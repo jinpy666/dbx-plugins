@@ -22,8 +22,10 @@
 - **响应形状**：成功统一 `{ "ok": true, "data": <payload> }`；失败走
   PluginError（JSON-RPC `error`，`message` + `code`，`data` 附加上下文）。
   下文各方法只描述 `data` 载荷。
-- **凭据红线**：`sasl_password`、`tls_client_key`、`sr_password` 等
-  secret binding 字段不落日志、不进审计 result、不回显。
+- **凭据红线**：`sasl_password`、`tls_client_key`、`sr_password`、
+  `glue_secret_access_key`/`glue_session_token`、`msk_secret_access_key`/
+  `msk_session_token`/`oauth_static_token` 等 secret binding 字段不落日志、
+  不进审计 result、不回显。
 
 ## 2. 生命周期方法（SDK/ldap 同款）
 
@@ -36,8 +38,11 @@
 配置字段来源：`external_config` 为 manifest config binding 字段
 （bootstrap_servers、security_protocol、sasl_*、tls_*、client_id、
 read_only、allow_delete，以及 Phase 2 的 connection_source、zk_servers、
-kerberos_* 、sr_url、sr_username），`connection_secrets` 为 secret binding
-字段（sasl_password、tls_client_key、sr_password）。
+kerberos_* 、sr_url、sr_username，Phase 3 的 schema_registry、glue_*、
+oauth_token_source、msk_region、msk_access_key_id），`connection_secrets`
+为 secret binding 字段（sasl_password、tls_client_key、sr_password、
+glue_secret_access_key、glue_session_token、msk_secret_access_key、
+msk_session_token、oauth_static_token）。
 
 ## 3. 领域方法
 
@@ -66,7 +71,11 @@ kerberos_* 、sr_url、sr_username），`connection_secrets` 为 secret binding
 **`kafka/topics/list`**
 
 - 请求：`includeInternal?:bool`（默认 false，隐藏 `__consumer_offsets` 等内部 topic）。
-- 返回：`topics[]{name, topicId:string?, isInternal:bool, partitionCount:int, replicationFactor:int, error?:string}`。
+- 返回：`topics[]{name, topicId:string?, isInternal:bool, partitionCount:int, replicationFactor:int, isHealthy:bool, unhealthyPartitions:int, error?:string}`。
+  Phase 3 增量（additive 无开关）：`isHealthy` = 全分区健康（分区判定与
+  topics/describe 同款：leader 有效 + ISR 覆盖 replicas + 无 offline）；
+  `unhealthyPartitions` = 不健康分区数；topic 元数据加载失败时
+  `isHealthy=false` 且 `error` 非空。零额外请求（复用 list 元数据）。
 - 错误：连接不可用 → `-32000`。
 
 **`kafka/topics/describe`**
@@ -90,6 +99,21 @@ kerberos_* 、sr_url、sr_username），`connection_secrets` 为 secret binding
   确认字段，防误删；任一条不匹配 → `-32602`）。
 - 返回：`results[]{topic, ok, error?}`。
 - 错误：read_only 或 `allow_delete=false` → `-32000`（blocked）；审计。
+
+**`kafka/topics/records/clear`**（critical 门禁，Phase 3）
+
+- 请求：`topic:string`（必填）、`confirmTopic:string`（必填，与 topic 同名，
+  复用 topics/delete 单 topic 确认语义；不匹配 → `-32602`）。
+- 语义：把各分区已可见记录清空——取每分区 high watermark 后
+  `DeleteRecords(offset=hw)`（KIP-107，**最低 broker 版本 0.11**；旧 broker
+  分区行内业务错透传）。清空后 latest==earliest；不影响删除后新写入。
+- 返回：`rows[]{partition:int, deleted:long|null, lowWatermark:long|null,
+  ok:bool, error?:string}`；`deleted` = 删除前 hw − 删除后 lowWatermark
+  （任一段 offset 取不到 → 该行 `deleted`/`lowWatermark` 置 `null`，不影响
+  其他分区；行按 partition 升序）。
+- 错误：read_only 或 `allow_delete=false` → `-32000`（blocked）；
+  `confirmTopic` 不匹配 → `-32602`；审计 action `topics.records.clear`，
+  detail `partitions=N`。
 
 **`kafka/topics/partitions/update`**
 
@@ -189,13 +213,15 @@ kerberos_* 、sr_url、sr_username），`connection_secrets` 为 secret binding
   （二进制 key 保真，与 `key` 二选一）、`headers?:map<string,string>`、
   `partition?:int`、`count?:int`（批量条数，≤1000，默认 1）、
   `compression?:"gzip"|"lz4"|"zstd"|"snappy"`、
-  `schema?:{subject, version?:int, format?:"avro"|"json"}`（Phase 2）。
+  `schema?:{subject, version?:int, format?:"avro"|"json"|"protobuf"}`（Phase 2
+  avro/json；Phase 3 增 protobuf）。
 - **schema 挂载语义**（Phase 2）：提供 `schema` 时 `value`/`valueBase64`
-  是**未编码载荷**（Avro = JSON 文本；JSON = JSON 文本），sidecar 按 SR
-  元数据（subject + version，缺省 latest）把载荷编码为 Avro 二进制 /
-  校验后的 JSON，并打包 Confluent wire format
+  是**未编码载荷**（Avro = JSON 文本；JSON = JSON 文本；PROTOBUF = JSON
+  文本，protojson 语义），sidecar 按 SR 元数据（subject + version，缺省
+  latest）把载荷编码为 Avro 二进制 / 校验后的 JSON / protobuf 二进制
+  （protojson → 动态消息），并打包 Confluent wire format
   （magic byte 0 + 4 字节大端 schemaID + 载荷）后生产。SR 未配置（sr_url
-  空）或元数据不存在 → `-32000`；PROTOBUF 编码未实现 → `-32000`。
+  空）或元数据不存在 → `-32000`。
 - 返回：`{partition:int, offset:int, timestamp:int}`（首条消息定位；
   count>1 时为末条 offset）。
 - 错误：read_only → `-32000`（blocked）；count 超限 → `-32602`；
@@ -207,7 +233,8 @@ kerberos_* 、sr_url、sr_username），`connection_secrets` 为 secret binding
 - **schema 解码语义**（Phase 2）：提供 `schema` 时按 Confluent wire format
   解包（魔数字节 0 + schemaID），解析 SR 元数据（指定 `subject` 时按
   subject+version 取，否则按 schemaID 反查 `/schemas/ids/<id>`），把载荷
-  解码为 JSON 文本（Avro 二进制 → JSON；JSON 透传校验）。命中消息附加
+  解码为 JSON 文本（Avro 二进制 → JSON；JSON 透传校验；PROTOBUF →
+  动态消息 → protojson 渲染，Phase 3）。命中消息附加
   `schemaId`、`schemaSubject`、`schemaVersion` 字段；解码失败**不中断
   消费**，置 `decodeError`。元数据按 schemaID / subject+version 在本次
   消费（或流式会话）内缓存，同 ID 只请求一次 SR。
@@ -277,8 +304,20 @@ Registry 管理面（Phase 3，见文末 **Phase 3（AWS Glue）** 小节）。�
 `connectionId` 必填；未配置任何 SR → `-32000`
 （"schema registry is not configured"）。wire format：magic byte 0 +
 4 字节大端 schemaID + 载荷。`format` 取值 `avro` | `json` | `protobuf`
-（大小写不敏感；PROTOBUF 编解码未实现 → `-32000`，SR 返回大写
-`AVRO`/`JSON`/`PROTOBUF`）。
+（大小写不敏感；SR 返回大写 `AVRO`/`JSON`/`PROTOBUF`）。
+
+**PROTOBUF 编解码（Phase 3）**：SR PROTOBUF subject 的 `schema` 字段 =
+`base64(FileDescriptorSet)`（SR 元数据事实）。解码：base64 → FDSet →
+`protodesc` 动态描述符 → `dynamicpb` 动态消息 → protojson 渲染 JSON
+（proto 字段名；int64/枚举的 JSON 表示与 Confluent 序列化器存在已知差异，
+登记不强行对齐）。编码：protojson 反序列化 → protobuf 二进制 → wire frame。
+**message 消歧**（FDSet 含多 message 时，按序）：
+1. FDSet 恰含 1 个 message → 用之；
+2. subject 约定匹配：剥 `-key`/`-value` 后缀取尾段，PascalCase 化后与
+   message 全名尾段严格相等（如 subject `order-value` → `Order`），
+   唯一命中 → 用之；
+3. 仍无法唯一 → 报错列出候选 message 全名（consume 进 `decodeError`
+   不中断消费；produce → `-32000`）。
 
 **`kafka/schema/test`**
 
@@ -452,7 +491,7 @@ AWS Glue schema management is available"；双配置歧义/未知 registry →
 | `offsetFrom` / `offsetTo` | int? | — | offset 范围 |
 | `decode` | enum | `none` | `none` / `base64`（对 valueText 的二次解码展示） |
 | `decompression` | enum | — | `gzip` / `lz4` / `zstd` / `snappy`（payload 先解压再解码） |
-| `schema` | object? | — | **Phase 2**：`{subject?, version?, format?}`（SR 挂载，语义见 §3.5 consume；解码失败置 `decodeError`，不中断消费） |
+| `schema` | object? | — | **Phase 2**：`{subject?, version?, format?}`（SR 挂载，语义见 §3.5 consume；format 取值 `avro`/`json`/`protobuf`，可空 = 按注册元数据；解码失败置 `decodeError`，不中断消费） |
 
 `fieldFilters[]`：
 
@@ -525,12 +564,13 @@ M0 审计记录（同 ldap/audit 形状）：全部写操作 + 策略拒绝事�
 | 配置 | 效果 |
 | --- | --- |
 | `read_only=true` | produce / topics create/alter/delete / partitions update / groups delete / offsets reset / acls create/delete / **schema register、schema compatibility/set** 一律拒绝；**禁止 commit** |
-| `allow_delete=false` | topics/delete、groups/delete、acls/delete、**schema/delete、schema/delete/version** 额外拒绝；read_only 下本项无效（两者与门） |
-| `confirmTopic` | topics/delete 必须携带与 topic 同名的确认字段，否则 `-32602` |
+| `allow_delete=false` | topics/delete、**topics/records/clear**、groups/delete、acls/delete、**schema/delete、schema/delete/version** 额外拒绝；read_only 下本项无效（两者与门） |
+| `confirmTopic` | topics/delete 与 topics/records/clear 必须携带与 topic 同名的确认字段，否则 `-32602` |
 
 schema 写操作审计 action：`kafka/schema-register`、`kafka/schema-compatibility-set`、
 `kafka/schema-delete`（detail 只含 subject@version/id/level，不含 schema 内容
-与凭据）。
+与凭据）。topics/records/clear 审计 action：`kafka/topics.records.clear`
+（detail `partitions=N`）。
 
 ## 8. 与实现的同步约定
 
@@ -553,8 +593,8 @@ sidecar 兜底校验）。SR 后端由新增决策字段 **`schema_registry`**�
 | display_name | text | name | "Kafka cluster" | — | 连接名（required） |
 | bootstrap_servers | textarea | config | — | — | `host:port` 逗号/换行分隔（required） |
 | security_protocol | select | config | PLAINTEXT | — | PLAINTEXT/SSL/SASL_PLAINTEXT/SASL_SSL |
-| sasl_mechanism | select | config | PLAIN | security_protocol ∈ SASL | PLAIN/SCRAM-SHA-256/SCRAM-SHA-512/**GSSAPI** |
-| sasl_username / sasl_password | text / password | config / **secret** | — | security_protocol ∈ SASL | SASL 凭据；required_when 见下方矩阵（GSSAPI 不需要账密） |
+| sasl_mechanism | select | config | PLAIN | security_protocol ∈ SASL | PLAIN/SCRAM-SHA-256/SCRAM-SHA-512/**GSSAPI**/**OAUTHBEARER**（Phase 3） |
+| sasl_username / sasl_password | text / password | config / **secret** | — | security_protocol ∈ SASL | SASL 凭据；required_when 见下方矩阵（GSSAPI/OAUTHBEARER 不需要账密） |
 | tls_ca_cert / tls_client_cert | textarea | config | — | security_protocol ∈ SSL | PEM |
 | tls_client_key | password | **secret** | — | security_protocol ∈ SSL | PEM 私钥 |
 | tls_insecure_skip_verify | boolean | config | false | security_protocol ∈ SSL | 仅开发用 |
@@ -578,6 +618,12 @@ sidecar 兜底校验）。SR 后端由新增决策字段 **`schema_registry`**�
 | glue_access_key_id | text | config | — | glue_auth_mode ∈ [static] | AWS Access Key ID；required_when 见矩阵 |
 | glue_secret_access_key | password | **secret** | — | glue_auth_mode ∈ [static] | AWS Secret Access Key；required_when 见矩阵（凭据红线：secret binding） |
 | glue_session_token | password | **secret** | — | glue_auth_mode ∈ [static] | AWS 会话令牌（可选，STS 临时凭据） |
+| **oauth_token_source** | select | config | msk_iam | sasl_mechanism ∈ [OAUTHBEARER] | **msk_iam / static_token**（Phase 3 OAUTHBEARER token 来源） |
+| msk_region | text | config | — | oauth_token_source ∈ [msk_iam] | MSK 集群 AWS 区域（签名 IAM token）；required_when 见矩阵 |
+| msk_access_key_id | text | config | — | oauth_token_source ∈ [msk_iam] | 可选：显式覆盖 AWS 默认凭据链（与 msk_secret_access_key 成对） |
+| msk_secret_access_key | password | **secret** | — | oauth_token_source ∈ [msk_iam] | 显式凭据 SK（与 AK 成对；凭据红线：secret binding） |
+| msk_session_token | password | **secret** | — | oauth_token_source ∈ [msk_iam] | 可选 STS 会话令牌 |
+| oauth_static_token | password | **secret** | — | oauth_token_source ∈ [static_token] | 静态 bearer token；required_when 见矩阵（凭据红线：secret binding） |
 
 ### 9.1 required_when 矩阵（agent I，与 sidecar 兜底校验一一对应）
 
@@ -588,9 +634,11 @@ sidecar 兜底校验）。SR 后端由新增决策字段 **`schema_registry`**�
 | glue_registry_name | schema_registry ∈ [aws_glue] | `glueRegistryName is required when schemaRegistry is "aws_glue"` |
 | glue_access_key_id | glue_auth_mode ∈ [static] | `glueAccessKeyId is required when glueAuthMode is "static"` |
 | glue_secret_access_key | glue_auth_mode ∈ [static] | `glueSecretAccessKey is required when glueAuthMode is "static"`（session_token 恒可选） |
-| sasl_username / sasl_password | sasl_mechanism ∈ [PLAIN, SCRAM-SHA-256, SCRAM-SHA-512] | `sasl username/password is required for <protocol>`（GSSAPI 不需要账密） |
+| sasl_username / sasl_password | sasl_mechanism ∈ [PLAIN, SCRAM-SHA-256, SCRAM-SHA-512] | `sasl username/password is required for <protocol>`（GSSAPI/OAUTHBEARER 不需要账密） |
 | kerberos_principal | sasl_mechanism ∈ [GSSAPI] | `kerberosPrincipal is required for GSSAPI` |
 | kerberos_keytab_path | sasl_mechanism ∈ [GSSAPI] | `kerberosKeytabPath is required for GSSAPI`（service_name 有默认值、realm/krb5 可选） |
+| msk_region | oauth_token_source ∈ [msk_iam] | `mskRegion is required when oauthTokenSource is "msk_iam"`；另 OAUTHBEARER ⇒ security_protocol=SASL_SSL（违者 `OAUTHBEARER requires security_protocol SASL_SSL`），AK/SK 只给一半 → `must be provided together`（均 `-32602`） |
+| oauth_static_token | oauth_token_source ∈ [static_token] | `oauthStaticToken is required when oauthTokenSource is "static_token"`（`-32602`） |
 
 SR provider 解析以 `schema_registry` 开关为准（`resolveSchemaProvider`）：
 缺省 registry 时开关 `confluent`→confluent、`aws_glue`→glue、`none`→none

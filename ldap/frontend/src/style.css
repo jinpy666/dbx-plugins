@@ -108,15 +108,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .icon-violet { color: #7c3aed; }
 .icon-blue { color: #2563eb; }
 .icon-red { color: var(--destructive); }
-:root[data-theme="dark"] .icon-emerald { color: #6ee7b7; }
-:root[data-theme="dark"] .icon-amber { color: #fcd34d; }
-:root[data-theme="dark"] .icon-cyan { color: #67e8f9; }
-:root[data-theme="dark"] .icon-violet { color: #c4b5fd; }
-:root[data-theme="dark"] .icon-blue { color: #93c5fd; }
+:root[data-theme="dark"] .icon-emerald, :root[data-dbx-theme="dark"] .icon-emerald { color: #6ee7b7; }
+:root[data-theme="dark"] .icon-amber, :root[data-dbx-theme="dark"] .icon-amber { color: #fcd34d; }
+:root[data-theme="dark"] .icon-cyan, :root[data-dbx-theme="dark"] .icon-cyan { color: #67e8f9; }
+:root[data-theme="dark"] .icon-violet, :root[data-dbx-theme="dark"] .icon-violet { color: #c4b5fd; }
+:root[data-theme="dark"] .icon-blue, :root[data-dbx-theme="dark"] .icon-blue { color: #93c5fd; }
 
 .notice, .error-banner { position: absolute; z-index: 15; left: 50%; max-width: min(720px, calc(100% - 32px)); transform: translateX(-50%); gap: 10px; border-radius: var(--radius); box-shadow: 0 6px 24px rgb(0 0 0 / 24%); }
 .notice { position: fixed; bottom: 24px; z-index: 90; border: 0; border-radius: 8px; padding: 8px 16px; background: var(--foreground); color: var(--background); font-size: 14px; box-shadow: 0 10px 28px rgb(0 0 0 / 28%); }
-.error-banner { top: 42px; border: 1px solid var(--border); padding: 6px 10px; justify-content: space-between; border-color: color-mix(in srgb, var(--destructive) 60%, var(--border)); background: color-mix(in srgb, var(--destructive) 16%, var(--popover)); color: color-mix(in srgb, var(--destructive) 45%, var(--foreground)); }
+/* 错误横幅在布局流内（P2-8）：工具栏与主区之间插入一行，出现时主区下移
+   让位，不再遮挡搜索表单；覆盖共享规则的 absolute/left/transform。 */
+.error-banner { position: static; left: auto; top: auto; transform: none; align-self: center; display: flex; flex: 0 0 auto; margin: 4px 0; width: max-content; border: 1px solid var(--border); padding: 6px 10px; justify-content: space-between; border-color: color-mix(in srgb, var(--destructive) 60%, var(--border)); background: color-mix(in srgb, var(--destructive) 16%, var(--popover)); color: color-mix(in srgb, var(--destructive) 45%, var(--foreground)); }
 .error-banner button { display: grid; width: 20px; height: 20px; border: 0; padding: 0; place-items: center; background: transparent; color: inherit; cursor: pointer; }
 .error-banner svg { width: 13px; height: 13px; }
 
@@ -158,6 +160,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tree-label { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; }
 .tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-badge { flex: 0 0 auto; border-radius: 999px; padding: 0 6px; background: color-mix(in srgb, var(--muted-foreground) 22%, transparent); color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
+/* 截断徽标即"加载更多"入口（P1-2）：可点击、主色提示，与普通计数徽标区分。 */
+button.tree-badge--truncated { border: 0; cursor: pointer; background: color-mix(in srgb, var(--primary) 20%, transparent); color: var(--foreground); }
+button.tree-badge--truncated:hover { background: color-mix(in srgb, var(--primary) 38%, transparent); }
 .tree-state { display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted-foreground); font-size: 12px; }
 
 /* Zero-dependency virtual scroller (VirtualList.vue): fixed row height,
@@ -170,6 +175,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tree-vlist .tree-node { display: block; height: 28px; padding: 0; }
 .tree-vlist .tree-row { height: 28px; min-height: 0; }
 .tree-error { color: var(--destructive); font-size: 11px; padding: 6px 10px; overflow-wrap: anywhere; }
+/* 树节点联动改写 Base DN 的一次性高亮（P2-7）：accent 描边渐隐。 */
+.base-dn-flash { outline: 2px solid var(--accent); outline-offset: -1px; transition: outline-color .9s ease; }
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -275,8 +282,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .context-menu hr { width: 100%; height: 1px; margin: 3px 0; border: 0; background: var(--border); }
 
 /* Modals */
-.modal-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 50%); }
-:root[data-theme="dark"] .modal-backdrop { background: color-mix(in srgb, var(--background) 92%, transparent); }
+.modal-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 16px; background: var(--overlay); }
 .modal { position: relative; display: flex; width: min(560px, 100%); max-height: calc(100vh - 32px); flex-direction: column; gap: 16px; border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--popover); color: var(--foreground); box-shadow: 0 16px 48px rgb(0 0 0 / 32%); }
 .modal header { min-height: 24px; justify-content: space-between; gap: 12px; padding: 0; }
 .modal header > .icon-button { position: absolute; top: 8px; right: 8px; }
@@ -332,7 +338,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .settings-list-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: 12px; }
 .settings-list-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
 .state-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 999px; }
-.state-dot.connected { background: #10b981; }
+.state-dot.connected { background: var(--success); }
 .state-dot.idle { background: var(--muted-foreground); }
 .state-dot.error { background: var(--destructive); }
 .schema-def { overflow-wrap: anywhere; font-family: var(--mono-font-family); font-size: 10px; color: var(--muted-foreground); }

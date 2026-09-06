@@ -2,9 +2,12 @@
 // Single-row DN-tree node renderer. DnTree.vue flattens the tree into visible
 // rows and windows them through VirtualList; nesting depth arrives as a prop
 // and becomes left padding (the old nested .tree-children indent).
+// P1-2：懒加载被 sizeLimit 截断时，徽标显示"已加载数+"（绝不背书精确总数）
+// 并作为"加载更多"入口（点击经 DnTree.loadMore 续载一页）。
+import { computed } from "vue";
 import { ChevronDown, ChevronRight, Loader2 } from "@lucide/vue";
 import { t } from "../lib/i18n";
-import type { DnTreeNode } from "../lib/dnTree";
+import { childBadgeText, type DnTreeNode } from "../lib/dnTree";
 
 const props = withDefaults(
   defineProps<{
@@ -21,6 +24,7 @@ const emit = defineEmits<{
   (e: "select", node: DnTreeNode): void;
   (e: "menu", event: MouseEvent, dn: string): void;
   (e: "view", dn: string): void;
+  (e: "loadMore", node: DnTreeNode): void;
 }>();
 
 function onToggle(event: MouseEvent) {
@@ -44,6 +48,21 @@ function onMenu(event: MouseEvent) {
   event.stopPropagation();
   emit("menu", event, props.node.dn);
 }
+
+function onLoadMore(event: MouseEvent) {
+  event.stopPropagation();
+  if (!props.disabled) emit("loadMore", props.node);
+}
+
+// 截断徽标悬停提示：count 已回且与已加载数不一致时给出 "x / y" 全貌，
+// 否则只承诺"已加载前 n 条（已截断）"。
+const truncatedTitle = computed(() => {
+  const loaded = props.node.children.length;
+  if (props.node.childCount && props.node.childCount !== loaded) {
+    return t("tree.childCountTruncated", { loaded, total: props.node.childCount });
+  }
+  return t("tree.childCountTruncatedUnknown", { loaded });
+});
 </script>
 
 <template>
@@ -56,11 +75,18 @@ function onMenu(event: MouseEvent) {
       </button>
       <span class="tree-label"><span class="tree-name">{{ node.label }}</span></span>
       <span v-if="node.loading" class="tree-badge tree-badge--loading" :title="t('tree.loading')">…</span>
+      <button
+        v-else-if="node.loaded && node.truncated"
+        class="tree-badge tree-badge--truncated"
+        :title="truncatedTitle"
+        :aria-label="truncatedTitle"
+        @click="onLoadMore"
+      >{{ childBadgeText(node, node.children.length) }}</button>
       <span
         v-else-if="node.loaded && node.childCount"
         class="tree-badge"
         :title="t('tree.childCount', { count: node.childCount })"
-      >{{ node.childCount }}</span>
+      >{{ childBadgeText(node, node.children.length) }}</span>
     </span>
   </button>
 </template>

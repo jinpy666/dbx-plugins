@@ -368,16 +368,5 @@ defineExpose({ pushEvent });
   padding: 4px 14px;
   font-size: 11px;
 }
-/* P2 统一禁用态：cursor + Glue 下 schema 挂载复选框可见禁用（dark/light 随令牌）。 */
-button:disabled,
-input:disabled,
-select:disabled {
-  cursor: not-allowed;
-}
-.checkbox input[type="checkbox"]:disabled {
-  opacity: 0.45;
-}
-.checkbox input[type="checkbox"]:disabled + span {
-  opacity: 0.55;
-}
+/* 禁用态通用规则（cursor/复选框）已收敛至全局 style.css，此处不再重复。 */
 </style>

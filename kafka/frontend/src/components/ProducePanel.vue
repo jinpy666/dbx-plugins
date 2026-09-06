@@ -412,11 +412,11 @@ async function send() {
   display: flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid color-mix(in srgb, #10b981 55%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--success) 55%, var(--border));
   border-radius: 4px;
   padding: 8px 12px;
-  background: color-mix(in srgb, #10b981 10%, var(--background));
-  color: color-mix(in srgb, #10b981 75%, var(--foreground));
+  background: color-mix(in srgb, var(--success) 10%, var(--background));
+  color: color-mix(in srgb, var(--success) 75%, var(--foreground));
   font-size: 12px;
 }
 .produce-success svg {
@@ -455,25 +455,14 @@ async function send() {
   width: 14px;
   height: 14px;
 }
-/* P2-7：只读/校验失败的禁用态视觉强化——主色按钮降饱和 + not-allowed 光标
-   （title/aria 已由发送逻辑给出原因），dark/light 均成立。 */
-button:disabled,
-input:disabled,
-select:disabled {
-  cursor: not-allowed;
-}
+/* P2-7：只读/校验失败的禁用态视觉强化——主色按钮降饱和
+   （title/aria 已由发送逻辑给出原因），dark/light 均成立。
+   通用 cursor/复选框禁用规则已收敛至全局 style.css。 */
 .produce-send-button:disabled {
   filter: grayscale(0.65) saturate(0.4);
   opacity: 0.55;
 }
 .produce-ghost-button:disabled {
   opacity: 0.45;
-}
-/* P2-8：Glue 下 SR 解码挂载复选框可见禁用（行内 hint 已有兜底说明）。 */
-.checkbox input[type="checkbox"]:disabled {
-  opacity: 0.45;
-}
-.checkbox input[type="checkbox"]:disabled + span {
-  opacity: 0.55;
 }
 </style>

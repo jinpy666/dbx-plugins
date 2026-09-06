@@ -164,6 +164,17 @@ watch(
     gridApi?.setGridOption("paginationPageSize", pageSize.value);
   },
 );
+
+/** 跳到最新（对外契约，MessagesPanel「跳到最新」用）：分页表先切末页，再把
+ *  最后一行滚入视口底部。之前由调用方直接改 viewport DOM 滚动，分页模式下
+ *  viewport 不含未渲染页、且类名跨 ag-grid 版本不稳，统一收口到这里。 */
+function goToLatest() {
+  if (!gridApi) return;
+  gridApi.paginationGoToLastPage();
+  const last = gridApi.getDisplayedRowCount() - 1;
+  if (last >= 0) gridApi.ensureIndexVisible(last, "bottom");
+}
+defineExpose({ goToLatest });
 </script>
 
 <template>

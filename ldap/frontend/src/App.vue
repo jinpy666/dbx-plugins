@@ -3,7 +3,7 @@
 // 连接生命周期由宿主驱动（connection/test|connect|disconnect），工作台只持有
 // connectionId；所有 ldap/* 调用经 lib/api.ts 注入 connectionId。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { Database, Download, Info, Loader2, Network, RefreshCw } from "@lucide/vue";
+import { Database, Download, Info, Loader2, Network, RefreshCw, X } from "@lucide/vue";
 import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
 import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
 import { setWorkbenchLocale, t, workbenchLocale } from "./lib/i18n";
@@ -51,6 +51,8 @@ const results = ref<LdapEntry[]>([]);
 const resultCount = ref(0);
 const resultTruncated = ref(false);
 const searching = ref(false);
+// 空结果两态（UI 扫描 P2-3）：执行过搜索后的 0 条 ≠ "请先执行搜索"。
+const hasSearched = ref(false);
 
 const editorOpen = ref(false);
 const editorEntry = ref<LdapEntry>();
@@ -112,10 +114,18 @@ const connectionIdentity = computed(() => {
   const port = connection.value.port ? `:${connection.value.port}` : "";
   return `${identity}${port}`;
 });
+// 初始化失败（最常见：无连接上下文）时 identity 降级为占位，不再展示
+// 看似就绪的完整连接身份（UI 扫描 P2-2：与"未就绪"提示自相矛盾）。
+const identityText = computed(() => (initError.value ? t("connectionPlaceholder") : connectionIdentity.value));
 const toolbarStyle = computed(() => {
   const color = connection.value.color;
   if (!color) return undefined;
-  return { backgroundColor: colorWithAlpha(color, 0.1), boxShadow: `inset 0 1px 0 ${colorWithAlpha(color, 0.18)}` };
+  // light 下染色收口到 5%（与 kafka 家族对齐，UI 扫描 P2-9：10% 淡紫易与状态色混淆）。
+  const light = appearance.value.colorScheme === "light";
+  return {
+    backgroundColor: colorWithAlpha(color, light ? 0.05 : 0.1),
+    boxShadow: `inset 0 1px 0 ${colorWithAlpha(color, light ? 0.12 : 0.18)}`,
+  };
 });
 
 function applyAppearance(next?: DbxPluginAppearanceInput | null) {
@@ -174,6 +184,7 @@ async function runSearch(model: SearchFormModel) {
   if (busy.value || searching.value) return;
   searching.value = true;
   searchModel.value = model;
+  hasSearched.value = true;
   ldapError.value = "";
   try {
     const attributes = model.attributes
@@ -355,11 +366,34 @@ async function showRootDse() {
 }
 
 async function copyDn(dn: string) {
+  // 桥缺失或写入失败要如实反馈（此前 catch 也提示"已复制"）；execCommand
+  // 兜底覆盖 Host API 1.0 / mock 等无剪贴板桥的环境。
+  showNotice((await writeClipboard(dn)) ? t("copied") : t("copyFailed"));
+}
+
+async function writeClipboard(text: string): Promise<boolean> {
+  const bridge = window.dbxPlugin?.clipboard?.writeText;
+  if (typeof bridge === "function") {
+    try {
+      await bridge(text);
+      return true;
+    } catch {
+      // 宿主桥写入失败 → 走 execCommand 兜底
+    }
+  }
   try {
-    await window.dbxPlugin.clipboard?.writeText(dn);
-    showNotice(t("copied"));
+    const helper = document.createElement("textarea");
+    helper.value = text;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.opacity = "0";
+    document.body.appendChild(helper);
+    helper.select();
+    const ok = document.execCommand("copy");
+    helper.remove();
+    return ok;
   } catch {
-    showNotice(t("copied"));
+    return false;
   }
 }
 
@@ -413,7 +447,7 @@ async function initialize() {
   ready.value = true;
   await nextTick();
   void treeRef.value?.refresh();
-  void searchRef.value?.applyBaseDn(baseDn.value);
+  void searchRef.value?.applyBaseDn(baseDn.value, false);
 }
 
 function syncConnectionContext() {
@@ -440,7 +474,7 @@ async function resolveAutoBaseDn() {
   }
   if (!resolved || baseDn.value || contextBaseDn.value) return; // 竞态守卫：期间带来显式值则放弃
   baseDn.value = resolved;
-  void searchRef.value?.applyBaseDn(resolved);
+  void searchRef.value?.applyBaseDn(resolved, false);
   showNotice(t("tree.autoBaseDn", { baseDn: resolved }));
 }
 
@@ -463,9 +497,9 @@ onBeforeUnmount(() => {
     <header class="toolbar" :style="toolbarStyle">
       <div class="identity">
         <span class="connection-color" :style="connection.color ? { background: connection.color } : undefined" />
-        <strong :title="connectionIdentity">{{ connectionIdentity }}</strong>
+        <strong :title="identityText">{{ identityText }}</strong>
         <span v-if="!canWrite" class="read-only-badge">{{ t("readOnly") }}</span>
-        <Loader2 v-if="!ready" class="icon-neutral spinning" aria-hidden="true" />
+        <Loader2 v-if="!ready && !initError" class="icon-neutral spinning" aria-hidden="true" />
       </div>
       <div class="toolbar-actions">
         <button class="toolbar-button" :disabled="!ready" :title="t('rootDse.title')" @click="showRootDse">
@@ -486,6 +520,13 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </header>
+
+    <!-- 错误横幅改为布局流内（UI 扫描 P2-8）：出现时主区整体下移让位，
+         不再遮住 Base DN/范围字段；瞬时且可关闭，位移可接受。 -->
+    <div v-if="ldapError" class="error-banner" role="alert">
+      <span :title="ldapErrorDetail || ldapError">{{ ldapError }}</span>
+      <button type="button" :title="t('close')" :aria-label="t('close')" @click="dismissError"><X aria-hidden="true" /></button>
+    </div>
 
     <div v-if="initError" class="tree-state">{{ initError }}</div>
     <div v-else-if="!ready" class="tree-state">{{ t("tree.loading") }}</div>
@@ -519,6 +560,7 @@ onBeforeUnmount(() => {
           :entries="results"
           :count="resultCount"
           :truncated="resultTruncated"
+          :searched="hasSearched"
           :disabled="searching"
           @open="openEntry"
           @export="exportResults"
@@ -527,11 +569,7 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <div v-if="ldapError" class="error-banner">
-      <span :title="ldapErrorDetail || ldapError">{{ ldapError }}</span>
-      <button type="button" @click="dismissError">✕</button>
-    </div>
-    <div v-if="notice" class="notice">{{ notice }}</div>
+    <div v-if="notice" class="notice" role="status">{{ notice }}</div>
 
     <EntryEditorDialog
       :open="editorOpen"

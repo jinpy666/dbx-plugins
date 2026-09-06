@@ -171,7 +171,10 @@ const connectionIdentity = computed(() => {
 const toolbarStyle = computed(() => {
   const color = connection.value.color;
   if (!color) return undefined;
-  return { backgroundColor: colorWithAlpha(color, 0.1), boxShadow: `inset 0 1px 0 ${colorWithAlpha(color, 0.18)}` };
+  // 连接色只做轻染色（P2-11）：浅色主题下 10% 红系会把整条工具栏染成错误态
+  // 观感，降到 5%；颜色主线索由 identity 前的 4px 色条承担。
+  const light = appearance.value.colorScheme === "light";
+  return { backgroundColor: colorWithAlpha(color, light ? 0.05 : 0.1), boxShadow: `inset 0 1px 0 ${colorWithAlpha(color, light ? 0.12 : 0.18)}` };
 });
 
 function applyAppearance(next?: DbxPluginAppearanceInput | null) {
@@ -386,7 +389,7 @@ onBeforeUnmount(() => {
         <button type="button" :class="{ 'is-active': activePanel === 'schemas' }" @click="openPanel('schemas')">{{ t("tabs.schemas") }}</button>
         <button type="button" :class="{ 'is-active': activePanel === 'monitor' }" @click="openPanel('monitor')">{{ t("tabs.monitor") }}</button>
         <span class="tab-spacer" />
-        <span v-if="selectedTopic" class="badge">{{ selectedTopic }}</span>
+        <span v-if="selectedTopic" class="badge" :title="selectedTopic">{{ selectedTopic }}</span>
       </nav>
 
       <div class="panes">

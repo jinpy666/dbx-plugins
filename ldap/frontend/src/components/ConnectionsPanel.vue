@@ -3,6 +3,7 @@
 import { ref, watch } from "vue";
 import { Network, RefreshCw, X } from "@lucide/vue";
 import { ldapApi, type LdapConnectionStatus } from "../lib/api";
+import { useModalA11y } from "../lib/modal";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -56,6 +57,12 @@ watch(
     if (open) void load();
   },
   { immediate: true },
+);
+
+// Esc 关闭 + Tab 焦点陷阱（useModalA11y 统一接线）。
+useModalA11y(
+  () => props.open,
+  { close: () => emit("close") },
 );
 </script>
 

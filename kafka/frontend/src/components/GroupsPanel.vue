@@ -23,6 +23,7 @@ import {
   type MemberVm,
 } from "../lib/kafkaColumns";
 import { parseGroupOffsetTargetsText, sumLag } from "../lib/kafkaModel";
+import { useModalBehavior } from "../lib/modalBehavior";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
@@ -62,6 +63,13 @@ const resetPartitionOffsets = ref("");
 // delete dialog
 const deleteOpen = ref(false);
 const deleteTarget = ref("");
+
+// 弹层行为统一接入（UI 扫描第 2 轮 P1-5）：重置位点 / 删除组弹窗支持 Esc 关闭 +
+// Tab 焦点陷阱 + 关闭归还触发元素（决策逻辑 lib/modalBehavior）。
+const resetModalEl = ref<HTMLElement | null>(null);
+const deleteModalEl = ref<HTMLElement | null>(null);
+useModalBehavior({ open: resetOpen, container: resetModalEl, close: () => (resetOpen.value = false) });
+useModalBehavior({ open: deleteOpen, container: deleteModalEl, close: () => (deleteOpen.value = false) });
 
 async function load() {
   loading.value = true;
@@ -121,7 +129,8 @@ async function submitReset() {
     .filter(Boolean);
   const extra: { timestampMs?: number; partitionOffsets?: Record<string, Record<string, number>> } = {};
   if (resetTo.value === "timestamp") {
-    const parsed = Number.parseInt(resetTimestampMs.value.trim(), 10);
+    // String 归一（同 ProducePanel P1-4 范式）：number 输入在部分环境 value 非 string。
+    const parsed = Number.parseInt(String(resetTimestampMs.value).trim(), 10);
     if (!Number.isFinite(parsed)) {
       emit("error", t("messages.timestampRequired"));
       return;
@@ -130,12 +139,13 @@ async function submitReset() {
   }
   if (resetTo.value === "partitionOffset") {
     const parsed = parseGroupOffsetTargetsText(resetPartitionOffsets.value, topics);
-    if (Object.keys(parsed.targets).length === 0) {
-      emit("error", t("messages.offsetsRequired"));
-      return;
-    }
+    // 先报无效条目再报缺填写：填了非法片段（如 0=abc）提示「必填」是误导。
     if (parsed.invalid.length > 0) {
       emit("error", t("groups.resetOffsetsInvalid") + " " + parsed.invalid.join(", "));
+      return;
+    }
+    if (Object.keys(parsed.targets).length === 0) {
+      emit("error", t("messages.offsetsRequired"));
       return;
     }
     extra.partitionOffsets = parsed.targets;
@@ -144,14 +154,16 @@ async function submitReset() {
   try {
     const response = await kafkaApi.groupsOffsetsReset(selected.value.group, topics, resetTo.value, extra);
     const failed = (response.rows ?? []).filter((row) => !row.ok);
+    resetOpen.value = false;
+    // 先刷新详情再上抛结果：loadGroupDetail 起手的 emit("error","") 会清横幅，
+    // 若行级失败先行上抛会被立刻冲掉（横幅闪没）。
+    await loadGroupDetail(selected.value);
     if (failed.length > 0) {
       // 行级错误经 friendlyKafkaError 归一（未映射原文兜底）。
       emit("error", failed.map((row) => `${row.topic}-${row.partition}: ${row.error ? friendlyKafkaError(row.error) : "failed"}`).join("; "));
     } else {
       emit("notify", t("groups.resetDone"));
     }
-    resetOpen.value = false;
-    await loadGroupDetail(selected.value);
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
@@ -257,7 +269,7 @@ onMounted(() => {
 
     <teleport to="body">
       <div v-if="resetOpen" class="modal-backdrop" @click.self="resetOpen = false">
-        <div class="modal">
+        <div class="modal" ref="resetModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("groups.resetTitle", { group: selected?.group ?? "" }) }}</h2>
             <button class="icon-button" :title="t('close')" @click="resetOpen = false">✕</button>
@@ -293,7 +305,7 @@ onMounted(() => {
       </div>
 
       <div v-if="deleteOpen" class="modal-backdrop" @click.self="deleteOpen = false">
-        <div class="modal">
+        <div class="modal" ref="deleteModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("groups.deleteTitle", { group: deleteTarget }) }}</h2>
             <button class="icon-button" :title="t('close')" @click="deleteOpen = false">✕</button>
@@ -316,12 +328,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* P2 统一禁用态：只读下重置/删除按钮补强。 */
-button:disabled,
-input:disabled,
-select:disabled {
-  cursor: not-allowed;
-}
+/* P2 统一禁用态：只读下重置/删除按钮补强（通用 cursor/复选框规则在全局 style.css）。 */
 button:disabled {
   filter: grayscale(0.4);
 }

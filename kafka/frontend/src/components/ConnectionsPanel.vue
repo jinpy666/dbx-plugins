@@ -6,10 +6,10 @@
 // 明文密码掩码展示、不落 localStorage（组件关闭即丢弃）。
 // Phase P：SR 徽标标注 provider（Confluent/AWS Glue）；Glue 连接摘要展示
 // region/registryName/authMode，secret 类字段只显示「已配置/未配置」（值不展示）。
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ClipboardPaste, Network, RefreshCw, X } from "@lucide/vue";
 import { getKafkaConnectionId, kafkaApi, type KafkaConnectionStatus } from "../lib/api";
-import { buildPropertyMappings, parsePropertiesText, type PropertyMappingRow } from "../lib/kafkaModel";
+import { buildPropertyMappings, focusableElements, parsePropertiesText, decideModalKeydown, type PropertyMappingRow } from "../lib/kafkaModel";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
@@ -142,7 +142,55 @@ watch(assistantOpen, (open) => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onAssistantKeydown, true);
+  window.removeEventListener("keydown", onModalKeydown);
 });
+
+// -- 连接弹窗自身（扫描 P1-2/P1-3）：Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素 --
+// 决策逻辑复用 kafkaModel.decideModalKeydown（与消息抽屉同源）。助手子弹层打开
+// 时本监听让位（其捕获阶段监听已拦截 Esc；Tab 陷阱也不跨层抢焦点）。
+const modalEl = ref<HTMLElement | null>(null);
+let modalTrigger: HTMLElement | null = null;
+
+function onModalKeydown(event: KeyboardEvent) {
+  if (!props.open || assistantOpen.value) return;
+  const modal = modalEl.value;
+  if (!modal) return;
+  const focusables = focusableElements(modal);
+  const currentIndex = focusables.indexOf(document.activeElement as HTMLElement);
+  const decision = decideModalKeydown(event.key, event.shiftKey, focusables.length, currentIndex);
+  if (decision.kind === "close") {
+    event.preventDefault();
+    event.stopPropagation();
+    emit("close");
+  } else if (decision.kind === "focus") {
+    event.preventDefault();
+    event.stopPropagation();
+    focusables[decision.index]?.focus();
+  }
+}
+
+watch(
+  () => props.open,
+  async (open) => {
+    if (open) {
+      void load();
+      modalTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      await nextTick();
+      const modal = modalEl.value;
+      if (modal) {
+        const first = focusableElements(modal)[0];
+        (first ?? modal).focus({ preventScroll: true });
+      }
+      window.addEventListener("keydown", onModalKeydown);
+    } else {
+      assistantOpen.value = false;
+      window.removeEventListener("keydown", onModalKeydown);
+      modalTrigger?.focus({ preventScroll: true });
+      modalTrigger = null;
+    }
+  },
+  { immediate: true },
+);
 
 function parseProperties() {
   const properties = parsePropertiesText(propertiesText.value);
@@ -155,20 +203,11 @@ function clearAssistant() {
   mappingRows.value = [];
   parsedCount.value = 0;
 }
-
-watch(
-  () => props.open,
-  (open) => {
-    if (open) void load();
-    else assistantOpen.value = false;
-  },
-  { immediate: true },
-);
 </script>
 
 <template>
   <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal small-modal">
+    <div ref="modalEl" class="modal small-modal" tabindex="-1" role="dialog" aria-modal="true" :aria-label="t('connections.title')">
       <header>
         <h2><Network aria-hidden="true" style="width: 14px; height: 14px" /> {{ t("connections.title") }}</h2>
         <span class="actions" style="display: flex; gap: 2px">

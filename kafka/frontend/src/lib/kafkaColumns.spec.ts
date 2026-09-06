@@ -31,7 +31,7 @@ import {
   topicColumns,
   topicOffsetColumns,
 } from "./kafkaColumns";
-import { setWorkbenchLocale } from "./i18n";
+import { setWorkbenchLocale, messages } from "./i18n";
 import type { KafkaMessage } from "./api";
 
 describe("column builders", () => {
@@ -160,6 +160,84 @@ describe("ag-grid built-in locale text", () => {
       for (const key of AG_GRID_LOCALE_KEYS) {
         expect(typeof text[key], `${locale}:${key}`).toBe("string");
         expect(text[key].length, `${locale}:${key}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  // P2-19 防回归：ag-grid v36 分页条用 to/of/page 组合出「1 to 50 of 100」与
+  // 「Page 1 of 2」，此前这些键缺失导致中英混排。七语键齐由上面的键集测试守护，
+  // 这里冒烟各语族的组合值。
+  it("localizes the pagination summary composition keys (P2-19)", () => {
+    setWorkbenchLocale("en");
+    expect(agGridLocaleText()).toMatchObject({ page: "Page", to: "to", of: "of", firstPage: "First Page" });
+    setWorkbenchLocale("zh-CN");
+    expect(agGridLocaleText()).toMatchObject({ page: "第", to: "至", of: "/ 共", lastPage: "最后一页" });
+    setWorkbenchLocale("zh-TW");
+    expect(agGridLocaleText()).toMatchObject({ page: "第", to: "至", of: "/ 共" });
+    setWorkbenchLocale("ja");
+    expect(agGridLocaleText()).toMatchObject({ page: "ページ", to: "～", of: "/" });
+    for (const locale of ["es", "it", "pt-BR"] as const) {
+      setWorkbenchLocale(locale);
+      expect(agGridLocaleText().to).toBe("a");
+    }
+    setWorkbenchLocale("en");
+  });
+});
+
+// -- P2-12 防回归：列定义引用的 i18n 键必须真实存在 -----------------------------------
+
+const LOCALES = ["en", "zh-CN", "zh-TW", "es", "it", "ja", "pt-BR"] as const;
+const BUILDERS = [
+  messageColumns,
+  groupColumns,
+  groupOffsetColumns,
+  memberColumns,
+  aclColumns,
+  topicColumns,
+  partitionColumns,
+  topicOffsetColumns,
+  subjectColumns,
+  schemaVersionColumns,
+  lagColumns,
+];
+
+/** t() 未命中时原样返回键名（形如 `ns.camelKey` 的点分键样式）。 */
+const UNRESOLVED_KEY_PATTERN = /^[a-z][a-zA-Z0-9]*(\.[a-zA-Z0-9]+)+$/;
+
+function i18nLookup(locale: (typeof LOCALES)[number], key: string): unknown {
+  return key.split(".").reduce<unknown>(
+    (value, part) => (value && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined),
+    messages[locale],
+  );
+}
+
+describe("column i18n key existence (P2-12 regression guard)", () => {
+  it("resolves consumer-group state enums via existing messages.state* keys in every locale", () => {
+    const states = ["Stable", "Empty", "Preparing", "PreparingRebalance", "CompletingRebalance", "Dead"];
+    for (const locale of LOCALES) {
+      for (const state of states) {
+        // 键位回归：曾错挂 groups.state* 导致 t() 未命中、整列回退英文原文。
+        expect(typeof i18nLookup(locale, `messages.state${state}`), `${locale}:messages.state${state}`).toBe("string");
+      }
+    }
+    // zh-CN 链路冒烟：Stable 列不再显示原始键/英文枚举。
+    setWorkbenchLocale("zh-CN");
+    const formatter = groupColumns().find((col) => col.field === "state")!.valueFormatter as (params: { value: string }) => string;
+    expect(formatter({ value: "Stable" })).toBe("稳定");
+    expect(formatter({ value: "Dead" })).toBe("已失效");
+    // 未知枚举原文兜底。
+    expect(formatter({ value: "SomeNewState" })).toBe("SomeNewState");
+    expect(formatter({ value: "—" })).toBe("—");
+    setWorkbenchLocale("en");
+  });
+
+  it("never renders a raw dotted i18n key as a column header in any locale", () => {
+    for (const locale of LOCALES) {
+      setWorkbenchLocale(locale);
+      for (const build of BUILDERS) {
+        for (const col of build()) {
+          expect(String(col.headerName), `${locale}:${build.name}:${col.field}`).not.toMatch(UNRESOLVED_KEY_PATTERN);
+        }
       }
     }
   });

@@ -95,6 +95,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .icon-button:hover:not(:disabled), .toolbar-button:hover:not(:disabled),
 .context-menu button:hover:not(:disabled) { background: var(--accent); }
 .icon-button:disabled, .toolbar-button:disabled, button:disabled { cursor: default; opacity: .42; }
+/* P2 统一禁用态（全局一份，替代面板内散份）：动作按钮/表单控件 not-allowed
+   光标（.icon-button/.toolbar-button 类特异性更高保持 default）+ .checkbox 模式
+   复选框可见禁用（dark/light 随令牌）。面板特例（如生产面板发送按钮降饱和）
+   仍留在各面板 scoped 层叠加。 */
+button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; }
+.checkbox input[type="checkbox"]:disabled { opacity: .45; }
+.checkbox input[type="checkbox"]:disabled + span { opacity: .55; }
 .icon-button svg, .toolbar-button svg, .context-menu svg, .panel-header svg {
   width: 14px;
   height: 14px;
@@ -110,15 +117,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .icon-violet { color: #7c3aed; }
 .icon-blue { color: #2563eb; }
 .icon-red { color: var(--destructive); }
-:root[data-theme="dark"] .icon-emerald { color: #6ee7b7; }
-:root[data-theme="dark"] .icon-amber { color: #fcd34d; }
-:root[data-theme="dark"] .icon-cyan { color: #67e8f9; }
-:root[data-theme="dark"] .icon-violet { color: #c4b5fd; }
-:root[data-theme="dark"] .icon-blue { color: #93c5fd; }
+:root[data-theme="dark"] .icon-emerald, :root[data-dbx-theme="dark"] .icon-emerald { color: #6ee7b7; }
+:root[data-theme="dark"] .icon-amber, :root[data-dbx-theme="dark"] .icon-amber { color: #fcd34d; }
+:root[data-theme="dark"] .icon-cyan, :root[data-dbx-theme="dark"] .icon-cyan { color: #67e8f9; }
+:root[data-theme="dark"] .icon-violet, :root[data-dbx-theme="dark"] .icon-violet { color: #c4b5fd; }
+:root[data-theme="dark"] .icon-blue, :root[data-dbx-theme="dark"] .icon-blue { color: #93c5fd; }
 
 .notice, .error-banner { position: absolute; z-index: 15; left: 50%; max-width: min(720px, calc(100% - 32px)); transform: translateX(-50%); gap: 10px; border-radius: var(--radius); box-shadow: 0 6px 24px rgb(0 0 0 / 24%); }
 .notice { position: fixed; bottom: 24px; z-index: 90; border: 0; border-radius: 8px; padding: 8px 16px; background: var(--foreground); color: var(--background); font-size: 14px; box-shadow: 0 10px 28px rgb(0 0 0 / 28%); }
-.error-banner { top: 42px; border: 1px solid var(--border); padding: 6px 10px; justify-content: space-between; border-color: color-mix(in srgb, var(--destructive) 60%, var(--border)); background: color-mix(in srgb, var(--destructive) 16%, var(--popover)); color: color-mix(in srgb, var(--destructive) 45%, var(--foreground)); }
+/* 顶部 70px = 工具栏 36+1 与 tab 栏 30+1 之下（P2-2：避免遮住页签）。 */
+.error-banner { top: 70px; border: 1px solid var(--border); padding: 6px 10px; justify-content: space-between; border-color: color-mix(in srgb, var(--destructive) 60%, var(--border)); background: color-mix(in srgb, var(--destructive) 16%, var(--popover)); color: color-mix(in srgb, var(--destructive) 45%, var(--foreground)); }
 .error-banner button { display: grid; width: 20px; height: 20px; border: 0; padding: 0; place-items: center; background: transparent; color: inherit; cursor: pointer; }
 .error-banner svg { width: 13px; height: 13px; }
 
@@ -278,8 +286,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .context-menu hr { width: 100%; height: 1px; margin: 3px 0; border: 0; background: var(--border); }
 
 /* Modals */
-.modal-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 50%); }
-:root[data-theme="dark"] .modal-backdrop { background: color-mix(in srgb, var(--background) 92%, transparent); }
+.modal-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 16px; background: var(--overlay); }
 .modal { position: relative; display: flex; width: min(560px, 100%); max-height: calc(100vh - 32px); flex-direction: column; gap: 16px; border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--popover); color: var(--foreground); box-shadow: 0 16px 48px rgb(0 0 0 / 32%); }
 .modal header { min-height: 24px; justify-content: space-between; gap: 12px; padding: 0; }
 .modal header > .icon-button { position: absolute; top: 8px; right: 8px; }
@@ -335,7 +342,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .settings-list-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: 12px; }
 .settings-list-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
 .state-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 999px; }
-.state-dot.connected { background: #10b981; }
+.state-dot.connected { background: var(--success); }
 .state-dot.idle { background: var(--muted-foreground); }
 .state-dot.error { background: var(--destructive); }
 .schema-def { overflow-wrap: anywhere; font-family: var(--mono-font-family); font-size: 10px; color: var(--muted-foreground); }
@@ -352,7 +359,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @media (max-width: 900px) {
   .toolbar-button { width: 28px; padding: 0; font-size: 0; }
   .panes { flex-direction: column; }
-  .tree-pane { width: 100%; height: 42%; max-width: none; }
+  /* P2-13：高度随内容自适应（上限 46%），少 topic 时不再留大块死空间。 */
+  .tree-pane { width: 100%; height: auto; min-height: 120px; max-height: 46%; max-width: none; }
   .divider { width: 100%; height: 1px; flex-basis: 1px; cursor: row-resize; }
   .search-form { grid-template-columns: 1fr 1fr; }
   .search-extra { grid-template-columns: 1fr 1fr; }
@@ -360,13 +368,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* === Kafka workbench additions ============================================= */
 
-/* Tab bar（工作台七面板切换） */
-.tab-bar { display: flex; min-height: 30px; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); padding: 0 6px; background: color-mix(in srgb, var(--background) 96%, var(--muted)); }
-.tab-bar button { display: inline-flex; height: 26px; align-items: center; gap: 5px; border: 0; border-radius: 4px; padding: 0 9px; background: transparent; color: var(--muted-foreground); font-size: 12px; cursor: pointer; }
+/* Tab bar（工作台九面板切换）：窄视口/长语言下横向滚动兜底（页签不压缩变形），
+   尾部选中 topic 徽标限宽省略（长 topic 名不再撑爆页签栏，悬停 title 看全名）。 */
+.tab-bar { display: flex; min-height: 30px; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); padding: 0 6px; background: color-mix(in srgb, var(--background) 96%, var(--muted)); overflow-x: auto; scrollbar-width: thin; }
+.tab-bar button { display: inline-flex; height: 26px; flex: 0 0 auto; align-items: center; gap: 5px; border: 0; border-radius: 4px; padding: 0 9px; background: transparent; color: var(--muted-foreground); font-size: 12px; cursor: pointer; }
 .tab-bar button:hover { background: var(--accent); color: var(--foreground); }
 .tab-bar button.is-active { background: var(--accent); color: var(--accent-foreground); font-weight: 600; }
 .tab-bar button svg { width: 13px; height: 13px; }
 .tab-bar .tab-spacer { flex: 1; }
+.tab-bar > .badge { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Kafka 表单（grid 字段 + compact 输入） */
 .kafka-form { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: flex-end; border-bottom: 1px solid var(--border); padding: 8px; }
@@ -404,7 +414,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .field-filter-error { grid-column: 1 / -1; margin: 0; color: var(--destructive); font-size: 10px; }
 
 /* 详情抽屉 */
-.drawer-backdrop { position: fixed; z-index: 70; inset: 0; background: rgb(0 0 0 / 35%); }
+.drawer-backdrop { position: fixed; z-index: 70; inset: 0; background: var(--overlay); }
 .drawer { position: fixed; z-index: 75; top: 0; right: 0; bottom: 0; display: flex; width: min(560px, 92vw); flex-direction: column; border-left: 1px solid var(--border); background: var(--popover); color: var(--foreground); box-shadow: -12px 0 36px rgb(0 0 0 / 28%); }
 .drawer header { display: flex; min-height: 34px; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 10px; font-size: 12px; font-weight: 600; }
 .drawer-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; overflow: auto; padding: 10px; }
@@ -426,9 +436,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* 徽章 */
 .badge { display: inline-flex; align-items: center; gap: 3px; border-radius: 999px; padding: 0 6px; font-size: 10px; font-variant-numeric: tabular-nums; border: 1px solid var(--border); color: var(--muted-foreground); }
-.badge-warn { border-color: color-mix(in srgb, #d97706 55%, var(--border)); color: #d97706; }
+.badge-warn { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); color: var(--warning); }
 .badge-danger { border-color: color-mix(in srgb, var(--destructive) 55%, var(--border)); color: var(--destructive); }
-.badge-ok { border-color: color-mix(in srgb, #10b981 55%, var(--border)); color: #10b981; }
+.badge-ok { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); color: var(--success); }
 .badge-internal { background: color-mix(in srgb, var(--muted-foreground) 20%, transparent); }
 
 /* 流式面板 */
@@ -480,7 +490,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   --ag-header-cell-moving-background-color: color-mix(in srgb, var(--accent) 80%, transparent);
 }
 /* 行内单元格/行级状态（健康列、Monitor 阈值告警行高亮） */
-.dbx-cell-ok { color: #10b981; }
+.dbx-cell-ok { color: var(--success); }
 .dbx-cell-bad { color: var(--destructive); }
 .dbx-grid .ag-row.dbx-row-alert,
 .dbx-grid .ag-row.dbx-row-alert.ag-row-hover,
@@ -490,7 +500,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .dbx-grid .ag-row.dbx-row-warn,
 .dbx-grid .ag-row.dbx-row-warn.ag-row-hover,
 .dbx-grid .ag-row.dbx-row-warn.ag-row-odd {
-  background: color-mix(in srgb, #d97706 12%, var(--background));
+  background: color-mix(in srgb, var(--warning) 12%, var(--background));
 }
 
 /* === 侧栏收空间（Phase P-M）：折叠竖条 + 拖宽 resizer + 计数徽章 ============= */
@@ -547,7 +557,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* 窄视口：侧栏恢复上下分栏占位，resizer 关闭（拖宽仅桌面横向布局有意义） */
 @media (max-width: 900px) {
-  .tree-pane, .tree-pane.is-collapsed { width: 100%; min-width: 0; max-width: none; height: 42%; }
+  .tree-pane, .tree-pane.is-collapsed { width: 100%; min-width: 0; max-width: none; height: auto; min-height: 120px; max-height: 46%; }
   .tree-rail { flex-direction: row; padding: 0 8px; }
   .tree-rail-label { writing-mode: horizontal-tb; }
   .tree-resizer { display: none; }

@@ -1,7 +1,7 @@
 # shared/frontend — 插件前端宿主适配公共层
 
-宿主桥/宿主特性的**前端适配公共代码唯一实现点**。三插件（ssh / files / ldap）
-前端一律以相对路径引用这里的模块，**禁止在插件内各抄一份**（背景：binary
+宿主桥/宿主特性的**前端适配公共代码唯一实现点**。四插件（ssh / files / ldap /
+kafka）前端一律以相对路径引用这里的模块，**禁止在插件内各抄一份**（背景：binary
 事件契约变更曾在 ssh/files 各落一份相同修复，收敛后单点演进）。
 
 ## 引用方式
@@ -30,4 +30,4 @@ import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
 | 模块 | 用途 | 接入方 |
 | --- | --- | --- |
 | `binaryEvent.ts` | 宿主桥 binary 事件双形状归一化（`data: Uint8Array` / 旧 `dataBase64`） | ssh（终端输出帧、SFTP 下载分块）、files（files/download 分块） |
-| `themeSync.ts` | 宿主主题令牌 → 插件 CSS 变量桥（`themeBridgeCss` / `installHostThemeBridge`）：把 `--background` 等插件变量声明为宿主 `--color-*`/`--radius-*`/`--font-*` 令牌的引用，首绘即命中宿主主题、主题变化经 SDK 令牌更新自动跟随；含 `data-dbx-theme` color-scheme 同步。宿主无令牌时回退暗色规范值（optional 降级） | ssh / ldap / files / kafka（`main.ts` 挂载前 `installHostThemeBridge()`，各带薄 spec） |
+| `themeSync.ts` | 宿主主题令牌 → 插件 CSS 变量桥（`themeBridgeCss` / `installHostThemeBridge`）：把 `--background` 等插件变量声明为宿主 `--color-*`/`--radius-*`/`--font-*` 令牌的引用，首绘即命中宿主主题、主题变化经 SDK 令牌更新自动跟随；含 `data-dbx-theme` color-scheme 同步。宿主无令牌时回退暗色规范值（optional 降级）。另下发**语义状态色** `--success`/`--success-bg`/`--warning`/`--warning-bg`（跟随宿主 `--color-success*`/`--color-warning*`，缺失时按宿主明暗规范值回退）与**模态遮罩** `--overlay`（亮色黑 40%、暗色背景 mix）。明暗分支统一双属性匹配 `data-dbx-theme`（宿主 SDK）+ `data-theme`（插件 applyAppearance），谁先到都生效；状态徽章/横幅一律引用语义令牌，禁止散装 hex（#10b981/#22c55e/#f97316/#d97706 等） | ssh / ldap / files / kafka（`main.ts` 挂载前 `installHostThemeBridge()`，各带薄 spec） |

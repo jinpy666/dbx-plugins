@@ -302,8 +302,8 @@ const rowsDropped = computed(() => Math.max(0, rowsTotal.value - messageRows.val
 const messageCols = computed(() => messageColumns() as ColDef<MessageRow>[]);
 // P1-1：结果区统计行锚点（消费后滚动目标）。
 const resultMetaEl = ref<HTMLElement | null>(null);
-// 表格容器（跳到最新时定位 ag-grid 视口滚动）。
-const gridBoxEl = ref<HTMLElement | null>(null);
+// 消息表实例（跳到最新经 DbxAgGrid.goToLatest 走 gridApi：末页 + 滚入视口）。
+const messagesGrid = ref<InstanceType<typeof DbxAgGrid> | null>(null);
 
 /** 消费结果落地（唯一入口）：capRows 裁剪（保留最新 N 条）→ 批量构建行数组 →
  *  引用替换一次性提交（DbxAgGrid 以单次 setGridOption 批量应用，配合稳定
@@ -321,17 +321,11 @@ function openDetail(row: MessageRow) {
   detail.value = row.raw;
 }
 
-/** 跳到最新（R 路）：滚回结果区锚点 + ag-grid 纵向视口滚到底（最新数据行可见）。
- *  ag-grid v36 起 center 视口为 .ag-grid-viewport（旧版 .ag-body-viewport），
- *  纵向滚动条 viewport 一并同步，避免滚动条与行视口脱钩。 */
+/** 跳到最新（R 路）：滚回结果区锚点 + 经 DbxAgGrid.goToLatest 跳分页末页并
+ *  把最后一行滚入视口底部（最新数据行可见；分页模式由 gridApi 处理）。 */
 function jumpToLatest() {
   resultMetaEl.value?.scrollIntoView({ block: "start" });
-  const grid = gridBoxEl.value;
-  if (!grid) return;
-  for (const selector of [".ag-grid-viewport", ".ag-body-viewport", ".ag-body-vertical-scroll-viewport"]) {
-    const viewport = grid.querySelector<HTMLElement>(selector);
-    if (viewport) viewport.scrollTop = viewport.scrollHeight;
-  }
+  messagesGrid.value?.goToLatest();
 }
 
 function positiveInt(value: unknown, fallback: number): number {
@@ -1033,10 +1027,11 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       </span>
     </div>
 
-    <div v-if="result" ref="gridBoxEl" class="grid-box grid-box--fill">
+    <div v-if="result" class="grid-box grid-box--fill">
       <p v-if="result.messages.length === 0" class="empty compact">{{ t("messages.noMessages") }}</p>
       <DbxAgGrid
         v-else
+        ref="messagesGrid"
         table-key="messages"
         :row-data="messageRows"
         :column-defs="messageCols"
@@ -1051,7 +1046,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       <div v-if="detail" class="drawer-backdrop" @click="detail = null" />
       <div v-if="detail" class="drawer" ref="drawerEl" tabindex="-1" role="dialog" aria-modal="true">
         <header>
-          <span class="mono">{{ detail.topic }} · {{ detail.partition }} / {{ detail.offset }}</span>
+          <span class="mono">{{ detail.topic }} · {{ t("messages.colPartition") }} {{ detail.partition }} · {{ t("messages.colOffset") }} {{ detail.offset }}</span>
           <button class="icon-button" :title="t('close')" @click="detail = null"><X /></button>
         </header>
         <div class="drawer-body">

@@ -5,6 +5,7 @@
 import { computed, ref, watch } from "vue";
 import { Database, RefreshCw, X } from "@lucide/vue";
 import { deriveSchemaMetadata, useLdapSchemaCache } from "../lib/schemaCache";
+import { useModalA11y } from "../lib/modal";
 import { t } from "../lib/i18n";
 
 interface SchemaClassRow {
@@ -34,6 +35,10 @@ const cache = useLdapSchemaCache({
 
 const keyword = ref("");
 const rawDefinition = ref<SchemaClassRow>();
+// 空列两态（UI 扫描 P2-4）：有过滤字时是"无匹配"，不是"Schema 为空"。
+const hasKeyword = computed(() => keyword.value.trim() !== "");
+const attributeEmptyText = computed(() => (hasKeyword.value ? t("schema.noMatch", { keyword: keyword.value.trim() }) : t("schema.empty")));
+const objectClassEmptyText = computed(() => (hasKeyword.value ? t("schema.noMatch", { keyword: keyword.value.trim() }) : t("schema.empty")));
 
 const attributeRows = computed(() => {
   const needle = keyword.value.trim().toLowerCase();
@@ -77,6 +82,12 @@ async function refresh() {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   }
 }
+
+// Esc 关闭 + Tab 焦点陷阱（useModalA11y 统一接线）。
+useModalA11y(
+  () => props.open,
+  { close: () => emit("close") },
+);
 </script>
 
 <template>
@@ -99,7 +110,7 @@ async function refresh() {
             <h3>{{ t("schema.attributeTypes") }} <span class="muted">({{ attributeRows.length }})</span></h3>
             <ul>
               <li v-for="name in attributeRows" :key="name" class="mono">{{ name }}</li>
-              <li v-if="attributeRows.length === 0" class="muted">{{ t("schema.empty") }}</li>
+              <li v-if="attributeRows.length === 0" class="muted">{{ attributeEmptyText }}</li>
             </ul>
           </div>
           <div class="schema-col">
@@ -110,7 +121,7 @@ async function refresh() {
                 <div v-if="row.must.length" class="schema-def">{{ t("schema.must") }}: {{ row.must.join(", ") }}</div>
                 <div v-if="row.may.length" class="schema-def">{{ t("schema.may") }}: {{ row.may.join(", ") }}</div>
               </li>
-              <li v-if="objectClassRows.length === 0" class="muted">{{ t("schema.empty") }}</li>
+              <li v-if="objectClassRows.length === 0" class="muted">{{ objectClassEmptyText }}</li>
             </ul>
           </div>
         </div>

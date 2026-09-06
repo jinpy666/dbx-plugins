@@ -260,7 +260,8 @@ defineExpose({
 </template>
 
 <!-- 全局样式（非 scoped）：所有规则收敛在 .dbx-code-editor 前缀下，配色走
-     DBX 令牌变量；明暗跟随宿主 appearance 管线设置的 data-theme。 -->
+     DBX 令牌变量；明暗分支同时匹配插件 appearance 管线的 data-theme 与宿主
+     SDK 的 data-dbx-theme，谁先到都生效。 -->
 <style>
 .dbx-code-editor {
   --cm-key: #0451a5;
@@ -316,7 +317,8 @@ defineExpose({
   color: var(--primary);
   border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
 }
-:root[data-theme="dark"] .dbx-code-editor {
+:root[data-theme="dark"] .dbx-code-editor,
+:root[data-dbx-theme="dark"] .dbx-code-editor {
   --cm-key: #569cd6;
   --cm-string: #ce9178;
   --cm-number: #b5cea8;

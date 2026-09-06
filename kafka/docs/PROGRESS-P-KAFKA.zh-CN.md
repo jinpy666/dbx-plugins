@@ -570,3 +570,149 @@ PROGRESS 主线合并）：
   暗色规范值，行为不变。
 - 验证：`vue-tsc` 0 错；`vitest run` 8 文件 82 用例全绿（含新增
   `themeSync.spec.ts` 薄 spec）；v0.1.4 发版。
+
+## 白色主题配色标准化（2026-09-05 第二轮）
+
+四插件联合审查白色主题配色错误，语义令牌与明暗分支在
+`shared/frontend/themeSync.ts` 单点收敛（详见该文件与 shared/frontend/README）。
+
+- kafka 本轮替换：`badge-ok`/`badge-warn`/`dbx-cell-ok`/`dbx-row-warn`
+  （#10b981/#d97706 → `--success`/`--warning`）、`.state-dot.connected`
+  （#10b981 → `--success`）、ProducePanel 发送成功横幅与 SchemasPanel diff
+  after 行（#10b981 → `--success`）、modal/drawer 遮罩（50%/35% 黑 → 统一
+  `--overlay`）、CodeEditor 暗色分支双属性化（`data-theme` +
+  `data-dbx-theme`，收窄暗色宿主首绘窗口期）、图标 dark 变体双属性化。
+- 验证：`vue-tsc` 0 错；`vitest run` 8 文件 83 用例全绿（themeSync 薄 spec
+  增补语义令牌/遮罩/light 回退断言）。无新增文案，七语不受影响。
+
+## UI 持续优化轮·六（2026-09-05：弹层键盘可达 + 细节专业化收口）
+
+针对 §8.3 与 `docs/UI_SCAN_FINDINGS.zh-CN.md` 遗留 P1/P2 的收口轮。
+
+- **连接弹窗键盘可达（P1-2/P1-3 收口）**：ConnectionsPanel 主弹窗补 Esc 关闭 +
+  Tab 焦点陷阱 + 关闭归还触发元素（决策复用 `kafkaModel.decideModalKeydown`，
+  与消息抽屉同源；打开时 nextTick 后焦点进首个控件，modal 加 `tabindex=-1`/
+  `role=dialog`/`aria-label`）。助手子弹层打开时主弹窗监听让位（子弹层捕获阶段
+  已拦截 Esc），分层关闭语义不变。
+- **跳到最新收口（§8.3 遗留）**：DbxAgGrid `defineExpose({ goToLatest })`——
+  分页表先 `paginationGoToLastPage()` 再 `ensureIndexVisible(last, "bottom")`；
+  MessagesPanel `jumpToLatest` 改走 gridApi，删除跨 ag-grid 版本脆弱的
+  viewport 类名 DOM 滚动 hack（分页模式下 viewport 不含未渲染页，原实现跳不到
+  末页）。
+- **P2 细节批**：错误横幅 `top` 42→70px（工具栏 37 + tab 栏 31 之下，不再遮挡
+  页签，P2-2）；浅色主题工具栏连接色染色 10%→5%（dark 维持 10%，颜色主线索由
+  identity 前 4px 色条承担，P2-11 泛红误读）；窄视口（≤900px）侧栏高度改内容
+  自适应 `height:auto; max-height:46%; min-height:120px`（少 topic 不再留大块
+  死空间，P2-13）；抽屉标题语义化 `topic · 分区 N · Offset N`（复用既有
+  `messages.colPartition/colOffset` 文案键，七语无新增，P2-5）；mock.html 内联
+  SVG data-icon 消除 favicon 404（P2-14）。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 8 文件 83 用例全绿；mock 夹具
+  playwright 走查 12 项 PASS（连接弹窗焦点进弹窗/Tab×20 陷阱/Esc 关闭/焦点
+  归还/助手子弹层分层 Esc/横幅 top=70 不遮 tab（实测 bannerTop=70 vs
+  tabBarBottom=66）/抽屉标题 `order-events · 分区 0 · Offset 0`/抽屉 Esc 回归/
+  跳到最新回归/窄视口侧栏 gap=0/light 染色 0.05 vs dark 0.10/favicon data-icon）；
+  收口 `bash scripts/test.sh` 全绿（前端三件套 + UI 走查 2/2 + 容器 smoke
+  10 PASS/0 FAIL/2 SKIP）。
+- 至此 UI_SCAN P1×4 全部关闭（P1-1 R 路、P1-2/P1-3 本轮、P1-4 归 L 已修）；
+  P2 余 P2-15（图标按钮 title 依赖，走查接受现状）一项保留观察。
+
+## UI 持续优化轮·七（2026-09-05：P2 批量收口 + 禁用态/页签栏专业化）
+
+UI_SCAN 遗留 P2 的批量收口轮（P2-1/3/4/6/7/8/9/10/12，均在途代码本轮落地），
+另做两处页签栏新打磨。收口状态矩阵回填见
+`docs/UI_SCAN_FINDINGS.zh-CN.md` §五。
+
+- **P2 批量**：错误文案兜底（网络类规则覆盖夹具串，正文本地化、原文留 title）；
+  Topics 管理表与侧栏树同源 `sortTopics` 排序（P2-3）；Stream 环形缓冲分页
+  按钮 ≥32px 热区（P2-4）；Schema 当前兼容级别徽标加语义前缀（P2-6）；只读
+  发送按钮禁用降饱和（P2-7）；ACL 空态附过滤引导（P2-9）；ag-grid 键盘焦点
+  `.ag-cell-focus` primary 描边，仅键盘聚焦时显示（P2-10，CSS 已落、宿主真机
+  复核待做）；消费组状态列 `groups.state*` 七语映射、未知枚举原文兜底（P2-12）。
+- **禁用态统一收敛（P2-8 补全）**：cursor not-allowed + `.checkbox` 复选框禁用
+  透明度从 Stream/Produce/Groups 三处 scoped 重复块收敛到全局 style.css 一份
+  （面板特例如发送按钮降饱和保留 scoped 层），顺带补齐 MessagesPanel 等
+  未覆盖面板——Glue 下解码组 SR 挂载复选框自此有可见禁用态。
+- **页签栏专业化**：选中 topic 徽标限宽 220px 省略 + title 悬停（长 topic 名
+  不再撑爆 9 页签同排的页签栏）；页签按钮 `flex-shrink:0` + `tab-bar`
+  overflow-x:auto（窄视口/长语言不压缩变形，可横向滚动）。
+- 文案：全部复用既有键，七语无新增。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 8 文件 83 用例全绿；`pnpm build`
+  通过；mock 夹具 playwright 走查 8 项 PASS（徽标 220px 限宽/省略裁切/title
+  绑定真实 topic/页签 flex-shrink=0/720px overflow-x auto/无页面错误×2/Glue
+  复选框禁用态 cursor=not-allowed 透明度 0.45/0.55）；既有 ui_test 2/2 回归
+  PASS。本轮纯前端样式层改动，未动 sidecar，容器 smoke 沿用轮·六结论。
+
+## UI 扫描第 2 轮修复轮（2026-09-06：P1-5 弹层行为下沉 + P2-12/16/17）
+
+对应 `docs/UI_SCAN_FINDINGS.zh-CN.md` 第 2 轮场景化扫描（第六章），本轮修复
+P1 与明确回归项；状态回填见该文档 §6.7。
+
+- **P1-5 弹层 Esc/焦点管理覆盖面**：新建
+  `frontend/src/lib/modalBehavior.ts`——`useModalBehavior` 组合式函数把
+  App 壳层已验证的 `decideModalKeydown`/焦点陷阱/归还逻辑下沉为插件内共享
+  实现：模块级层栈仅栈顶响应 Esc/Tab（照连接弹窗导入助手子弹层的捕获态
+  语义，逐层关闭不透传）；打开时焦点进容器首个可交互控件（无控件兜底容器，
+  需 `tabindex="-1"`）；关闭时焦点归还触发元素。接入全部 13 处弹层：
+  AclsPanel 详情抽屉/创建/删除、TopicsPanel 创建/删除/扩分区/配置、
+  SchemasPanel 注册/兼容检查/删除、GroupsPanel 重置/删除、BrokersPanel
+  配置（容器统一补 `tabindex="-1" role="dialog" aria-modal="true"`）。
+  App 壳层连接弹窗、ConnectionsPanel、MessagesPanel 抽屉的已验证实现不动。
+- **P2-12 回归**：`kafkaColumns.groupColumns()` 状态列查找键
+  `groups.state*` → `messages.state*`（以 i18n 实际存在的键为准），
+  未知枚举原文兜底不变。
+- **P2-16**：新增 `acls.createInvalid` 七语键，ACL 空名校验不再复用
+  topic 专属的「分区数与副本因子」文案。
+- **P2-17**：`topics.created` 七语补键（此前成功提示显示原始键名）。
+- **防回归测试**：`modalBehavior.spec.ts` ×5（开焦点/Esc 归还/Tab 双向
+  回绕含越界兜底/层栈逐层 Esc/子弹层在场时下层让位）；
+  `kafkaColumns.spec` 增 P2-12 断言（`messages.state*` 七语键存在性 +
+  zh-CN 格式化冒烟 + 全列头「未解析点分键」护栏——该护栏顺带抓到
+  `topics.colOffset` 缺键，topicOffsetColumns 已改引用既有
+  `messages.colOffset`）。
+- **既有测试红转绿（本轮暴露的组件/夹具缺陷，限 kafka/frontend）**：
+  GroupsPanel 行级失败横幅被 reload 起手清错误 emit 立即冲掉
+  （submitReset 先刷新详情再上抛结果）；`resetTimestampMs` String 归一
+  （同 P1-4B 范式）；partitionOffset 校验分支顺序（无效条目优先于必填，
+  `0=abc` 不再误报「必填」）；GroupsPanel.spec mock 桥补 `{error}` 信封
+  →异常拒绝（镜像真实桥形态，工作区规则 7）+ 弹窗断言逐步重查
+  （teleport stub 重渲染替换弹窗元素，过期 wrapper 失效）。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 11 文件 115 用例全绿；
+  playwright（playwright-core + 系统 Chrome headless `--disable-gpu`，
+  vite :5294 mock 夹具）18 项 PASS、0 pageerror——13 处弹层逐一
+  （焦点入层/Tab×8 不出层/Esc 关闭/焦点归还触发钮；ACL 抽屉焦点归还
+  网格）+ 连接弹窗回归对照 + P2-12 状态列「稳定」+ P2-16 横幅
+  「资源名与主体均为必填」+ P2-17 通知「Topic 已创建: scan-topic-fix」；
+  复验截图即删未入库。P2-18/P2-19 不在本轮范围，留待下轮。
+
+## UI 扫描第 3 轮修复轮（2026-09-06：P2-18/19 收尾 + AuditFeed denied 夹具）
+
+对应 `docs/UI_SCAN_FINDINGS.zh-CN.md` §6.7 留待项与 §6.5 遗留，状态回填见该
+文档 §6.8。全部改动限 `kafka/frontend/` 内。
+
+- **P2-18 树错误区原文透传**：`TopicTree.vue` 展示层接入 `friendlyKafkaError`
+  （与 App 错误横幅同一条映射规则）：`.tree-error` 正文渲染友好化文案，
+  友好化结果与原始串不同时原始串挂 title 悬停供排查。上层 `loadTopics`
+  仍存原始串，不动数据面。
+- **P2-19 ag-grid 分页文案中英混排**：从 ag-grid 36.1.0 包内核对分页条实际
+  消费键（`to`/`of`/`page`/`more`/`number`/`firstPage`/`previousPage`/
+  `nextPage`/`lastPage`/`ariaPageSizeSelectorLabel`；扫描报告建议的
+  `paginationFirst` 等键名 v36 不存在），全部纳入 `AG_GRID_LOCALE_KEYS` 并
+  补七语内联字典（未新增依赖）。zh 组合：行摘要「1 至 50 / 共 201」、
+  页摘要「第 N / 共 5」；en「1 to 50 of 201 / Page of 5」全英文。
+- **AuditFeed denied 事件链夹具（§6.5 遗留）**：`mockDbxHost.ts` 新增
+  `?audit=denied`——宿主 `onEvent` 监听就绪后（轮询 eventListeners 非空）
+  注入 1 条 denied + 900ms 后 1 条 ok 的 `kafka/audit` 事件（镜像
+  AuditRecord JSON 面），15s 兜底放弃防孤儿 interval。ro 模式写入口禁用
+  导致 denied 链不可达的问题自此可在 mock 中验证（自动展开/denied 徽标/
+  错误横幅/ok 对照行）。
+- **防回归测试**：`TopicTree.spec` ×2（夹具串本地化 + title 原文；未覆盖
+  错误原文透传无 title）；`kafkaColumns.spec` ×1（分页组合键七语冒烟，
+  键齐由既有 `AG_GRID_LOCALE_KEYS` 键集测试自动守护）。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 11 文件 118 用例全绿
+  （基线 115）；playwright（playwright-core + 系统 Chrome headless
+  `--disable-gpu`，vite :5294）15 项 PASS、0 console error / 0 pageerror
+  ——`?err=1`（zh/en）树错误区本地化 + title 原文 + 与横幅同源、
+  `?big=1&locale=en` / `?big=1` 分页条无混排、`?audit=denied` 审计链全链路
+  （2 条事件 · 1 条被拒绝、自动展开、已拒绝徽标、横幅）、默认页回归；
+  复验截图即删、/tmp 夹具目录已清理。遗留维持：P2-10 宿主真机复核、
+  P2-15 观察保留。

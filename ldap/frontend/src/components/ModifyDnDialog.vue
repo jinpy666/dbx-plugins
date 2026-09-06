@@ -3,6 +3,7 @@
 import { ref, watch } from "vue";
 import { X } from "@lucide/vue";
 import { splitFirstDnRdn } from "../lib/dn";
+import { decideBackdropClose, useModalA11y } from "../lib/modal";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -37,10 +38,22 @@ function confirm() {
   const parent = parentDraft.value.trim();
   emit("confirm", rdnDraft.value.trim(), parent || undefined, deleteOldRdn.value);
 }
+
+// Esc 关闭 + Tab 焦点陷阱；改名请求在途时否决关闭。遮罩点击与 Esc 共用
+// 同一条 allowClose 守卫（P1-1 家族收口；本弹窗无 dirty 态，窗口仅提交在途）。
+useModalA11y(
+  () => props.open,
+  { close: () => emit("close"), allowClose: () => !props.submitting },
+);
+
+function onBackdropClick() {
+  if (decideBackdropClose(!props.submitting).kind !== "close") return;
+  emit("close");
+}
 </script>
 
 <template>
-  <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
+  <div v-if="open" class="modal-backdrop" @click.self="onBackdropClick">
     <div class="modal small-modal">
       <header>
         <h2>{{ t("modifyDn.title") }}</h2>
@@ -49,7 +62,7 @@ function confirm() {
       <p class="entry-dn">{{ dn }}</p>
       <label class="settings-field">
         <span>{{ t("modifyDn.newRdn") }}</span>
-        <input v-model="rdnDraft" type="text" class="mono" spellcheck="false" />
+        <input v-model="rdnDraft" type="text" class="mono" spellcheck="false" @keydown.enter.prevent="confirm" />
       </label>
       <label class="settings-field">
         <span>{{ t("modifyDn.newParentDn") }}</span>

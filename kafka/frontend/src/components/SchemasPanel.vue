@@ -32,6 +32,7 @@ import {
   type SubjectVm,
 } from "../lib/kafkaColumns";
 import { prettyJson } from "../lib/kafkaModel";
+import { useModalBehavior } from "../lib/modalBehavior";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -171,6 +172,15 @@ const deletePlan = ref<{ kind: "subject" | "version"; subject: string; version?:
 const deletePhase = ref<1 | 2>(1);
 const deleteConfirmText = ref("");
 const deleteBusy = ref(false);
+
+// 弹层行为统一接入（UI 扫描第 2 轮 P1-5）：注册 / 兼容检查 / 删除弹窗支持
+// Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素（决策逻辑 lib/modalBehavior）。
+const registerModalEl = ref<HTMLElement | null>(null);
+const checkModalEl = ref<HTMLElement | null>(null);
+const deleteModalEl = ref<HTMLElement | null>(null);
+useModalBehavior({ open: registerOpen, container: registerModalEl, close: () => (registerOpen.value = false) });
+useModalBehavior({ open: checkOpen, container: checkModalEl, close: () => (checkOpen.value = false) });
+useModalBehavior({ open: computed(() => deletePlan.value !== null), container: deleteModalEl, close: () => (deletePlan.value = null) });
 
 const subjectGridRows = computed(() => toSubjectRows(subjects.value));
 const subjectGridCols = computed(() => subjectColumns() as ColDef<SubjectVm>[]);
@@ -574,7 +584,7 @@ onMounted(async () => {
 
     <teleport to="body">
       <div v-if="registerOpen" class="modal-backdrop" @click.self="registerOpen = false">
-        <div class="modal panel-modal">
+        <div class="modal panel-modal" ref="registerModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("schemas.registerTitle") }}</h2>
             <button class="icon-button" :title="t('close')" @click="registerOpen = false"><X /></button>
@@ -607,7 +617,7 @@ onMounted(async () => {
       </div>
 
       <div v-if="checkOpen" class="modal-backdrop" @click.self="checkOpen = false">
-        <div class="modal panel-modal">
+        <div class="modal panel-modal" ref="checkModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("schemas.compatCheckTitle") }}</h2>
             <button class="icon-button" :title="t('close')" @click="checkOpen = false"><X /></button>
@@ -654,7 +664,7 @@ onMounted(async () => {
       </div>
 
       <div v-if="deletePlan" class="modal-backdrop" @click.self="deletePlan = null">
-        <div class="modal">
+        <div class="modal" ref="deleteModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ deletePlan.kind === "subject" ? t("schemas.deleteSubjectTitle", { subject: deletePlan.subject }) : t("schemas.deleteVersionTitle", { subject: deletePlan.subject, version: deletePlan.version ?? 0 }) }}</h2>
             <button class="icon-button" :title="t('close')" @click="deletePlan = null"><X /></button>
@@ -708,7 +718,7 @@ onMounted(async () => {
   font-size: 10.5px;
 }
 .diff-lines--before { background: color-mix(in srgb, var(--destructive) 10%, var(--background)); }
-.diff-lines--after { background: color-mix(in srgb, #10b981 10%, var(--background)); }
+.diff-lines--after { background: color-mix(in srgb, var(--success) 10%, var(--background)); }
 .check-result { display: flex; flex-direction: column; gap: 4px; }
 @media (max-width: 900px) {
   .diff-hunk { grid-template-columns: 74px 1fr; }

@@ -24,6 +24,7 @@ import {
   type TopicVm,
 } from "../lib/kafkaColumns";
 import { offsetTimeToParam, parseHeadersJson, sortTopics } from "../lib/kafkaModel";
+import { useModalBehavior } from "../lib/modalBehavior";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -78,6 +79,17 @@ const offsetGridCols = computed(() => topicOffsetColumns() as ColDef<TopicOffset
 // config editor
 const configOpen = ref(false);
 const configEdits = ref<Array<{ key: string; value: string; remove?: boolean }>>([]);
+
+// 弹层行为统一接入（UI 扫描第 2 轮 P1-5）：创建/删除/扩分区/配置四弹窗支持
+// Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素（决策逻辑 lib/modalBehavior）。
+const createModalEl = ref<HTMLElement | null>(null);
+const deleteModalEl = ref<HTMLElement | null>(null);
+const expandModalEl = ref<HTMLElement | null>(null);
+const configModalEl = ref<HTMLElement | null>(null);
+useModalBehavior({ open: createOpen, container: createModalEl, close: () => (createOpen.value = false) });
+useModalBehavior({ open: deleteOpen, container: deleteModalEl, close: () => (deleteOpen.value = false) });
+useModalBehavior({ open: expandOpen, container: expandModalEl, close: () => (expandOpen.value = false) });
+useModalBehavior({ open: configOpen, container: configModalEl, close: () => (configOpen.value = false) });
 
 const canManage = computed(() => props.canWrite);
 const canDeleteTopic = computed(() => props.canWrite && props.canDelete);
@@ -356,7 +368,7 @@ watch(
 
     <teleport to="body">
       <div v-if="createOpen" class="modal-backdrop" @click.self="createOpen = false">
-        <div class="modal">
+        <div class="modal" ref="createModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("topics.createTitle") }}</h2>
             <button class="icon-button" :title="t('close')" @click="createOpen = false">✕</button>
@@ -387,7 +399,7 @@ watch(
       </div>
 
       <div v-if="deleteOpen" class="modal-backdrop" @click.self="deleteOpen = false">
-        <div class="modal">
+        <div class="modal" ref="deleteModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("topics.deleteTitle") }}</h2>
             <button class="icon-button" :title="t('close')" @click="deleteOpen = false">✕</button>
@@ -415,7 +427,7 @@ watch(
       </div>
 
       <div v-if="expandOpen" class="modal-backdrop" @click.self="expandOpen = false">
-        <div class="modal small-modal">
+        <div class="modal small-modal" ref="expandModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("topics.expandTitle", { topic: selected?.name ?? "" }) }}</h2>
             <button class="icon-button" :title="t('close')" @click="expandOpen = false">✕</button>
@@ -432,7 +444,7 @@ watch(
       </div>
 
       <div v-if="configOpen" class="modal-backdrop" @click.self="configOpen = false">
-        <div class="modal panel-modal">
+        <div class="modal panel-modal" ref="configModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("topics.configTitle", { topic: selected?.name ?? "" }) }}</h2>
             <button class="icon-button" :title="t('close')" @click="configOpen = false">✕</button>

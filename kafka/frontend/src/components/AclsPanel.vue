@@ -8,6 +8,7 @@ import type { ColDef } from "ag-grid-community";
 import DbxAgGrid from "./DbxAgGrid.vue";
 import { kafkaApi, type AclFilter, type KafkaAcl } from "../lib/api";
 import { MINIMAL_ACL_FIELDS, aclColumns, toAclRows, type AclVm } from "../lib/kafkaColumns";
+import { useModalBehavior } from "../lib/modalBehavior";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -40,6 +41,15 @@ const createOpen = ref(false);
 const createForm = ref<KafkaAcl>({ resourceType: "TOPIC", resourceName: "", principal: "", host: "*", operation: "READ", permission: "ALLOW", patternType: "LITERAL" });
 
 const deleteOpen = ref(false);
+
+// 弹层行为统一接入（UI 扫描第 2 轮 P1-5）：详情抽屉 / 创建 / 删除弹窗均支持
+// Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素（决策逻辑 lib/modalBehavior）。
+const detailEl = ref<HTMLElement | null>(null);
+const createModalEl = ref<HTMLElement | null>(null);
+const deleteModalEl = ref<HTMLElement | null>(null);
+useModalBehavior({ open: computed(() => detail.value !== null), container: detailEl, close: () => (detail.value = null) });
+useModalBehavior({ open: createOpen, container: createModalEl, close: () => (createOpen.value = false) });
+useModalBehavior({ open: deleteOpen, container: deleteModalEl, close: () => (deleteOpen.value = false) });
 
 const hasConcreteFilter = computed(() => {
   const candidate = filter.value;
@@ -77,7 +87,8 @@ function cleanFilter(input: AclFilter): AclFilter {
 async function submitCreate() {
   const acl = { ...createForm.value, resourceName: createForm.value.resourceName.trim(), principal: createForm.value.principal.trim() };
   if (!acl.resourceName || !acl.principal) {
-    emit("error", t("topics.createInvalid"));
+    // P2-16：ACL 校验不再复用 topic 专属文案（分区数/副本因子）。
+    emit("error", t("acls.createInvalid"));
     return;
   }
   busy.value = true;
@@ -183,7 +194,7 @@ onMounted(() => {
 
     <teleport to="body">
       <div v-if="detail" class="drawer-backdrop" @click="detail = null" />
-      <div v-if="detail" class="drawer">
+      <div v-if="detail" class="drawer" ref="detailEl" tabindex="-1" role="dialog" aria-modal="true">
         <header>
           <span class="mono">{{ detail.resourceType }} · {{ detail.resourceName }}</span>
           <button class="icon-button" :title="t('close')" @click="detail = null"><X /></button>
@@ -211,7 +222,7 @@ onMounted(() => {
 
     <teleport to="body">
       <div v-if="createOpen" class="modal-backdrop" @click.self="createOpen = false">
-        <div class="modal">
+        <div class="modal" ref="createModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("acls.createTitle") }}</h2>
             <button class="icon-button" :title="t('close')" @click="createOpen = false">✕</button>
@@ -262,7 +273,7 @@ onMounted(() => {
       </div>
 
       <div v-if="deleteOpen" class="modal-backdrop" @click.self="deleteOpen = false">
-        <div class="modal">
+        <div class="modal" ref="deleteModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
             <h2>{{ t("acls.deleteTitle") }}</h2>
             <button class="icon-button" :title="t('close')" @click="deleteOpen = false">✕</button>

@@ -14,6 +14,8 @@ const props = defineProps<{
   entries: LdapEntry[];
   count: number;
   truncated: boolean;
+  /** 已执行过至少一次搜索：0 条时区分"无匹配"与"未搜索"（UI 扫描 P2-3）。 */
+  searched?: boolean;
   disabled?: boolean;
 }>();
 
@@ -182,11 +184,11 @@ const hasEntries = computed(() => props.entries.length > 0);
     <div class="result-meta">
       <span>{{ t("result.count", { count }) }}<span v-if="truncated" class="truncated-badge" style="margin-left: 8px">{{ t("result.truncated") }}</span></span>
       <span class="pager">
-        <button v-if="hasEntries" :disabled="disabled || page <= 0" :title="t('result.page', { page: page, pages: pageCount })" @click="page -= 1">
+        <button v-if="hasEntries" :disabled="disabled || page <= 0" :title="t('result.prevPage')" :aria-label="t('result.prevPage')" @click="page -= 1">
           <ChevronLeft aria-hidden="true" />
         </button>
         <span v-if="hasEntries" class="muted">{{ t("result.page", { page: page + 1, pages: pageCount }) }}</span>
-        <button v-if="hasEntries" :disabled="disabled || page >= pageCount - 1" @click="page += 1">
+        <button v-if="hasEntries" :disabled="disabled || page >= pageCount - 1" :title="t('result.nextPage')" :aria-label="t('result.nextPage')" @click="page += 1">
           <ChevronRight aria-hidden="true" />
         </button>
         <button v-if="hasEntries" :disabled="disabled" :title="t('result.exportLdif')" @click="emit('export', 'ldif')"><FileDown aria-hidden="true" /></button>
@@ -194,7 +196,7 @@ const hasEntries = computed(() => props.entries.length > 0);
         <button v-if="hasEntries" :disabled="disabled" :title="t('result.exportJson')" @click="emit('export', 'json')"><FileJson aria-hidden="true" /></button>
       </span>
     </div>
-    <div v-if="!hasEntries" class="empty">{{ t("result.empty") }}</div>
+    <div v-if="!hasEntries" class="empty">{{ props.searched ? t("result.emptyNoMatch") : t("result.empty") }}</div>
     <div
       v-else
       class="result-table"

@@ -312,3 +312,159 @@ TREE_ROW_HEIGHT）；键盘导航（上下键）沿用以 DOM focus 为准，依
   暗色规范值，行为不变。
 - 验证：`vue-tsc` 0 错；`vitest run` 15 文件 193 用例全绿（含新增
   `themeSync.spec.ts` 薄 spec）；v0.1.32 发版。
+
+## 白色主题配色标准化（2026-09-05 第二轮）
+
+四插件联合审查白色主题配色错误，语义令牌与明暗分支在
+`shared/frontend/themeSync.ts` 单点收敛（详见该文件与 shared/frontend/README）。
+
+- ldap 本轮替换：`.state-dot.connected`（#10b981 → `--success`）、modal 遮罩
+  （亮色 #000/50% 偏重、暗色 92% 背景 mix → 统一 `--overlay`）、图标 dark
+  变体双属性化（`data-theme` + `data-dbx-theme`）。
+- 验证：`vue-tsc` 0 错；`vitest run` 15 文件 194 用例全绿（themeSync 薄 spec
+  增补语义令牌/遮罩/light 回退断言）。无新增文案，七语不受影响。
+
+## 弹窗/右键菜单键盘可访问性 + 反馈保真（2026-09-05 第三轮）
+
+§11.2/§13 沿袭候选之外的交互专业化轮：对齐 kafka 已有的弹窗键盘语义
+（kafkaModel.decideModalKeydown 家族统一），修复反馈失真细节。
+
+### 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/lib/modal.ts` | 新增：`FOCUSABLE_SELECTOR`/`focusableElements`/`nextFocusIndex`/`decideModalKeydown` 纯函数（与 kafka 同语义）+ `useModalA11y` composable（open 时记录触发元素→挂 window keydown→nextTick 焦点进首控件；关闭时摘监听+焦点归还） |
+| `frontend/src/lib/modal.spec.ts` | 新增 7 例：Esc close/Tab 回绕/空容器/焦点在外的进入方向 + focusableElements 真实 DOM 选择器覆盖（disabled/hidden/tabindex=-1 排除） |
+| 5 个弹窗组件 | EntryEditor/DeleteEntry/ModifyDn/Schema/Connections 统一接 `useModalA11y`；EntryEditor `allowClose` 否决脏态 Esc（`有未保存的修改` 提示在场，防误丢），Delete/ModifyDn 提交在途否决 Esc；ModifyDn RDN 输入框 Enter 直接触发确认 |
+| `DnTree.vue` | 右键菜单：渲染后按实际尺寸夹回视口（右/底缘不裁切）、`role=menu`+`menuitem`、容器聚焦 + ↑/↓ 项间移动（复用 `nextFocusIndex`）、Esc 关闭并焦点归还触发节点 |
+| `App.vue` | copyDn 修复：桥缺失（可选链静默假成功）或写入失败时如实反馈——execCommand 兜底，双失败提示 `copyFailed`（此前 catch 也提示「已复制」）；错误横幅 ✕ 文本 → X 图标 + `aria-label=close` + `role=alert`；notice `role=status` |
+| `ResultTable.vue` | pager prev/next 按钮补 `title`+`aria-label`（prev 原 title 误用页码信息） |
+| `lib/i18n.ts` | 七语各 +3 key：`copyFailed`、`result.prevPage`、`result.nextPage`（21 处） |
+
+### 验证（typecheck/test/build + 浏览器实机）
+
+| 套件 | 结果 |
+|---|---|
+| `pnpm typecheck` | 0 错 |
+| `pnpm test` | **201 绿**（16 文件；194→201：modal.spec 7） |
+| `pnpm build` | 过（产物写 ui/index.html） |
+
+浏览器实机（visual fixture @ vite 5182，1440×900，明暗两主题走查；截图
+`docs/screenshots/ui-modal-a11y-{light-workbench,light-results-contextmenu,light-editor,dark-results-contextmenu}-p14.png`，gitignore 不入库）：
+
+- 右键菜单：clientX/Y=(1430,890) 打开 → 实测夹回 (1236,669)，200×227 完整可见（明暗两主题同验）；`role=menu` 成立；容器聚焦后 ArrowDown→首项「在此搜索」、ArrowUp 回绕；Esc 关闭 + 焦点归还 ou=people 节点按钮（真实点击路径验证）。
+- 编辑器弹窗：打开焦点落在首控件（header 关闭按钮，与 kafka 一致）；Shift+Tab 从首控件回绕到 footer 主按钮（陷阱成立）；清洁查看态 Esc 关闭；修改属性值出现「有未保存的修改」后 Esc 被否决（弹窗保持），「取消」仍可显式关闭。
+- 连接面板：打开焦点进面板首控件；Esc 关闭后焦点归还工具栏「连接」按钮。
+- 复制 DN：notice「已复制」带 `role=status`。
+- 亮色主题走查：工作台/结果表(500 条 10 页)/右键菜单/编辑器弹窗对比度全部正常，遮罩 40% 黑统一。
+
+### 说明与遗留
+
+- 后端零改动（本轮纯前端）；`decideModalKeydown` 与 kafka 为同语义复制件，
+  如需收敛可在 shared/frontend 提升为公共层（kafka 侧迁移另立任务）。
+- Esc 脏态否决无额外提示文案（footer「有未保存的修改」常驻提示已表达原因）。
+- 沿袭遗留：§8 遗留 1/2/3（真机/宿主 e2e）不变；树箭头键导航（依赖虚拟窗口）
+  仍沿袭 §13 剩余风险。
+
+## UI 扫描 P1 修复：遮罩 dirty 守卫 + 树懒加载截断可见化（2026-09-06）
+
+第 1 轮场景化 UI 扫描（`docs/UI_SCAN_FINDINGS.zh-CN.md`）两条 P1 全部修复并
+浏览器复验通过；顺带把工作区基线上 6 个既有失败用例归零。P2 × 12 未动
+（不在本轮范围）。
+
+### 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/lib/modal.ts` | ① 新增 `decideBackdropClose` 纯决策：遮罩点击与 Esc 共用同一条 `allowClose` 守卫（P1-1 根因：`@click.self` 直关绕过 dirty 否决丢改动）；② `useModalA11y` watch 补 `immediate: true`——以 open=true 直接挂载的弹窗此前整场没有 Esc/Tab 监听（既有测试失败的根因） |
+| `frontend/src/components/EntryEditorDialog.vue` | `canRequestClose()` 提为具名守卫，遮罩 `@click.self` 改走 `onBackdropClick` → `decideBackdropClose`：dirty/提交在途静默否决（footer「有未保存的修改」在场），✕/取消仍为显式放弃，干净态遮罩直关不变 |
+| `frontend/src/lib/dnTree.ts` | `DnTreeNode` +`truncated` 标记；新增 `TREE_FETCH_PAGE=500`、`isFetchTruncated`、`nextFetchLimit`、`childBadgeText` 纯函数（P1-2：截断必须可见化，徽标不得背书假完整性） |
+| `frontend/src/components/DnTree.vue` | `fetchChildren` 参数化单页上限并返回截断标记；根加载/懒展开记录 `truncated`；新增 `loadMore`（按已加载数+一页重取整体替换，`preserveExpansion` 保留子节点展开状态）；`refreshChildCount` 用 ldap/count 精确总数纠正截断标记（含「恰好整页」边界误判）；`invalidate` 重置 `truncated` |
+| `frontend/src/components/TreeBranch.vue` | 截断节点徽标变 `button.tree-badge--truncated`：文案「已加载数+」（`childBadgeText`），title/aria-label 给「已加载 x / 共 y，点击加载更多」（count 未回降级「已加载前 x 个…（已截断）」），点击 emit `loadMore`；未截断仍为精确数 span |
+| `frontend/src/style.css` | `button.tree-badge--truncated` 主色可点击样式 |
+| `frontend/src/lib/i18n.ts` | 七语各 +2 key：`tree.childCountTruncated`、`tree.childCountTruncatedUnknown`（14 处） |
+| 既有失败归零 | `AuditFeedPanel.vue` 自动展开改为「列表含 denied 即展开（含初始挂载/后续更新）」，error 只徽标高亮（修复清空列表后面板整体消失）；`EntryEditorDialog.spec.ts` 补 mock 计数重置；`SchemaPanel.spec.ts` 过滤断言对齐实际子串语义（"userid" 不含 "uid"）+ resolveSchema 竞态改 `flushPromises` |
+
+### 测试
+
+| 文件 | 用例 |
+|---|---|
+| `lib/modal.spec.ts` | +2：`decideBackdropClose` 放行/否决（与 Esc 同守卫语义） |
+| `components/EntryEditorDialog.spec.ts` | +3：dirty 遮罩否决且修改保留（撤回后恢复关闭）、新增态半填 RDN 遮罩否决、干净态遮罩直关；另补 `beforeEach` mock 重置 |
+| `lib/dnTree.spec.ts` | +5：单页常量、截断判定、续载上限步进、截断徽标「500+」不背书精确总数、全量后恢复精确数 |
+| `components/TreeBranch.spec.ts` | 新增 4 例：精确数 span 徽标、截断「500+」徽标 title 含 loaded/total 且点击 emit loadMore、count 未回降级 title、disabled 不发续载 |
+
+### 验证（typecheck/test + 浏览器实机复验）
+
+- `pnpm typecheck` 0 错；`pnpm test` **22 文件 265 用例全绿**（基线 246 + 新增
+  14 − 失败归零；本轮起步时工作区既有 6 例失败，见上表归零项）。
+- 浏览器复验（vite 5292 + playwright-core 1.63 + 系统 Chrome headless，
+  mock.html，1280×900，11/11 断言通过；截图即验即删未入库）：
+  - P1-1：编辑 ou=people 产生 dirty → 点遮罩 → 弹窗保持打开、值保留；
+    Esc 否决不回退；✕ 显式关闭后重开为原值；干净态遮罩点击正常关闭。
+  - P1-2：展开 ou=people → 徽标「500+」、title「已加载 500 / 共 1000 个子条目，
+    点击加载更多」→ 点击续载 → 徽标恢复精确「1000」、截断标记清除，树底部
+    可达 uid=user0999。
+  - 复验中发现并修正一个边界 bug：总条数恰好等于续载上限时
+    `isFetchTruncated(fetched=1000, limit=1000)` 误标截断（徽标停在「1000+」），
+    由 `refreshChildCount` 以 ldap/count 精确总数纠偏。
+
+### 说明与遗留
+
+- 遮罩 dirty 否决为静默否决（与 Esc 一致），无新增弹窗文案；七语仅树截断 +2 key。
+- 同类隐患备忘：ModifyDn/Delete/Schema/Connections 四个弹窗遮罩仍是
+  `@click.self` 直关，均无 dirty 态（ModifyDn 仅提交在途否决 Esc，风险窗口极小），
+  后续如收敛按 optional 跟进。
+- 沿袭遗留：§8 遗留 1/2/3 与 §13 树箭头键导航不变；P2 × 12 见扫描报告待后续轮次。
+
+## UI 扫描 P2 修复轮：12 条打磨项全部收口（2026-09-06）
+
+扫描报告 `docs/UI_SCAN_FINDINGS.zh-CN.md` P2-1 ～ P2-12 全部修复并浏览器复验
+通过（playwright-core 1.63 + 系统 Chrome headless，mock.html，26/26 断言通过，
+截图即验即删未入库）。`pnpm typecheck` 0 错；`pnpm test` 23 文件 **279 用例
+全绿**（265 → 279，+15 新增 −1 SchemaPanel 断言改写并入新例）。
+
+### 修复清单
+
+| 项 | 方式与文件 |
+| --- | --- |
+| P2-1 connection lost 英文透传 | `ldapErrors.ts` network 规则补 `connection lost\|closed`；title 悬停仍留原文供排查 |
+| P2-2 noconn 态自相矛盾 | `App.vue` spinner `!ready && !initError`；identity 降级 `connectionPlaceholder`（"暂无活跃连接"） |
+| P2-3 空结果两态 | `App.vue hasSearched` → `ResultTable` 按 searched 分流 `result.emptyNoMatch` |
+| P2-4 Schema 无匹配误显"为空" | `SchemaPanel.vue` 空列按关键字分流 `schema.noMatch` |
+| P2-5 非法过滤器搜索按钮不联动 | `SearchForm.vue` 按钮 `:disabled` 加 `!filterValid` + title 提示 |
+| P2-6 RDN 无客户端校验 | `EntryEditorDialog.vue` 新增态用 `isLikelyRdn` 预检：行内 `editor.rdnInvalid` + 保存禁用 |
+| P2-7 树选中静默改写 Base DN | `SearchForm.applyBaseDn(next, highlight=true)`：变化时 1.6s `.base-dn-flash` 高亮 + `search.baseFollowed` title；初始化/自动定位传 false 不触发 |
+| P2-8 错误横幅遮挡表单 | 横幅从 absolute 遮罩改布局流内（工具栏与主区之间），主区下移让位 |
+| P2-9 light 工具栏染色偏重 | `toolbarStyle` 按 colorScheme 分档：light 5%/0.12、dark 10%/0.18（kafka 对齐） |
+| P2-10 树无键盘导航 | `dnTree.ts nextTreeFocusIndex` 纯函数 + `DnTree` 容器 `@keydown`：↑/↓ 可见行间移动 + scrollIntoView，Enter 原生选中 |
+| P2-11 删除弹层初始焦点 ✕ | `modal.ts useModalA11y` 新增 `initialFocus` 选项；DeleteEntryDialog 传 `"footer button"` 聚焦取消 |
+| P2-12 mock favicon 404 | `mock.html` 内联 SVG data-icon（kafka 对齐） |
+| 遮罩守卫家族收口（optional） | DeleteEntryDialog / ModifyDnDialog 遮罩接入 `decideBackdropClose`（与 Esc 同 allowClose）；Schema/Connections 无守卫语义、行为等价，保持 `@click.self` |
+
+### 文案（七语 +5 key）
+
+`connectionPlaceholder`、`result.emptyNoMatch`、`schema.noMatch`、
+`editor.rdnInvalid`、`search.baseFollowed`（i18n.spec 七语 key 集合一致性守卫覆盖）。
+
+### 测试（+15）
+
+| 文件 | 用例 |
+| --- | --- |
+| `lib/ldapErrors.spec.ts` | +1：connection lost/closed 归 network 映射 |
+| `lib/dnTree.spec.ts` | +4：nextTreeFocusIndex 相邻移动/边缘钳制/树外进入/非方向键不接管 |
+| `components/SearchForm.spec.ts` | +2：非法过滤器禁用搜索按钮（title+恢复）、Base DN 跟随高亮（highlight=false 不触发） |
+| `components/ResultTable.spec.ts` | 新增 3 例：未搜索/无匹配两态空文案 |
+| `components/SchemaPanel.spec.ts` | 无匹配断言改写 + 1 例两态区分（zzz 无匹配 vs 空数据"Schema 为空"） |
+| `components/EntryEditorDialog.spec.ts` | +1：三类非法 RDN 拦截（保存禁用+不发请求）、合法恢复 |
+| `components/DeleteEntryDialog.spec.ts` | +2：初始焦点在取消（attachTo 真实挂载）、提交在途遮罩否决 |
+
+### 说明与遗留
+
+- P2-8 选"主区下移"方案（报告给出的两个方向之一）：横幅出现时主区整体下移
+  一行，关闭还原；kafka 的 top:70px 遮罩方案在 ldap 表单高度下仍会压住范围
+  字段，故未采用。
+- Schema/Connections 遮罩 `@click.self` 保持现状（无否决语义，接入等价），
+  已在扫描报告收口表标注 optional。
+- 树 aria-tree 语义与 twisty 停止位收敛（完整 roving tabindex）仍留后续：
+  本轮按报告建议先收口"↑/↓ 移动 + Enter 选中"。

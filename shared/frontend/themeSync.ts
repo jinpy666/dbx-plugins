@@ -25,6 +25,14 @@ const THEME_BRIDGE_VARS = [
   ["--primary", "--color-primary", "#3b82f6"],
   ["--primary-foreground", "--color-primary-foreground", "#fff"],
   ["--popover", "--color-popover", "color-mix(in srgb, var(--background) 94%, var(--foreground))"],
+  // 语义状态色：宿主 tokens.css 的 success/warning 规范块经全套 --color-*
+  // 推送直达插件；令牌缺失（Host API 1.0 / mock）时回退 DBX 暗色规范值，
+  // 亮色规范值见 themeBridgeCss 的 light 块。四插件状态徽章/横幅一律引用
+  // 这两个变量，禁止再写 #10b981 / #22c55e / #f97316 / #d97706 等散装 hex。
+  ["--success", "--color-success", "rgb(74 222 128)"],
+  ["--success-bg", "--color-success-bg", "color-mix(in srgb, var(--success) 14%, transparent)"],
+  ["--warning", "--color-warning", "rgb(251 191 36)"],
+  ["--warning-bg", "--color-warning-bg", "color-mix(in srgb, var(--warning) 14%, transparent)"],
   ["--radius", "--radius-md", "6px"],
   ["--ui-font-family", "--font-sans", 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'],
   // ssh 用 --terminal-font-family，其余插件用 --mono-font-family，两个名字都桥。
@@ -40,9 +48,18 @@ export function themeBridgeCss(overrides?: Partial<Record<string, string>>): str
     const value = overrides?.[pluginVar] ?? fallback;
     return `${pluginVar}:var(${token},${value})`;
   });
-  // SDK applyTheme 维护的 data-dbx-theme 同步表单控件/滚动条的 color-scheme。
-  const scheme = ':root[data-dbx-theme="light"]{color-scheme:light}:root[data-dbx-theme="dark"]{color-scheme:dark}';
-  return `:root{${declarations.join(";")}}${scheme}`;
+  // 模态遮罩：亮色统一黑 40%（不依赖 init 时机，首绘即成立）；暗色宿主
+  // init 后换成背景 mix。语义状态色在 Host API 1.0 / mock（无 --color-*
+  // 令牌）且宿主声明为亮色时回退 DBX 亮色规范值；分支同时匹配宿主 SDK
+  // 维护的 data-dbx-theme 与插件 applyAppearance 写的 data-theme，谁先到
+  // 都生效。
+  // color-scheme 分支同样双属性匹配：Host API 1.0 / mock 下宿主 SDK 不写
+  // data-dbx-theme，只有插件 applyAppearance 的 data-theme；漏掉会让 UA 表单
+  // 控件（复选框/滚动条）在亮色宿主仍按暗色渲染。
+  const scheme = ':root[data-dbx-theme="light"],:root[data-theme="light"]{color-scheme:light}:root[data-dbx-theme="dark"],:root[data-theme="dark"]{color-scheme:dark}';
+  const lightStatus = ':root[data-dbx-theme="light"],:root[data-theme="light"]{--success:var(--color-success,rgb(22 163 74));--warning:var(--color-warning,rgb(217 119 6))}';
+  const darkOverlay = ':root[data-dbx-theme="dark"],:root[data-theme="dark"]{--overlay:color-mix(in srgb, var(--background) 70%, transparent)}';
+  return `:root{${declarations.join(";")};--overlay:rgb(0 0 0 / 40%)}${scheme}${lightStatus}${darkOverlay}`;
 }
 
 /** 把令牌桥样式装进当前文档（幂等，重复调用更新既有节点）。 */

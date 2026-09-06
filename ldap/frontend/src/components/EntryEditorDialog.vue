@@ -8,7 +8,8 @@ import { Plus, Trash2, X } from "@lucide/vue";
 import { ldapApi, type LdapEntry } from "../lib/api";
 import { parseLdif, serializeEntriesToLdif } from "../lib/ldif";
 import { attrRowsToAttributes, diffChanges, type AttrRowDraftSource } from "../lib/ldapDiff";
-import { joinRdnAndParent, splitFirstDnRdn } from "../lib/dn";
+import { joinRdnAndParent, isLikelyRdn, splitFirstDnRdn } from "../lib/dn";
+import { useModalA11y, decideBackdropClose } from "../lib/modal";
 import { t } from "../lib/i18n";
 
 export interface AttrRowDraft extends AttrRowDraftSource {
@@ -45,6 +46,13 @@ let suppressLdifSync = false;
 
 const isAdd = computed(() => mode.value === "add");
 const editable = computed(() => props.canWrite && !saving.value);
+// 新增态 RDN 客户端预检（UI 扫描 P2-6）：逗号/空段/缺 `=` 提前拦截，
+// 不等服务器报 invalid DN。空值仍走原有"DN 为空"保存守卫，不在此提示。
+const rdnInvalid = computed(() => {
+  if (!isAdd.value) return false;
+  const rdn = rdnDraft.value.trim();
+  return rdn !== "" && !isLikelyRdn(rdn);
+});
 const dirty = computed(() => {
   if (mode.value === "add") return true;
   const source = props.entry;
@@ -168,7 +176,7 @@ function removeRow(index: number) {
 }
 
 async function save() {
-  if (!editable.value) return;
+  if (!editable.value || rdnInvalid.value) return;
   if (ldifMode.value && !syncRowsFromLdif()) return;
   saving.value = true;
   try {
@@ -199,10 +207,29 @@ async function save() {
 }
 
 const title = computed(() => (isAdd.value ? t("editor.addTitle") : `${t("editor.viewTitle")} · ${rdnDraft.value || dnDraft.value}`));
+
+// 关闭守卫：提交在途 / 可写且有未保存修改时否决。Esc 与遮罩点击共用同一条
+// 判定（UI 扫描 P1-1：此前遮罩 @click.self 直接 close 绕过保护丢改动）；
+// ✕/取消仍为显式放弃入口。只读态无改动可做，始终放行。
+function canRequestClose(): boolean {
+  return !saving.value && !(props.canWrite && dirty.value);
+}
+
+useModalA11y(
+  () => props.open,
+  { close: () => emit("close"), allowClose: canRequestClose },
+);
+
+// 遮罩点击走与 Esc 相同的守卫：dirty 时静默否决（footer 已有"有未保存的
+// 修改"提示），弹窗保持打开、输入不丢。
+function onBackdropClick() {
+  if (decideBackdropClose(canRequestClose()).kind !== "close") return;
+  emit("close");
+}
 </script>
 
 <template>
-  <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
+  <div v-if="open" class="modal-backdrop" @click.self="onBackdropClick">
     <div class="modal editor-modal">
       <header>
         <h2>{{ title }}</h2>
@@ -212,6 +239,7 @@ const title = computed(() => (isAdd.value ? t("editor.addTitle") : `${t("editor.
         <label class="field">
           <span class="muted">{{ t("editor.rdn") }}</span>
           <input v-model="rdnDraft" type="text" name="attr-name" class="mono" :disabled="!editable" spellcheck="false" />
+          <span v-if="rdnInvalid" class="form-error">{{ t("editor.rdnInvalid") }}</span>
         </label>
         <label class="field">
           <span class="muted">{{ t("editor.parentDn") }}</span>
@@ -244,7 +272,7 @@ const title = computed(() => (isAdd.value ? t("editor.addTitle") : `${t("editor.
           <Plus aria-hidden="true" />{{ t("editor.addAttribute") }}
         </button>
         <button type="button" @click="emit('close')">{{ t("cancel") }}</button>
-        <button v-if="canWrite" type="button" class="primary-button" :disabled="!editable" @click="save">
+        <button v-if="canWrite" type="button" class="primary-button" :disabled="!editable || rdnInvalid" @click="save">
           {{ saving ? "…" : t("save") }}
         </button>
       </footer>

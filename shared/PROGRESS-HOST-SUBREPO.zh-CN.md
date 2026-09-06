@@ -587,3 +587,41 @@ files PROGRESS-P-FILES §14。
   首绘同步实证；**待真机复验**：开着工作台切暗/亮与色板，插件应即时跟随。
 - **关联**：插件侧令牌接收面见 §19/§19b（shared/frontend/themeSync.ts，
   四插件已接入；primary/radius/字体也纳入同步面）。
+
+- **20a. 补遗（同日第二根因，用户复测仍不同步后定位）**：主题修订号修复后
+  插件仍未实时跟随。实证（Playwright 事件传播实验）：SDK 收到 `env` 后用
+  裸 `dispatchEvent(...)` 派发 `dbx-plugin-env` 等 CustomEvent——**在
+  `window` 上派发的事件，注册在 `document` 上的监听器永远收不到**（反向
+  亦然）；而四插件的 `onHostThemeChange` 全部注册在 `document`。即主题
+  env 推送链路从第一天起就断在最后一环（init 不受影响，走 `api.ready`/
+  `api.theme` 直读）。修复：SDK 五处 CustomEvent（init/context/env/
+  event/binary）统一改 `document.dispatchEvent(...)`，与插件监听目标对齐；
+  spec 增加派发目标断言。期间踩坑：SDK 模板字符串内注释含反引号截断字面量
+  （TS1443），导致一次发布失败，已修正。
+- **真机验证（通过）**：开着 ssh 工作台（暗色）点击主题按钮切亮色——
+  宿主与插件 UI（含终端区）即时变亮，终端会话未重连（同一 Last login
+  时间戳），证明是实时跟随而非重载。
+
+## 21. 本地二开补丁：插件桥 SDK params 普通化（批量发送 "The object can not be cloned."）（2026-09-06）
+
+- **症状**：ssh 插件批量发送命令时弹 "The object can not be cloned."
+  （WebKit DataCloneError 文案）；Chrome/web 形态同路径也会报（文案不同）。
+  mock 页不可复现——mock 的 `dbxPlugin` 是纯 JS 直调，没有 postMessage 克隆边界。
+- **根因**：插件 UI 把 Vue 响应式状态（Proxy）直接传 `dbxPlugin.invoke`（ssh
+  实例：`sendBatchCommand` 的 `sessionIds: batchSelected.value`）。注入 SDK 的
+  `request()` 组包后裸 `parent.postMessage(message, "*")`，而 structured clone
+  无法克隆 Proxy → DataCloneError。宿主侧早有同型防护（`structuredCloneSafe`，
+  注释即写明 "Proxies (Vue reactive context)"），但只覆盖宿主→插件方向，
+  插件→宿主方向从第一天起就裸奔。四插件 75+ invoke 调用点都暴露在同一雷区。
+- **修复（host/ 1 文件 + spec）**：`pluginHostBridge.ts` 注入 SDK 的
+  `request()` 对 `params` 增加普通化（`toPlain`）：structuredClone 优先，
+  失败（Proxy/不可克隆）回退 JSON 往返——与 sidecar stdio-jsonl 的实际传输
+  语义一致；cloneable 类型（Date/Map/TypedArray）走 structuredClone 原样保留。
+  binary transfer 路径（ArrayBuffer）不受影响。`pluginSdkSource` 导出供测试。
+- **验证**：新增 2 条 spec（Proxy 参数 postMessage 前变为纯数据且非原 Proxy、
+  cloneable 值类身份保留）——运行时实证 SDK boot 会先 post 一条 `ready`，
+  断言按 type 过滤 request 消息。`pluginHostBridge.spec.ts` 16/16 绿；
+  `apps/desktop/src/lib/plugins/` 全目录 48/48 绿。
+- **生效方式**：SDK 由宿主在 iframe 创建时注入，随宿主构建分发——重建/重启
+  DBX.app（或 web 镜像）即生效，插件 .dbxp 无需重发。真机复验：ssh 批量发送
+  任意命令应正常出结果摘要，不再报 clone 错误。

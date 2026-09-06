@@ -1,7 +1,8 @@
 // 审计事件面板：最近 `ldap/audit` 事件的工作台可视化（§11.2 候选）。
 // 数据面在 App.vue（handleEvent → lib/auditFeed 纯函数），本组件纯展示：
 // - 头部常驻：事件总数 + denied/error 计数徽标（denied 高亮为 destructive）
-// - 列表折叠可展开；denied/error 事件到达时自动展开一次保证可见
+// - 列表折叠可展开；denied 事件到达（含初始列表）时自动展开保证可见，
+//   error 仅徽标高亮不展开
 // - 清空按钮由父级处理（App.vue 持有列表状态）
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
@@ -16,12 +17,16 @@ const expanded = ref(false);
 const hasEvents = computed(() => props.items.length > 0);
 const deniedCount = computed(() => props.items.filter((item) => item.result !== "ok").length);
 
-// denied/error 到达时自动展开（ok 事件不打扰用户当前视图）。
+// denied 事件自动展开（含初始挂载即携带 denied 的场景），保证拒绝可见；
+// error 只做徽标/计数高亮，不展开打断当前视图。监听数组引用（父组件每次
+// 到达/清空都替换数组）：只要更新后的列表仍含 denied 就恢复展开，兜住
+// "清空后面板保持可见、新事件到达即恢复列表"的空态回路。
 watch(
-  () => props.items[0],
-  (item, previous) => {
-    if (item && item !== previous && item.result !== "ok") expanded.value = true;
+  () => props.items,
+  (items) => {
+    if (items.some((item) => item.result === "denied")) expanded.value = true;
   },
+  { immediate: true },
 );
 
 const summary = computed(() => {

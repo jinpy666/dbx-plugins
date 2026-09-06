@@ -2,9 +2,25 @@
 // DeleteEntryDialog workbench UI tests (M5-a UI test track): destructive
 // confirm copy, in-flight disable ("…") with Esc veto, and every close
 // affordance (✕ / cancel / backdrop self-click / Escape).
-import { afterEach, describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import DeleteEntryDialog from "./DeleteEntryDialog.vue";
+
+// M6 N1：childrenCount 走 in-file mock（无桥环境真实调用会抛错，走降级路径）。
+vi.mock("../lib/api", () => ({
+  ldapApi: {
+    childrenCount: vi.fn(),
+  },
+}));
+
+import { ldapApi } from "../lib/api";
+
+const childrenCountMock = vi.mocked(ldapApi.childrenCount);
+
+beforeEach(() => {
+  childrenCountMock.mockReset();
+  childrenCountMock.mockResolvedValue({ count: 0 });
+});
 
 const DN = "cn=alice,dc=demo,dc=dbx";
 
@@ -56,6 +72,36 @@ describe("DeleteEntryDialog", () => {
     await wrapper.find(".danger-button").trigger("click");
     expect(wrapper.emitted("confirm")).toHaveLength(1);
     expect(wrapper.find(".danger-button").attributes("disabled")).toBeUndefined();
+  });
+
+  it("offers recursive delete when the entry has children (M6 N1)", async () => {
+    childrenCountMock.mockResolvedValue({ count: 3 });
+    const wrapper = trackDialog({ open: true, dn: DN });
+    await flushPromises();
+    expect(childrenCountMock).toHaveBeenCalledWith(DN);
+    expect(wrapper.find(".recursive-row").exists()).toBe(true);
+    expect(wrapper.text()).toContain("3");
+    await wrapper.find('.recursive-row input[type="checkbox"]').setValue(true);
+    await wrapper.find(".danger-button").trigger("click");
+    expect(wrapper.emitted("confirm")![0]).toEqual([{ recursive: true }]);
+  });
+
+  it("hides the recursive option for leaf entries", async () => {
+    childrenCountMock.mockResolvedValue({ count: 0 });
+    const wrapper = trackDialog({ open: true, dn: DN });
+    await flushPromises();
+    expect(wrapper.find(".recursive-row").exists()).toBe(false);
+    await wrapper.find(".danger-button").trigger("click");
+    expect(wrapper.emitted("confirm")![0]).toEqual([{ recursive: false }]);
+  });
+
+  it("degrades to single-delete when childrenCount is unavailable (old sidecar / no bridge)", async () => {
+    childrenCountMock.mockRejectedValue(new Error("-32601 method not found"));
+    const wrapper = trackDialog({ open: true, dn: DN });
+    await flushPromises();
+    expect(wrapper.find(".recursive-row").exists()).toBe(false);
+    await wrapper.find(".danger-button").trigger("click");
+    expect(wrapper.emitted("confirm")![0]).toEqual([{ recursive: false }]);
   });
 
   it("closes via ✕, cancel and backdrop self-click, not via clicks inside", async () => {

@@ -1,8 +1,12 @@
 <script setup lang="ts">
 // 删除条目确认框（破坏性操作红样式，文案走七语）。
-import { computed } from "vue";
+// M6 N1：打开时 best-effort 拉取子条目数（ldap/entry/childrenCount），
+// 有子条目时提供「递归删除」勾选；旧 sidecar / 无桥环境拿不到计数时
+// 静默降级为单条删除语义（与既有行为一致）。
+import { computed, ref, watch } from "vue";
 import { TriangleAlert, X } from "@lucide/vue";
 import { splitFirstDnRdn } from "../lib/dn";
+import { ldapApi } from "../lib/api";
 import { decideBackdropClose, useModalA11y } from "../lib/modal";
 import { t } from "../lib/i18n";
 
@@ -14,13 +18,39 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "close"): void;
-  (e: "confirm"): void;
+  (e: "confirm", options: { recursive: boolean }): void;
 }>();
 
 const label = computed(() => {
   if (!props.dn) return "";
   return splitFirstDnRdn(props.dn).rdn || props.dn;
 });
+
+// 子条目计数：仅用于展示与递归勾选，拿不到（方法未注册/无桥）即隐藏勾选，
+// 不阻塞确认框打开。
+const childCount = ref<number>();
+const recursive = ref(false);
+watch(
+  () => [props.open, props.dn] as const,
+  ([open]) => {
+    recursive.value = false;
+    childCount.value = undefined;
+    if (!open || !props.dn) return;
+    ldapApi
+      .childrenCount(props.dn)
+      .then((result) => {
+        childCount.value = result.count;
+      })
+      .catch(() => {
+        childCount.value = undefined;
+      });
+  },
+  { immediate: true },
+);
+
+function onConfirm() {
+  emit("confirm", { recursive: recursive.value && (childCount.value ?? 0) > 0 });
+}
 
 // Esc 关闭 + Tab 焦点陷阱；删除请求在途时否决关闭（防结果不明）。
 // 初始聚焦"取消"而非标题栏 ✕（UI 扫描 P2-11）：破坏性确认框的键盘路径
@@ -49,11 +79,18 @@ function onBackdropClick() {
           <strong class="mono">{{ label }}</strong>
           <p>{{ t("deleteDialog.message") }}</p>
           <p class="entry-dn">{{ dn }}</p>
+          <p v-if="childCount !== undefined && childCount > 0" class="hint">
+            {{ t("tree.childCount", { count: childCount }) }}
+          </p>
+          <label v-if="childCount !== undefined && childCount > 0" class="recursive-row">
+            <input v-model="recursive" type="checkbox" :disabled="submitting" />
+            <span>{{ t("deleteDialog.recursive") }}</span>
+          </label>
         </div>
       </div>
       <footer>
         <button type="button" @click="emit('close')">{{ t("cancel") }}</button>
-        <button type="button" class="danger-button" :disabled="submitting" @click="emit('confirm')">
+        <button type="button" class="danger-button" :disabled="submitting" @click="onConfirm">
           {{ submitting ? "…" : t("delete") }}
         </button>
       </footer>

@@ -12,7 +12,9 @@ package ldapconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	ldap "github.com/go-ldap/ldap/v3"
@@ -22,6 +24,14 @@ import (
 
 // defaultSearchAggregateLimit 分页聚合上限（实施文档 §10：sizeLimit 缺省 500）。
 const defaultSearchAggregateLimit = 500
+
+// maxSubtreeDeleteEntries 子树递归删除条目上限（N1 防误删：先清点后删除，
+// 超限一律报错不删）。
+const maxSubtreeDeleteEntries = 1000
+
+// controlTypeSubtreeDelete MS Tree Delete 控件 OID
+// （draft-armijo-ldap-treedelete / MS AD、部分服务端实现；无控件值）。
+const controlTypeSubtreeDelete = "1.2.840.113556.1.4.805"
 
 // LDAPSearchPreset 搜索预设（契约 §5.2 ldap/presets/*；存 store presets.json，
 // 明文、不含凭据）。
@@ -342,7 +352,9 @@ func (s *Service) ModifyEntry(ctx context.Context, req LDAPModifyEntryRequest) e
 }
 
 // DeleteEntry 实现 ldap/entry/delete（tiny-rdm DeleteEntry :606）。
-// 审计 action:"delete-entry"。
+// recursive=true 走 deleteSubtree（N1）：只需目标 DN 过写白名单（子条目 DN
+// 隐式落在目标子树内，与 modifyDn 双端校验语义区分）。审计 action:"delete-entry"；
+// recursive 成功/失败聚合为一条 action:"subtree_delete" 记录。
 func (s *Service) DeleteEntry(ctx context.Context, req LDAPDeleteEntryRequest) error {
 	profile, err := s.Get(req.ConnectionID)
 	if err != nil {
@@ -356,6 +368,9 @@ func (s *Service) DeleteEntry(ctx context.Context, req LDAPDeleteEntryRequest) e
 		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "write-policy", Target: dn, Result: "denied", Detail: err.Error()})
 		return err
 	}
+	if req.Recursive {
+		return s.deleteSubtree(ctx, req.ConnectionID, dn)
+	}
 	err = s.WithConn(ctx, req.ConnectionID, func(conn *ldap.Conn) error {
 		return conn.Del(ldap.NewDelRequest(dn, nil))
 	})
@@ -365,6 +380,161 @@ func (s *Service) DeleteEntry(ctx context.Context, req LDAPDeleteEntryRequest) e
 	}
 	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "delete-entry", Target: dn, Result: "ok"})
 	return nil
+}
+
+// deleteSubtree 子树递归删除（N1）。流程：先 sub 搜索清点整棵子树 DN（含
+// 目标自身，超上限 1000 直接报错不删）→ 优先挂 Tree Delete 控件单请求删除 →
+// 服务端返回不支持类错误（unavailableCriticalExtension/unavailable/
+// unwillingToPerform）时回退「先序自底向上」逐条删除（深度倒序，先子后父，
+// 最后删目标自身）。两条路径均只发一条聚合审计记录。
+func (s *Service) deleteSubtree(ctx context.Context, connectionID, dn string) error {
+	var deletedCount int
+	err := s.WithConn(ctx, connectionID, func(conn *ldap.Conn) error {
+		dns, listErr := listSubtreeDNs(conn, dn)
+		if listErr != nil {
+			return listErr
+		}
+		treeErr := conn.Del(newSubtreeDeleteRequest(dn))
+		if treeErr == nil {
+			deletedCount = len(dns)
+			return nil
+		}
+		if !isSubtreeDeleteUnsupported(treeErr) {
+			return treeErr
+		}
+		// 回退：深度倒序逐条删除（先子后父；dns 已含目标自身，排最后）。
+		ordered, orderErr := orderDeepestFirst(dns)
+		if orderErr != nil {
+			return orderErr
+		}
+		for _, entryDN := range ordered {
+			if delErr := conn.Del(ldap.NewDelRequest(entryDN, nil)); delErr != nil {
+				return delErr
+			}
+		}
+		deletedCount = len(ordered)
+		return nil
+	})
+	if err != nil {
+		s.EmitAudit(AuditRecord{ConnectionID: connectionID, Action: "subtree_delete", Target: dn, Result: "error", Detail: err.Error()})
+		return err
+	}
+	s.EmitAudit(subtreeDeleteAuditRecord(connectionID, dn, deletedCount))
+	return nil
+}
+
+// ChildrenCount 实现 ldap/entry/childrenCount（N1）：dn 下直接子条目计数，
+// 语义与 ldap/count 同构（scope=one、(objectClass=*)、typesOnly、上限 5000
+// 截断标记），复用读白名单门禁与拒绝审计（read-policy/denied）。
+func (s *Service) ChildrenCount(ctx context.Context, req LDAPChildrenCountRequest) (LDAPCountResult, error) {
+	dn := strings.TrimSpace(req.DN)
+	if dn == "" {
+		return LDAPCountResult{}, fmt.Errorf("dn is required")
+	}
+	return s.Count(ctx, LDAPCountRequest{ConnectionID: req.ConnectionID, BaseDN: dn})
+}
+
+// newSubtreeDeleteRequest 挂 Tree Delete 控件（critical）的 Del 请求
+// （go-ldap NewDelRequest 第二参即 Controls）。
+func newSubtreeDeleteRequest(dn string) *ldap.DelRequest {
+	return ldap.NewDelRequest(dn, []ldap.Control{&ldap.ControlString{
+		ControlType: controlTypeSubtreeDelete,
+		Criticality: true,
+	}})
+}
+
+// listSubtreeDNs sub 搜索清点整棵子树 DN（含 dn 自身；(objectClass=*)、
+// typesOnly、请求 ["1.1"] 最小化负载，风格对齐 Count）。超过
+// maxSubtreeDeleteEntries 返回错误且不删除任何条目（防误删）。
+func listSubtreeDNs(conn *ldap.Conn, dn string) ([]string, error) {
+	result, err := conn.Search(newSubtreeListRequest(dn))
+	if err != nil {
+		// 服务端 sizeLimit 截断同样意味着子树超限。
+		var ldapErr *ldap.Error
+		if errors.As(err, &ldapErr) && ldapErr.ResultCode == ldap.LDAPResultSizeLimitExceeded {
+			return nil, subtreeDeleteLimitError(dn)
+		}
+		return nil, err
+	}
+	if len(result.Entries) > maxSubtreeDeleteEntries {
+		return nil, subtreeDeleteLimitError(dn)
+	}
+	dns := make([]string, 0, len(result.Entries))
+	for _, entry := range result.Entries {
+		dns = append(dns, entry.DN)
+	}
+	return dns, nil
+}
+
+// newSubtreeListRequest 子树清点搜索请求（SizeLimit = 上限+1 用于判定超限）。
+func newSubtreeListRequest(dn string) *ldap.SearchRequest {
+	return ldap.NewSearchRequest(
+		dn,
+		ldap.ScopeWholeSubtree,
+		ldap.NeverDerefAliases,
+		maxSubtreeDeleteEntries+1, // 服务端截断保护；+1 用于判定超限
+		0,
+		true, // typesOnly：不取属性值
+		"(objectClass=*)",
+		[]string{"1.1"}, // no attributes
+		nil,
+	)
+}
+
+// subtreeDeleteLimitError 子树条目超上限的统一错误面。
+func subtreeDeleteLimitError(dn string) error {
+	return fmt.Errorf("subtree %q exceeds the %d entry delete limit", dn, maxSubtreeDeleteEntries)
+}
+
+// isSubtreeDeleteUnsupported 判定服务端是否不支持 Tree Delete 控件：未知
+// critical 控件的典型回码 unavailableCriticalExtension；部分实现回
+// unavailable/unwillingToPerform。命中即回退逐条删除。
+func isSubtreeDeleteUnsupported(err error) bool {
+	var ldapErr *ldap.Error
+	if !errors.As(err, &ldapErr) {
+		return false
+	}
+	switch ldapErr.ResultCode {
+	case ldap.LDAPResultUnavailableCriticalExtension, ldap.LDAPResultUnavailable, ldap.LDAPResultUnwillingToPerform:
+		return true
+	}
+	return false
+}
+
+// orderDeepestFirst 按 DN 深度（RDN 数）倒序稳定排序（回退路径：先子后父）。
+func orderDeepestFirst(dns []string) ([]string, error) {
+	type node struct {
+		dn    string
+		depth int
+	}
+	nodes := make([]node, 0, len(dns))
+	for _, value := range dns {
+		parsed, err := ldap.ParseDN(value)
+		if err != nil {
+			return nil, fmt.Errorf("parse dn %q: %w", value, err)
+		}
+		nodes = append(nodes, node{dn: value, depth: len(parsed.RDNs)})
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		return nodes[i].depth > nodes[j].depth
+	})
+	out := make([]string, 0, len(nodes))
+	for _, item := range nodes {
+		out = append(out, item.dn)
+	}
+	return out, nil
+}
+
+// subtreeDeleteAuditRecord 递归删除成功的聚合审计记录（一条；target 为目标
+// DN，deletedCount 为删除条目数含目标自身；不含任何属性值）。
+func subtreeDeleteAuditRecord(connectionID, dn string, deletedCount int) AuditRecord {
+	return AuditRecord{
+		ConnectionID: connectionID,
+		Action:       "subtree_delete",
+		Target:       dn,
+		Result:       "ok",
+		DeletedCount: deletedCount,
+	}
 }
 
 // ModifyDN 实现 ldap/entry/modifyDn（tiny-rdm ModifyDN :641）：

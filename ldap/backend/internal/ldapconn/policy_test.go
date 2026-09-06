@@ -215,6 +215,15 @@ func TestEnsureLDAPWriteAllowed(t *testing.T) {
 }
 
 func TestFirstBlockedLDAPAttribute(t *testing.T) {
+	// 未配置时兜底默认表（与 lifecycle 空配置回退一致）。
+	for _, attr := range []string{"userPassword", "unicodePwd", "objectGUID"} {
+		if got := firstBlockedLDAPAttribute(Profile{}, []string{"cn", attr}); got != attr {
+			t.Errorf("default table should block %s, got %q", attr, got)
+		}
+	}
+
+	// 显式配置覆盖默认表（IMPL_PLAN §6.2）：仅配置项被屏蔽，管理员可
+	// 移除默认项（N2 密码写入依赖移除 userPassword 的能力）。
 	profile := Profile{BlockedAttributes: []string{"customSecret"}}
 	cases := []struct {
 		attrs []string
@@ -223,12 +232,11 @@ func TestFirstBlockedLDAPAttribute(t *testing.T) {
 		{nil, ""},
 		{[]string{}, ""},
 		{[]string{"cn", "sn"}, ""},
-		{[]string{"cn", "userPassword"}, "userPassword"},
-		{[]string{"unicodePwd"}, "unicodePwd"},
-		{[]string{"OBJECTGUID"}, "OBJECTGUID"},         // 大小写不敏感
-		{[]string{" customSecret "}, " customSecret "}, // 配置追加项；返回原始写法（tiny-rdm :1908 原样）
-		{[]string{"token"}, "token"},
-		{[]string{""}, ""}, // 空属性名跳过
+		{[]string{"cn", "userPassword"}, ""},           // 默认项被配置移除
+		{[]string{"unicodePwd"}, ""},                   // 同上
+		{[]string{"CUSTOMSECRET"}, "CUSTOMSECRET"},     // 大小写不敏感
+		{[]string{" customSecret "}, " customSecret "}, // 返回原始写法（tiny-rdm :1908 原样）
+		{[]string{""}, ""},                             // 空属性名跳过
 	}
 	for _, c := range cases {
 		if got := firstBlockedLDAPAttribute(profile, c.attrs); got != c.want {
@@ -254,7 +262,7 @@ func TestFirstBlockedLDAPAttribute(t *testing.T) {
 }
 
 func TestSanitizeLDAPAttributes(t *testing.T) {
-	profile := Profile{BlockedAttributes: []string{"internalRef"}}
+	profile := Profile{BlockedAttributes: []string{"internalRef", "userPassword"}}
 	got := sanitizeLDAPAttributes(profile, []string{"cn", "userPassword", "sn", "InternalRef", "mail"})
 	want := []string{"cn", "sn", "mail"}
 	if len(got) != len(want) {

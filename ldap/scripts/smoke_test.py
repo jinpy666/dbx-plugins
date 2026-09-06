@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test for the dbx-ldap-plugin sidecar (scenarios S1-S10).
+"""Smoke test for the dbx-ldap-plugin sidecar (scenarios S1-S14).
 
 Covers the IMPL_PLAN_DBX_LDAP §8 table over a live OpenLDAP container:
 
@@ -13,6 +13,10 @@ Covers the IMPL_PLAN_DBX_LDAP §8 table over a live OpenLDAP container:
     S8  search outside allowed_base_dns          -> rejected
     S9  disconnect then call                     -> unknown-connection error
     S10 invalid RFC 4515 filter                  -> filter validation error
+    S11 rootDse namingContexts                   -> seeded ROOT advertised
+    S12 {SSHA} password write + simple bind      -> bind ok; audit has no values
+    S13 childrenCount + recursive subtree delete -> children gone; 1 aggregate audit
+    S14 jpegPhoto binary round-trip              -> base64 identical
 
 SKIP semantics (M0 §5.2):
   * a method not registered / not implemented yet  -> SKIP (backend under
@@ -26,6 +30,9 @@ Usage:
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import os
 import socket
 import sys
@@ -376,6 +383,163 @@ def run_s11(client: SidecarClient) -> None:
         raise AssertionError(f"namingContexts {contexts} does not contain the seeded ROOT {ROOT}")
 
 
+# Tiny valid JPEG (8x8, 627 bytes, generated with Go image/jpeg) shared with the
+# seed fixture uid=seedphoto (scripts/ldap-seed/01-testdata.ldif, scenario S14).
+SMOKE_JPEG_B64 = (
+    "/9j/2wCEAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7"
+    "Pj4+JS5ESUM8SDc9PjsBCgsLDg0OHBAQHDsoIig7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7"
+    "Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7O//AABEIAAgACAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAA"
+    "AAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGh"
+    "CCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hp"
+    "anN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV"
+    "1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQAC"
+    "AQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXx"
+    "FxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqS"
+    "k5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T1"
+    "9vf4+fr/2gAMAwEAAhEDEQA/AKmjeDvu/u/0ra/4Q7/pn+lbWjfw1t15+IzCvz7l5PmmI+qrU//Z"
+)
+
+
+@scenario("S12", "password hash write + bind verification")
+def run_s12(client: SidecarClient) -> None:
+    """S12 {SSHA} password round-trip: userPassword written via entry/modify on
+    a connection that overrides blocked_attributes (the default table blocks
+    it), then simple bind with the plaintext verified via connection/test.
+    Neither the plaintext nor the hash may appear in any ldap/audit event."""
+    connect(client, make_connection("smoke-pwhash", blocked_attributes=["token"]))
+    ensure_people_ou(client)
+    dn = f"uid=smokepw-{uuid.uuid4().hex[:8]},{PEOPLE_OU}"
+    uid = dn.split(",")[0].split("=")[1]
+    password = f"Ssmoke-{uuid.uuid4().hex}"  # never logged/asserted verbatim
+    salt = os.urandom(8)
+    hashed = "{SSHA}" + base64.b64encode(hashlib.sha1(password.encode() + salt).digest() + salt).decode()
+    try:
+        domain(client,
+            "ldap/entry/add",
+            {
+                "dn": dn,
+                "attributes": {
+                    "objectClass": ["top", "person", "inetOrgPerson"],
+                    "cn": [uid],
+                    "sn": ["Pw"],
+                    "uid": [uid],
+                },
+            },
+        )
+        domain(client,
+            "ldap/entry/modify",
+            {"dn": dn, "changes": [{"operation": "replace", "attribute": "userPassword", "values": [hashed]}]},
+        )
+        bind = {
+            "id": "smoke-pwbind",
+            "name": "smoke-pwbind",
+            "host": URL,
+            "port": PORT,
+            "external_config": {"auth_type": "simple", "bind_dn": dn, "base_dn": ROOT},
+            "connection_secrets": {"bind_password": password},
+        }
+        result = client.request("connection/test", lifecycle_params(bind))
+        if result.get("success") is not True:
+            raise AssertionError(f"bind with the hashed password failed: {result.get('message', result)}")
+        # 凭据红线：任何 ldap/audit 事件不得携带明文或哈希值。
+        for event in client.events:
+            if event.get("method") != "ldap/audit":
+                continue
+            blob = json.dumps(event.get("params", {}), ensure_ascii=True)
+            if password in blob or hashed in blob:
+                raise AssertionError("ldap/audit event carries a password value")
+    finally:
+        try:
+            domain(client, "ldap/entry/delete", {"dn": dn})
+        except SidecarError:
+            pass
+
+
+@scenario("S13", "childrenCount + recursive subtree delete")
+def run_s13(client: SidecarClient) -> None:
+    """S13 N1 subtree delete: parent + two levels of children -> childrenCount
+    per level -> recursive delete -> every child DN gone, exactly one aggregate
+    subtree_delete audit carrying the deleted entry count."""
+    ensure_people_ou(client)
+    suffix = uuid.uuid4().hex[:8]
+    parent = f"ou=SmokeTree-{suffix},{PEOPLE_OU}"
+    child = f"ou=branch,{parent}"
+    leaf = f"cn=leaf,{child}"
+    extra = f"ou=empty-{suffix},{parent}"
+    entries = [
+        (parent, {"objectClass": ["organizationalUnit"], "ou": [f"SmokeTree-{suffix}"]}),
+        (extra, {"objectClass": ["organizationalUnit"], "ou": [f"empty-{suffix}"]}),
+        (child, {"objectClass": ["organizationalUnit"], "ou": ["branch"]}),
+        (leaf, {"objectClass": ["top", "person"], "cn": ["leaf"], "sn": ["Leaf"]}),
+    ]
+    try:
+        for dn, attributes in entries:
+            domain(client, "ldap/entry/add", {"dn": dn, "attributes": attributes})
+        counted = domain(client, "ldap/entry/childrenCount", {"dn": parent})
+        if counted.get("count") != 2 or counted.get("truncated"):
+            raise AssertionError(f"childrenCount(parent) = {counted}, want count=2")
+        counted = domain(client, "ldap/entry/childrenCount", {"dn": child})
+        if counted.get("count") != 1:
+            raise AssertionError(f"childrenCount(child) = {counted}, want count=1")
+        result = domain(client, "ldap/entry/delete", {"dn": parent, "recursive": True})
+        if result.get("success") is not True:
+            raise AssertionError(f"recursive delete failed: {result}")
+        for dn, _ in entries:
+            if entry_exists(client, dn):
+                raise AssertionError(f"entry survived subtree delete: {dn}")
+        # 审计聚合：该目标恰好一条 subtree_delete/ok，带 deletedCount（camelCase）。
+        subtree = [
+            event["params"] for event in client.events
+            if event.get("method") == "ldap/audit"
+            and str(event.get("params", {}).get("target", "")).lower() == parent.lower()
+            and event["params"].get("action") == "subtree_delete"
+        ]
+        if len(subtree) != 1:
+            raise AssertionError(f"expected exactly one subtree_delete audit, got {len(subtree)}")
+        record = subtree[0]
+        if record.get("result") != "ok" or record.get("deletedCount") != len(entries):
+            raise AssertionError(f"aggregate audit = {record}, want ok + deletedCount={len(entries)}")
+    finally:
+        for dn, _ in entries:  # best-effort cleanup on failure paths only
+            try:
+                domain(client, "ldap/entry/delete", {"dn": dn})
+            except SidecarError:
+                pass
+
+
+@scenario("S14", "jpegPhoto binary round-trip")
+def run_s14(client: SidecarClient) -> None:
+    """S14 binary attribute: the seeded jpegPhoto sample is written to a fresh
+    entry via entry/modify and read back via entry/get; the base64 must match
+    byte-for-byte (JSON carries bytes as latin-1-mapped code points)."""
+    connect(client, make_connection("smoke-photo"))
+    ensure_people_ou(client)
+    photo = base64.b64decode(SMOKE_JPEG_B64)
+    value = photo.decode("latin-1")  # U+0000-U+00FF bijection over the wire
+    dn = f"cn=Smoke Photo {uuid.uuid4().hex[:8]},{PEOPLE_OU}"
+    rdn = dn.split(",")[0].split("=")[1]
+    try:
+        domain(client,
+            "ldap/entry/add",
+            {"dn": dn, "attributes": {"objectClass": ["top", "person", "inetOrgPerson"], "cn": [rdn], "sn": ["Photo"]}},
+        )
+        domain(client,
+            "ldap/entry/modify",
+            {"dn": dn, "changes": [{"operation": "add", "attribute": "jpegPhoto", "values": [value]}]},
+        )
+        fetched = domain(client, "ldap/entry/get", {"dn": dn, "attributes": ["jpegPhoto"]})
+        values = fetched.get("entry", {}).get("attributes", {}).get("jpegPhoto", [])
+        if len(values) != 1:
+            raise AssertionError(f"jpegPhoto read-back missing: {fetched.get('entry', {}).get('attributes')}")
+        if values[0].encode("latin-1") != photo:
+            raise AssertionError("jpegPhoto round-trip mismatch")
+    finally:
+        try:
+            domain(client, "ldap/entry/delete", {"dn": dn})
+        except SidecarError:
+            pass
+
+
 # -- driver --------------------------------------------------------------------
 
 def ldap_reachable() -> tuple[bool, str]:
@@ -399,6 +563,9 @@ def main() -> int:
         ("S8", "read whitelist enforcement", run_s8),
         ("S10", "invalid filter rejection", run_s10),
         ("S11", "rootDse namingContexts (auto baseDn)", run_s11),
+        ("S12", "password hash write + bind verification", run_s12),
+        ("S13", "childrenCount + recursive subtree delete", run_s13),
+        ("S14", "jpegPhoto binary round-trip", run_s14),
         ("S9", "disconnect then call", run_s9),
     ]
 
@@ -435,7 +602,7 @@ def main() -> int:
         for _, _, fn in steps:
             fn(client)
     finally:
-        for connection_id in ("smoke-main", "smoke-ro", "smoke-pw", "smoke-wl", "smoke-filter", "smoke-dc"):
+        for connection_id in ("smoke-main", "smoke-ro", "smoke-pw", "smoke-wl", "smoke-filter", "smoke-dc", "smoke-pwhash", "smoke-photo"):
             try:
                 client.request("connection/disconnect", {"connection": {"id": connection_id}})
             except Exception:

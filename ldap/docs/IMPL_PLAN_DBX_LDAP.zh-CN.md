@@ -15,7 +15,9 @@ schema 元数据、（M4）14 个 MCP 工具。
 - SQLite profile 存储 → 宿主 connection-provider；
 - SSH 隧道/代理/endpoint rewrite → DBX 传输层（拨 `runtime.host:port`）；
 - `ldapi://` Unix socket（Phase 2 视宿主需求）；password modify / WhoAmI /
-  Compare 扩展操作（tiny-rdm 亦无，不对齐不缺失）。
+  Compare 扩展操作（tiny-rdm 亦无，不对齐不缺失。PLA 对标的密码能力走
+  **客户端哈希编码 + bind 校验**实现，不新增扩展操作，见
+  `PLA_GAP_ANALYSIS.zh-CN.md` N2）。
 
 **分期**：M1 simple/anonymous + 核心浏览编辑；M3 其余 6 种认证；M4 MCP 工具。
 
@@ -134,7 +136,8 @@ DN 白名单约束（§6）。方法未注册返回 -32601。
 | `ldap/schema` | GetSchemaMetadata(:472) | `refresh?`（默认走缓存） | `{attributeTypes:[…], objectClasses:[…]}`；缓存落 `cache/schema-<hash>.json` |
 | `ldap/entry/add` | AddEntry(:508) | `dn`、`attributes:{attr:[v…]}` | `{success:true}`；写白名单 + 值转义 |
 | `ldap/entry/modify` | ModifyEntry(:553) | `dn`、`changes:[{operation:add/replace/delete, attribute, values[]}]` | `{success:true}`；屏蔽属性拒绝修改 |
-| `ldap/entry/delete` | DeleteEntry(:606) | `dn` | `{success:true}` |
+| `ldap/entry/delete` | DeleteEntry(:606) | `dn`、`recursive?`（缺省 false 单条语义；true 删整棵子树：优先 Tree Delete 控件 `1.2.840.113556.1.4.805`，服务端不支持（unavailableCriticalExtension/unavailable/unwillingToPerform）回退自底向上逐条删除，条目上限 1000 超限报错不删；写白名单只校验目标 DN） | `{success:true}`；recursive 审计聚合为一条 `subtree_delete`（含 `deletedCount`） |
+| `ldap/entry/childrenCount` | —（N1 新增：删除确认子条目计数） | `dn` | `{count, truncated?}`（scope=one、filter `(objectClass=*)`、上限 5000，风格同 `ldap/count`）；白名单约束同读操作 |
 | `ldap/entry/modifyDn` | ModifyDN(:641) | `dn`、`newRdn`、`newParentDn?`、`deleteOldRdn` | `{success:true}`；新旧 DN 均过写白名单 |
 | `ldap/connections/statuses` | ConnectionStatuses(:695) | — | `{statuses:[{connectionId, state:connected/idle/error, lastError?, lastUsedAt}]}` |
 | `ldap/presets/list` / `save` / `remove` | SearchPreset（前端 store） | `preset:{id,name,baseDn,filter,scope,attributes,sizeLimit}` 等 | 本地 `presets.json` CRUD |
@@ -261,13 +264,19 @@ tools_ldap.go）、`mcp/call`（lifecycle payload 转发 + connectionId 池化�
 ssh-sftp mcp.rs 语义）、`mcp/settings/get|set`（写白名单策略）；敏感属性
 脱敏（ldap_redaction.go 移植）进工具返回。DoD：`scripts/smoke_mcp.py` 同款。
 
-### M5/M6（ADS 追赶）
+### M5/M6/M7（ADS + PLA 双标追赶）
 
-对账表：`docs/ADS_GAP_ANALYSIS.zh-CN.md`（唯一路线来源，落地一项更新一项）。
+对账表：`docs/ADS_GAP_ANALYSIS.zh-CN.md`（ADS 侧唯一路线来源）+
+`docs/PLA_GAP_ANALYSIS.zh-CN.md`（PLA 侧唯一路线来源，含任务分解 L6-x 与
+smoke S12–S14，S11 为先期 rootDse 场景）；两表并轨同一框架，落地一项更新一项。
 M5-a：TLS 字段联动显隐 + 连接字段排版重排；filter 构建器 ≠ 运算符；
 UI 测试双轨（vitest 组件测试 + `scripts/ui_test.mjs` 浏览器走查入 test.sh）。
 M5-b：NOT 组 UI、`ldap/check` 分级连接检查、搜索历史、LDIF 编辑生效。
-M6：LDIF 导入、结果批量操作、新条目 objectClass 模板、二进制属性查看器。
+M6（扩容后）：LDIF 导入、结果批量操作、模板化新建（N4）、二进制查看+
+上传（N3）、子树删除（N1）、密码哈希辅助（N2，提级）。
+M7（按需）：mTLS、CRAM-MD5、referral 策略、服务器端排序、digest realm、
+DSML、schema 语法/匹配规则透出、uid 定位 DN、uid/gid 自动编号、属性显示
+排序、datetime 统一格式化（两对账表 P2 汇总）。
 
 ## 10. 风险与备注
 

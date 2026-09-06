@@ -129,8 +129,19 @@ export const ldapApi = {
     return callLdap<{ success: boolean }>("ldap/entry/modify", { dn, changes });
   },
 
-  entryDelete(dn: string) {
-    return callLdap<{ success: boolean }>("ldap/entry/delete", { dn });
+  entryDelete(dn: string, recursive = false) {
+    return callLdap<{ success: boolean }>(
+      "ldap/entry/delete",
+      recursive ? { dn, recursive: true } : { dn },
+    );
+  },
+
+  childrenCount(dn: string) {
+    return callLdap<{ count: number; truncated?: boolean }>(
+      "ldap/entry/childrenCount",
+      { dn },
+      { timeoutMs: 15000 },
+    );
   },
 
   entryModifyDn(dn: string, newRdn: string, newParentDn: string | undefined, deleteOldRdn: boolean) {

@@ -3,9 +3,10 @@
 // 装配：dbxpluginsdk.NewServer + Handler switch。方法表按实施文档 §5.2 全量：
 //
 //	connection/test | connection/connect | connection/disconnect   （本文件实现）
-//	ldap/search | ldap/entry/get | ldap/rootDse | ldap/schema |
+//	ldap/search | ldap/count | ldap/entry/get | ldap/rootDse | ldap/schema |
 //	ldap/entry/add | ldap/entry/modify | ldap/entry/delete |
-//	ldap/entry/modifyDn | ldap/connections/statuses |
+//	ldap/entry/childrenCount | ldap/entry/modifyDn |
+//	ldap/connections/statuses |
 //	ldap/presets/list | ldap/presets/save | ldap/presets/remove    （转发 internal/ldapconn）
 //
 // mcp/* 本期（M1）不做。公共约定：参数/返回 camelCase；领域方法必填
@@ -104,6 +105,8 @@ func (h *pluginHandler) Handle(
 		return h.forwardModifyEntry(params)
 	case "ldap/entry/delete":
 		return h.forwardDeleteEntry(params)
+	case "ldap/entry/childrenCount":
+		return h.forwardChildrenCount(params)
 	case "ldap/entry/modifyDn":
 		return h.forwardModifyDN(params)
 	case "ldap/connections/statuses":
@@ -251,6 +254,18 @@ func (h *pluginHandler) forwardDeleteEntry(params json.RawMessage) (any, *dbxplu
 		return nil, bizError(err)
 	}
 	return map[string]any{"success": true}, nil
+}
+
+func (h *pluginHandler) forwardChildrenCount(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req ldapconn.LDAPChildrenCountRequest
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	result, err := h.svc.ChildrenCount(getContext(), req)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
 }
 
 func (h *pluginHandler) forwardModifyDN(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {

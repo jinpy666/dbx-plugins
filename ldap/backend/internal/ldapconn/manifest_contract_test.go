@@ -216,11 +216,16 @@ func manifestRequiredMissing(fields map[string]manifestField, state manifestForm
 func TestManifestAuthTypeVisibilityMatrix(t *testing.T) {
 	fields, _ := loadManifestForContract(t)
 
+	// M5-a 联动显隐：tls_verify/tls_ca_path/tls_server_name 挂
+	// visible_when(tls_mode ∈ starttls|ldaps)，不再是恒可见字段——它们的
+	// 可见性由下方 tls_mode 条件场景单独守卫。
 	common := []string{
-		"display_name", "host", "port", "tls_mode", "base_dn", "auth_type", "tls_verify",
-		"tls_ca_path", "tls_server_name", "timeout_secs", "read_only",
+		"display_name", "host", "port", "tls_mode", "base_dn", "auth_type",
+		"timeout_secs", "read_only",
 		"allowed_base_dns", "allowed_write_base_dns", "blocked_attributes",
 	}
+	tlsFields := []string{"tls_verify", "tls_ca_path", "tls_server_name"}
+	simpleCommon := append(append([]string{}, common...), "bind_dn", "username", "bind_password")
 	cases := []struct {
 		name  string
 		state manifestFormState
@@ -250,6 +255,15 @@ func TestManifestAuthTypeVisibilityMatrix(t *testing.T) {
 			append(append([]string{}, common...),
 				"username", "krb_credential_type", "krb_realm", "krb_kdc_host", "krb_kdc_port",
 				"krb5_conf_path", "krb_username", "sasl_qop", "sasl_mutual_auth", "krb_password", "krb_ccache_path")},
+		// TLS 字段随 tls_mode 联动（manifest default = "none" → 隐藏；
+		// 上面各场景未给 tls_mode，走 default 回退，同样应隐藏）。
+		{"simple + tls_mode=none (TLS fields hidden)", manifestFormState{"auth_type": "simple", "tls_mode": "none"}, simpleCommon},
+		{"simple + tls_mode=starttls (TLS fields visible)",
+			manifestFormState{"auth_type": "simple", "tls_mode": "starttls"},
+			append(append([]string{}, simpleCommon...), tlsFields...)},
+		{"simple + tls_mode=ldaps (TLS fields visible)",
+			manifestFormState{"auth_type": "simple", "tls_mode": "ldaps"},
+			append(append([]string{}, simpleCommon...), tlsFields...)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

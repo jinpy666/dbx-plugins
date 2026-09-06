@@ -161,8 +161,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-badge { flex: 0 0 auto; border-radius: 999px; padding: 0 6px; background: color-mix(in srgb, var(--muted-foreground) 22%, transparent); color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
 /* 截断徽标即"加载更多"入口（P1-2）：可点击、主色提示，与普通计数徽标区分。 */
-button.tree-badge--truncated { border: 0; cursor: pointer; background: color-mix(in srgb, var(--primary) 20%, transparent); color: var(--foreground); }
-button.tree-badge--truncated:hover { background: color-mix(in srgb, var(--primary) 38%, transparent); }
+.tree-badge--truncated { border: 0; cursor: pointer; background: color-mix(in srgb, var(--primary) 20%, transparent); color: var(--foreground); }
+.tree-badge--truncated:hover { background: color-mix(in srgb, var(--primary) 38%, transparent); }
 .tree-state { display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted-foreground); font-size: 12px; }
 
 /* Zero-dependency virtual scroller (VirtualList.vue): fixed row height,

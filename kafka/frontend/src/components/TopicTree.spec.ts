@@ -63,4 +63,33 @@ describe("TopicTree", () => {
     const wrapper = mountTree("users");
     expect(wrapper.find(".tree-row.selected").text()).toContain("users");
   });
+
+  // P2-22：过滤框 Enter 选中首个匹配项（big 模式下逐 Tab 穿树可达数百个 tab stop）。
+  it("selects the first matching topic on Enter in the filter box (P2-22)", async () => {
+    const wrapper = mountTree();
+    await wrapper.find(".tree-filter input").setValue("order");
+    await wrapper.find(".tree-filter input").trigger("keydown", { key: "Enter" });
+    expect(wrapper.emitted("select")?.[0]).toEqual(["order-events"]);
+  });
+
+  it("Enter with no match does not emit select", async () => {
+    const wrapper = mountTree();
+    await wrapper.find(".tree-filter input").setValue("no-such-topic");
+    await wrapper.find(".tree-filter input").trigger("keydown", { key: "Enter" });
+    expect(wrapper.emitted("select")).toBeUndefined();
+  });
+
+  // P2-22：清除钮移出 Tab 序——过滤激活时 Tab 从过滤框直达树行，不会先误停
+  // 在清除钮上（键盘清空走既有 Esc 路径）。
+  it("keeps the filter clear button out of the tab order (P2-22)", async () => {
+    const wrapper = mountTree();
+    expect(wrapper.find(".tree-filter .icon-button").exists()).toBe(false);
+    await wrapper.find(".tree-filter input").setValue("user");
+    const clearButton = wrapper.find(".tree-filter .icon-button");
+    expect(clearButton.exists()).toBe(true);
+    expect(clearButton.attributes("tabindex")).toBe("-1");
+    // 清除钮仍可点击生效（鼠标路径不受影响）
+    await clearButton.trigger("click");
+    expect(wrapper.findAll(".tree-row")).toHaveLength(3);
+  });
 });

@@ -14,6 +14,10 @@ const props = defineProps<{
   entries: LdapEntry[];
   count: number;
   truncated: boolean;
+  /** count 恰好等于 sizeLimit 的"可能截断"信号（UI 扫描 P2-15）。 */
+  atLimit?: boolean;
+  /** 最近一次搜索的 sizeLimit（提示文案展示上限值）。 */
+  sizeLimit?: number;
   /** 已执行过至少一次搜索：0 条时区分"无匹配"与"未搜索"（UI 扫描 P2-3）。 */
   searched?: boolean;
   disabled?: boolean;
@@ -115,6 +119,12 @@ function toggleSort(column: string) {
   }
 }
 
+// 表头 aria-sort（UI 扫描 P2-18）：排序列映射 ascending/descending，其余 none。
+function ariaSortFor(column: string): "ascending" | "descending" | "none" {
+  if (sortColumn.value !== column) return "none";
+  return sortDirection.value === "asc" ? "ascending" : "descending";
+}
+
 function cellText(entry: LdapEntry, column: string): string {
   const values = entry.attributes[column];
   if (!Array.isArray(values) || values.length === 0) return "";
@@ -182,7 +192,7 @@ const hasEntries = computed(() => props.entries.length > 0);
 <template>
   <section class="result-pane">
     <div class="result-meta">
-      <span>{{ t("result.count", { count }) }}<span v-if="truncated" class="truncated-badge" style="margin-left: 8px">{{ t("result.truncated") }}</span></span>
+      <span>{{ t("result.count", { count }) }}<span v-if="truncated" class="truncated-badge" style="margin-left: 8px">{{ t("result.truncated") }}</span><span v-else-if="atLimit" class="truncated-badge" style="margin-left: 8px" :title="t('result.atLimit', { limit: sizeLimit ?? 0 })">{{ t("result.atLimitBadge") }}</span></span>
       <span class="pager">
         <button v-if="hasEntries" :disabled="disabled || page <= 0" :title="t('result.prevPage')" :aria-label="t('result.prevPage')" @click="page -= 1">
           <ChevronLeft aria-hidden="true" />
@@ -205,11 +215,11 @@ const hasEntries = computed(() => props.entries.length > 0);
       @keydown="onRowsKeydown"
     >
       <div class="result-header" :style="gridStyle">
-        <button type="button" @click="toggleSort('dn')">
+        <button type="button" :aria-sort="ariaSortFor('dn')" @click="toggleSort('dn')">
           dn<span v-if="sortColumn === 'dn'"> {{ sortDirection === "asc" ? "▲" : "▼" }}</span>
           <span class="col-resize" @pointerdown="startColumnResize($event, 'dn')" />
         </button>
-        <button v-for="column in columns" :key="column" type="button" :title="column" @click="toggleSort(column)">
+        <button v-for="column in columns" :key="column" type="button" :title="column" :aria-sort="ariaSortFor(column)" @click="toggleSort(column)">
           {{ column }}<span v-if="sortColumn === column"> {{ sortDirection === "asc" ? "▲" : "▼" }}</span>
           <span class="col-resize" @pointerdown="startColumnResize($event, column)" />
         </button>

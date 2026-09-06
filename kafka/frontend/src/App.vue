@@ -459,11 +459,14 @@ onBeforeUnmount(() => {
       </div>
     </template>
 
-    <div v-if="kafkaError" class="error-banner">
+    <!-- P2-24：异步到达的错误/成功通知对读屏可感知——error 用 role="alert"
+         （隐含 assertive live），notice 用 role="status"（polite），与
+         ProducePanel 成功条既有约定收敛一致。 -->
+    <div v-if="kafkaError" class="error-banner" role="alert">
       <span :title="kafkaErrorDetail || kafkaError">{{ kafkaError }}</span>
       <button type="button" @click="dismissError">✕</button>
     </div>
-    <div v-if="notice" class="notice">{{ notice }}</div>
+    <div v-if="notice" class="notice" role="status" aria-live="polite">{{ notice }}</div>
 
     <ConnectionsPanel :open="connectionsOpen" :disabled="!ready" :connection="connection as unknown as Record<string, unknown>" @close="connectionsOpen = false" @error="showError" />
   </div>

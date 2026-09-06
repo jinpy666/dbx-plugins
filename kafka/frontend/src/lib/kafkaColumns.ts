@@ -271,8 +271,29 @@ function numberColumn(field: string, headerKey: string, extra: Partial<ColDef> =
     resizable: true,
     filter: "agNumberColumnFilter",
     cellClass: "numeric",
+    // P2-23：数值单元格统一千分位（跟随工作台 locale），与 ag-grid 分页条
+    // 「共 5,000」同屏格式一致；非数值文本（如「—」占位）原样透传。
+    valueFormatter: (params: ValueFormatterParams) => formatNumberCell(params.value),
     ...extra,
   };
+}
+
+// P2-23：千分位格式化（Intl.NumberFormat，按 locale 缓存实例）。入参兼容
+// number 与字符串数字（startOffset/endOffset 的 VM 是 string）；非有限数值
+// （"—" 占位等）原样返回，空值返回空串。
+const numberFormatters = new Map<string, Intl.NumberFormat>();
+
+function formatNumberCell(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "";
+  const num = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(num)) return String(value);
+  const locale = workbenchLocale.value;
+  let formatter = numberFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale);
+    numberFormatters.set(locale, formatter);
+  }
+  return formatter.format(num);
 }
 
 export function messageColumns(): ColDef<MessageRow>[] {

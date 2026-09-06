@@ -716,3 +716,45 @@ P1 与明确回归项；状态回填见该文档 §6.7。
   （2 条事件 · 1 条被拒绝、自动展开、已拒绝徽标、横幅）、默认页回归；
   复验截图即删、/tmp 夹具目录已清理。遗留维持：P2-10 宿主真机复核、
   P2-15 观察保留。
+
+## UI 扫描第 5 轮修复轮（2026-09-06：第 4 轮专家深度测试 P1×2 + P2×5 全收口）
+
+对应 `docs/UI_SCAN_FINDINGS.zh-CN.md` §7.2 全部发现，状态回填见该文档 §7.6。
+全部改动限 `kafka/frontend/` 内。
+
+- **P1-6 消费 offset 范围过滤不可用**：`MessagesPanel.optionalNumber` 入参
+  String 归一（`String(value ?? "").trim()`，P1-4B/GroupsPanel `resetTimestampMs`
+  同范式收口——Vue 3 number 型 v-model 直接 `.trim()` 抛 TypeError 且请求不发出）。
+- **P1-7 慢响应竞态跨 topic 串台**：`runConsume` 请求序号守卫 `consumeSeq`——
+  响应（成功/失败）落地前比对，不一致即丢弃；topic 切换 watch 自增序号 +
+  复位 `consuming`（新 topic 立即可重发，旧请求 finally 序号不匹配不再抢先
+  解锁在途新消费）。
+- **P2-20 扩分区报错文案错位**：`TopicsPanel.submitExpand` 改用专用键
+  `topics.expandCountInvalid`（含 `{count}` 当前值插值），七语补键，不再复用
+  `err.partition`。
+- **P2-21 空集群空态误导**：MessagesPanel 空态两态——未选 topic 用新键
+  `messages.uiNoTopicSelected`（七语），已选 topic 无匹配维持原文案。
+- **P2-22 树过滤键盘死角**：过滤框 Enter 选中首个匹配项；清除钮
+  `tabindex="-1"` 移出 Tab 序（Esc 仍为键盘清空路径）。roving tabindex /
+  listbox 化留作后续增强（本轮选改动小可验证方案）。
+- **P2-23 数值单元格千分位**：`kafkaColumns.numberColumn` 统一
+  `valueFormatter`（`Intl.NumberFormat`，按工作台 locale 缓存实例；字符串
+  数字兼容、非数值占位与空值透传），与分页条「共 5,000」同屏一致。
+- **P2-24 异步反馈读屏可感知**：App 错误横幅 `role="alert"`、成功通知
+  `role="status" aria-live="polite"`（与 ProducePanel 成功条约定收敛）。
+- **i18n**：新增 `messages.uiNoTopicSelected`、`topics.expandCountInvalid`
+  两键 ×7 语（键集一致性由既有 i18n.spec 守护）。
+- **防回归测试（+14 用例）**：`MessagesPanel.spec` ×4（offset 范围端到端
+  发请求 / 仅 offsetTo / deferred promise 手控时序的竞态丢弃+重发落地 /
+  空态两态）；`TopicsPanel.spec` ×3（扩分区小值/相等值专用文案且零请求 /
+  合法值提交）；`App.spec` ×2（role=alert / role=status+aria-live）； 
+  `TopicTree.spec` ×3（Enter 选中首匹配 / 无匹配不误发 / 清除钮 tabindex）；
+  `kafkaColumns.spec` ×2（千分位 / 占位透传）。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 14 文件 132 用例全绿（基线
+  118）；playwright（playwright-core + 系统 Chrome headless `--disable-gpu`，
+  `/tmp/uiscan-kafka-r4`，vite :5294）8 项 PASS、0 console error /
+  0 pageerror——P1-6 invoke 参数捕获含 offsetFrom/offsetTo、P1-7 延迟 1.2s
+  竞态落地 payment-gateway 详情抽屉、P2-20 横幅文案 + 零 update 调用、
+  P2-21 defineProperty 空集群夹具、P2-22 activeElement 断言、P2-23
+  `?big=1` 位点表 `1,250/1,149/1,199`、P2-24 双 live region；复验截图即删、
+  dev server 已 kill。第 4 轮观察项 4 条维持不计级未动。

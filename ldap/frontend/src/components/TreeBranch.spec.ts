@@ -36,7 +36,7 @@ describe("TreeBranch child-count badge", () => {
   it("shows a truncated 'loaded+' badge whose title carries loaded/total, not the badge", async () => {
     const children = Array.from({ length: 500 }, (_, index) => makeNode({ dn: `uid=user${index},ou=people,dc=demo,dc=dbx`, loaded: false }));
     const wrapper = mountBranch(makeNode({ children, childCount: 1000, truncated: true }));
-    const badge = wrapper.find("button.tree-badge--truncated");
+    const badge = wrapper.find(".tree-badge--truncated");
     expect(badge.exists()).toBe(true);
     // 徽标文案只背书已加载数，精确总数只在悬停提示里。
     expect(badge.text()).toBe("500+");
@@ -48,7 +48,7 @@ describe("TreeBranch child-count badge", () => {
   it("falls back to an unknown-total title when count did not return", () => {
     const children = Array.from({ length: 500 }, (_, index) => makeNode({ dn: `uid=user${index},ou=people,dc=demo,dc=dbx`, loaded: false }));
     const wrapper = mountBranch(makeNode({ children, truncated: true }));
-    const badge = wrapper.find("button.tree-badge--truncated");
+    const badge = wrapper.find(".tree-badge--truncated");
     expect(badge.text()).toBe("500+");
     expect(badge.attributes("title")).toContain("已加载前 500 个子条目（已截断）");
   });
@@ -56,7 +56,7 @@ describe("TreeBranch child-count badge", () => {
   it("does not emit loadMore while disabled", async () => {
     const children = Array.from({ length: 500 }, (_, index) => makeNode({ dn: `uid=user${index},ou=people,dc=demo,dc=dbx`, loaded: false }));
     const wrapper = mountBranch(makeNode({ children, childCount: 1000, truncated: true }), true);
-    await wrapper.find("button.tree-badge--truncated").trigger("click");
+    await wrapper.find(".tree-badge--truncated").trigger("click");
     expect(wrapper.emitted("loadMore")).toBeUndefined();
   });
 });

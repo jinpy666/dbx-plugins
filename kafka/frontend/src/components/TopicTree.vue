@@ -120,6 +120,13 @@ function onFilterKeydown(event: KeyboardEvent) {
   if (event.key === "Escape" && keyword.value) {
     event.stopPropagation();
     clearFilter();
+    return;
+  }
+  // P2-22：Enter 选中首个（或唯一）匹配项——过滤后逐 Tab 穿树在 big 模式下
+  // 有数百个 tab stop，Enter 直达首个匹配是键盘主路径。
+  if (event.key === "Enter" && visible.value.length > 0) {
+    event.preventDefault();
+    emit("select", visible.value[0]!.name);
   }
 }
 
@@ -176,7 +183,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
           spellcheck="false"
           @keydown="onFilterKeydown"
         />
-        <button v-if="keyword" class="icon-button" :title="t('close')" @click="clearFilter"><X /></button>
+        <!-- P2-22：清除钮移出 Tab 序（tabindex="-1"）——过滤激活时 Tab 从过滤框
+             直达树行，不会先误停在清除钮上；键盘清空走既有 Esc 路径。 -->
+        <button v-if="keyword" class="icon-button" tabindex="-1" :title="t('close')" :aria-label="t('close')" @click="clearFilter"><X /></button>
       </div>
       <div v-if="error" class="tree-error" :title="errorDetail">{{ friendlyError }}</div>
       <div v-else-if="loading && topics.length === 0" class="tree-state">{{ t("tree.loading") }}</div>

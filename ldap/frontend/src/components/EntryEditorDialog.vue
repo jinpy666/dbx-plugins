@@ -41,6 +41,8 @@ const rows = ref<AttrRowDraft[]>([]);
 const ldifText = ref("");
 const ldifMode = ref(false);
 const ldifError = ref("");
+// LDIF 模式 DN 行锁定信号（UI 扫描 P2-13）：LDIF 里的 dn 与原条目不一致时提示。
+const ldifDnChanged = ref(false);
 const saving = ref(false);
 let suppressLdifSync = false;
 
@@ -113,15 +115,28 @@ function syncRowsFromLdif() {
     rdnDraft.value = rdn;
     if (parentDn) dnDraft.value = parentDn;
   } else {
-    dnDraft.value = entry.dn;
+    // 编辑态忽略 LDIF 中的 DN 变更（P2-13）：LDIF 的 dn 行不是改名入口
+    // （改名走 Modify DN），照单全收会把 modify 发往不存在的 DN。
+    ldifDnChanged.value = props.entry != null && entry.dn !== props.entry.dn;
+    dnDraft.value = props.entry ? props.entry.dn : entry.dn;
   }
   return true;
 }
+
+// LDIF 模式内实时提示 dn 变更（UI 扫描 P2-23）：无需切回表单即可看到
+// 「dn 行不能用于重命名」。编辑态仅在 ldif 模式下解析比对，add 态 dn 合法可编辑。
+watch([ldifText, ldifMode], ([text, active]) => {
+  if (!active || isAdd.value) return;
+  const result = parseLdif(text);
+  const dn = result.entries[0]?.dn;
+  ldifDnChanged.value = dn != null && props.entry != null && dn !== props.entry.dn;
+});
 
 function initFor(mode_: EditorMode, entry?: LdapEntry, parentDn?: string) {
   mode.value = mode_;
   ldifMode.value = false;
   ldifError.value = "";
+  ldifDnChanged.value = false;
   saving.value = false;
   if (mode_ === "add") {
     dnDraft.value = parentDn || "";
@@ -193,6 +208,8 @@ async function save() {
       const current = rowsToAttributes();
       const changes = diffChanges(source.attributes, current);
       if (changes.length === 0) {
+        // 无差异不再静默关闭（P2-13）：区分"没有修改"与"修改被丢弃"。
+        emit("notify", t("editor.noChanges"));
         emit("close");
         return;
       }
@@ -230,7 +247,7 @@ function onBackdropClick() {
 
 <template>
   <div v-if="open" class="modal-backdrop" @click.self="onBackdropClick">
-    <div class="modal editor-modal">
+    <div class="modal editor-modal" role="dialog" aria-modal="true" :aria-label="title">
       <header>
         <h2>{{ title }}</h2>
         <button class="icon-button" :title="t('close')" @click="emit('close')"><X /></button>
@@ -253,6 +270,7 @@ function onBackdropClick() {
       </div>
       <p v-if="!canWrite" class="hint">{{ t("editor.readonlyHint") }}</p>
       <p v-if="ldifError" class="form-error">{{ t("editor.ldifParseError", { error: ldifError }) }}</p>
+      <p v-if="ldifDnChanged" class="hint">{{ t("editor.ldifDnLocked") }}</p>
       <template v-if="!ldifMode">
         <div class="attr-editor">
           <div v-for="(row, index) in rows" :key="index" class="attr-row">

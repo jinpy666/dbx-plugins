@@ -48,3 +48,50 @@ describe("diffChanges", () => {
     expect(diffChanges(before, structuredClone(before))).toEqual([]);
   });
 });
+
+describe("attrRowsToAttributes duplicate-name merge (P2-14)", () => {
+  it("merges repeated attribute rows into one multi-valued attribute instead of overwriting", () => {
+    const rows = [
+      { name: "mailx", valuesText: "dup-a@x" },
+      { name: "mailx", valuesText: "dup-b@x" },
+    ];
+    expect(attrRowsToAttributes(rows)).toEqual({ mailx: ["dup-a@x", "dup-b@x"] });
+  });
+
+  it("drops duplicates across merged rows and keeps row order", () => {
+    const rows = [
+      { name: "mail", valuesText: "a@x\nb@x" },
+      { name: "mail", valuesText: "b@x\nc@x" },
+      { name: "mail", valuesText: "a@x" },
+    ];
+    expect(attrRowsToAttributes(rows)).toEqual({ mail: ["a@x", "b@x", "c@x"] });
+  });
+
+  it("merges an untouched sourceValues row with an edited duplicate", () => {
+    const rows = [
+      { name: "mail", valuesText: "keep@x", sourceValues: ["keep@x"] },
+      { name: "mail", valuesText: "added@x" },
+    ];
+    expect(attrRowsToAttributes(rows)).toEqual({ mail: ["keep@x", "added@x"] });
+  });
+
+  it("ignores empty duplicate rows when merging", () => {
+    const rows = [
+      { name: "mail", valuesText: "a@x" },
+      { name: "mail", valuesText: "" },
+      { name: "  mail  ", valuesText: "b@x" },
+    ];
+    expect(attrRowsToAttributes(rows)).toEqual({ mail: ["a@x", "b@x"] });
+  });
+
+  it("emits one replace with the merged multi-value list in the diff", () => {
+    const rows = [
+      { name: "mail", valuesText: "a@x" },
+      { name: "mail", valuesText: "b@x" },
+    ];
+    const after = attrRowsToAttributes(rows);
+    expect(diffChanges({ mail: ["a@x"] }, after)).toEqual([
+      { operation: "replace", attribute: "mail", values: ["a@x", "b@x"] },
+    ]);
+  });
+});

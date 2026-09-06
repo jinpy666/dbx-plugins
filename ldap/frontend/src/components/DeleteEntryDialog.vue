@@ -38,7 +38,7 @@ function onBackdropClick() {
 
 <template>
   <div v-if="open" class="modal-backdrop" @click.self="onBackdropClick">
-    <div class="modal small-modal">
+    <div class="modal small-modal" role="dialog" aria-modal="true" :aria-label="t('deleteDialog.title')">
       <header>
         <h2>{{ t("deleteDialog.title") }}</h2>
         <button class="icon-button" :title="t('close')" @click="emit('close')"><X /></button>

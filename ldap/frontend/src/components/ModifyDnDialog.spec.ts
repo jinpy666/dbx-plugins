@@ -145,4 +145,20 @@ describe("ModifyDnDialog", () => {
     expect((parentInput(wrapper).element as HTMLInputElement).value).toBe("");
     expect((checkbox(wrapper).element as HTMLInputElement).checked).toBe(true);
   });
+
+describe("ModifyDnDialog RDN precheck (P2-20)", () => {
+  it("shows an inline error and disables confirm for a malformed RDN", async () => {
+    const wrapper = trackDialog({ open: true, dn: DN });
+    await rdnInput(wrapper).setValue("cn=bad,dn");
+    expect(wrapper.find(".form-error").exists()).toBe(true);
+    expect(wrapper.find("footer .primary-button").attributes("disabled")).toBeDefined();
+  });
+
+  it("keeps confirm enabled for a well-formed RDN", async () => {
+    const wrapper = trackDialog({ open: true, dn: DN });
+    await rdnInput(wrapper).setValue("cn=renamed");
+    expect(wrapper.find(".form-error").exists()).toBe(false);
+    expect(wrapper.find("footer .primary-button").attributes("disabled")).toBeUndefined();
+  });
+});
 });

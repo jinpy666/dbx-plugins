@@ -242,3 +242,29 @@ describe("column i18n key existence (P2-12 regression guard)", () => {
     }
   });
 });
+
+// P2-23 回归守卫：数值单元格统一千分位（跟随工作台 locale），与 ag-grid 分页条
+// 「共 5,000」同屏一致；非数值占位（如「—」）原样透传、空值返回空串。
+describe("number cell thousands formatting (P2-23 regression guard)", () => {
+  it("formats lag/endOffset cells with thousands separators per locale", () => {
+    setWorkbenchLocale("en");
+    const lagFormatter = lagColumns().find((col) => col.field === "lag")!.valueFormatter as (params: { value: unknown }) => string;
+    const endFormatter = groupOffsetColumns().find((col) => col.field === "endOffset")!.valueFormatter as (params: { value: unknown }) => string;
+    expect(lagFormatter({ value: 4701 })).toBe("4,701");
+    expect(lagFormatter({ value: 1003 })).toBe("1,003");
+    // startOffset/endOffset 的 VM 值是字符串数字，同样走千分位
+    expect(endFormatter({ value: "102400" })).toBe("102,400");
+  });
+
+  it("keeps non-numeric placeholders and empty values untouched", () => {
+    setWorkbenchLocale("zh-CN");
+    const lagFormatter = lagColumns().find((col) => col.field === "lag")!.valueFormatter as (params: { value: unknown }) => string;
+    expect(lagFormatter({ value: "—" })).toBe("—");
+    expect(lagFormatter({ value: "abc" })).toBe("abc");
+    expect(lagFormatter({ value: null })).toBe("");
+    expect(lagFormatter({ value: undefined })).toBe("");
+    expect(lagFormatter({ value: 0 })).toBe("0");
+    // zh-CN 千分位与 en 同为 3 位分组（跟随宿主 locale 即可）
+    expect(lagFormatter({ value: 5000 })).toBe("5,000");
+  });
+});

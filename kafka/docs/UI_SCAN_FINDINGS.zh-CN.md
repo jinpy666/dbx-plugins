@@ -277,3 +277,117 @@ GroupsPanel 行级失败横幅被 reload 起手清错误 emit 立即冲掉（sub
 | P2-15 | 👀 维持观察 | 维持 §五 结论 |
 
 验证：`pnpm typecheck` 0 错；`pnpm test` 11 文件 118 用例全绿（基线 115 + TopicTree.spec ×2、kafkaColumns.spec ×1 新增防回归断言；`AG_GRID_LOCALE_KEYS` 七语键齐由既有键集测试自动守护）；playwright（playwright-core + 系统 Chrome headless `--disable-gpu`，vite :5294）15 项 PASS、0 console error / 0 pageerror；复验截图即删、/tmp 夹具目录已清理。
+
+## 七、第 4 轮（专家视角深度测试，2026-09-06）
+
+> 扫描角色：Kafka 平台工程师 + 软件测试专家双视角（只读扫描 + 报告，不实施修复）。前 3 轮已收口项不重复发现，本轮聚焦：性能压力实测、Kafka 语义正确性、慢响应/断连健壮性、键盘全流程、i18n/a11y 全量走查。
+
+### 7.1 扫描环境
+
+| 项 | 值 |
+| --- | --- |
+| 轮次 | 第 4 轮专家视角深度测试（单轮完成） |
+| Dev server | 复用 :5294 上已存活的 vite 进程（cwd 即 kafka/frontend，dev 模式热加载当前源码；扫描结束时已 kill，端口释放） |
+| 自动化 | playwright-core 1.63.0 + 系统 Chrome（headless + `--disable-gpu`），独立实例装于 `/tmp/uiscan-kafka-r3`（未进项目依赖） |
+| 视口 | 1280×900 |
+| 夹具矩阵 | 默认 / `?big=1`（507 topic + 5000 消息 + 200 组）/ `?err=1`；另用 initScript 注入两类自定义夹具：`invoke` 延迟 1.2s（慢响应竞态）、`defineProperty` 陷阱返回空 topics/groups（空集群空态） |
+| 源码交叉验证 | mockDbxHost.ts（夹具语义）、kafkaModel.ts / kafkaColumns.ts（格式化/校验）、kafkaErrors.ts（错误映射）、各面板 Vue（根因定位） |
+| 证据 | 中间截图 1 张（dbg1.png，走查后已删）；全部结论以 DOM 断言 + invoke 参数捕获为准 |
+| 控制台健康度 | 全部 7 个测试场景 0 console error / 0 pageerror |
+
+### 7.2 新发现清单
+
+统计：**P0 × 0，P1 × 2，P2 × 5**，另记观察项 4 条（不计级）。
+
+### P1-6 消费「起始/结束 offset」范围过滤整体不可用：填值即抛内部异常，请求不发出
+- 位置：MessagesPanel `optionalNumber(value: string)`（`components/MessagesPanel.vue` ~L336）→ `value.trim()`；`buildParams` 中 `offsetFrom`/`offsetTo` 两字段。
+- 复现：消息页 → 「时间与范围」组 → 「起始 offset」填 1（或只填「结束 offset」2，任一组合）→ 点「消费」。
+- 现象：错误横幅显示原始内部错误 `value.trim is not a function`，`kafka/messages/consume` 请求**根本未发出**（invoke 捕获证实只有 `kafka/presets/list`），结果区不更新。
+- 根因：Vue 3 对 `<input type="number">` 的 v-model 返回 **number**，`optionalNumber` 直接 `.trim()` 抛 TypeError（try 块内被 `emit("error")` 捕获后透传原文）。与第 1 轮 P1-4B（ProducePanel）和 §6.7 附带修复（GroupsPanel `resetTimestampMs`）完全同范式——这两处都做了 String 归一，唯独 MessagesPanel 的 offset 范围入口漏掉了。
+- 影响：offset 范围定位这一消费手段 100% 不可用；且横幅透传内部异常串而非可行动文案。
+- 建议：`optionalNumber` 入参 String 归一（`String(value ?? "").trim()`）；补一条「offset 范围消费」端到端单测防回归（前两处修复均无对应 spec 覆盖此面板）。
+
+### P1-7 慢响应竞态跨 topic 串台：在途消费结果落地到新选中的 topic 名下，且无从分辨
+- 位置：MessagesPanel `runConsume`（`applyResult(await kafkaApi.messagesConsume(...))` 无请求守卫）+ `watch(() => props.topic)` 只在切换瞬间清一次旧结果。
+- 复现（invoke 注入 1.2s 延迟）：选中 order-events → 点消费 → 300ms 内点选 payment-gateway → 等待响应落地。
+- 实测落地状态：页签徽标与摘要条均显示 `payment-gateway`，但结果区统计「已扫描 3 · 命中 3」、首行 `o-1 {"orderId":"A-1001"...}` —— **order-events 的消息完整呈现在 payment-gateway 名下**。
+- 加重因素：消息表列集无 topic 列（partition/offset/timestamp/key/value/headers/schema）；真实 sidecar 消费超时窗为 5s（timeoutMs 默认 5000），竞态窗口真实存在；在途期间「消费」按钮保持禁用（`consuming` 不随 topic 切换复位），新 topic 无法立即重发。
+- 影响：Kafka 控制台最忌「看错 topic 的数据」——用户可能基于串台结果做导出/判断；属可信度级缺陷。
+- 建议：`runConsume` 记录发起时的 topic（或递增请求序号），响应落地前与 `props.topic` 比对，不一致即丢弃；顺带评估：结果统计条标注结果所属 topic，或消息表补 topic 列（导出场景同样受益）。
+
+### P2-20 扩分区填更小/相等值时报错文案语义错位
+- 位置：TopicsPanel `submitExpand`（`components/TopicsPanel.vue` ~L187）客户端校验复用 `t("err.partition")`。
+- 复现：Topic 页 → 选中 order-events（2 分区）→ 扩分区 → 填 1 → 确认。
+- 现象：横幅「分区无效或 offset 超出范围」——与「新分区数必须大于当前」的真实原因错位（弹窗 label 虽有「必须大于当前」小字，但报错语义仍混淆）。
+- 建议：改用专用文案（如「新分区数必须大于当前值 {n}」），七语同步。
+
+### P2-21 空集群（无任何 topic）时消息面板空态文案误导
+- 复现：注入空 topics 夹具 → 树空态正确显示「集群内暂无 topic（0/0）」、消费按钮正确禁用；但消息主区空态为「暂无消息——请调整条件后重新消费」——真实原因是**未选 topic**，该文案引导用户去调消费条件（此场景下无意义）。
+- 建议：区分「未选 topic」（引导先在左侧树选择）与「有 topic 无匹配」两种空态。
+
+### P2-22 树过滤结果键盘死角：Enter 不能选首个匹配，逐 Tab 穿树在 big 模式下有 507 个 tab stop
+- 复现：`/` 聚焦过滤框 → 输入 order-events → Tab。实测首站是「清除」按钮（按 Enter 会误清过滤），再 Tab 才进入树行按钮列表；Enter 在过滤框内无选中行为。?big=1 下全量树行均为独立 button，键盘用户选中目标需最多 507 次 Tab。
+- 建议：过滤框 Enter 选择唯一/首个匹配（唯一时直接选中）；树行容器考虑 roving tabindex 或 listbox 语义，避免全量 tab stop。
+
+### P2-23 数值单元格无千分位，与同屏 ag-grid 分页条格式不一致
+- 实测：消费组位点表 lag/end offset 原样渲染（如 `1003`、组合大 lag），而分页条显示「共 5,000」；?big=1 下 lag 普遍 4,700+，裸数字可读性差且两种格式同屏并存。
+- 建议：`numberColumn`（kafkaColumns.ts）统一 `valueFormatter` 千分位（en/es/it/pt-BR 与 zh 组内一致即可，跟随宿主 locale）。
+
+### P2-24 错误横幅与成功通知无 aria-live，读屏不感知异步反馈
+- 位置：App.vue `.error-banner` / `.notice`（源码无 role/aria-live）；对照 ProducePanel 成功条已带 `role="status"`。
+- 影响：异步到达的错误（消费失败、策略拒绝）对读屏用户静默。
+- 建议：两容器补 `aria-live="polite"`（error 可用 `role="alert"`），与既有 produce-success 的 role="status" 收敛为同一约定。
+
+### 观察项（不计级）
+- 消息时间戳以浏览器本地时区渲染且无时区标注（`formatTimestamp`），与 kcat/其它工具跨时区比对时易歧义。
+- ACL `PATTERN_TYPES` 缺 `TYPE`（Kafka 协议 PatternType 枚举含 TYPE，极少用）；资源类型/操作/权限枚举其余与协议完全一致（含 `TRANSACTIONAL_ID`、`DELEGATION_TOKEN`、`IDEMPOTENT_WRITE`、`CLUSTER_ACTION`）。
+- 生产面板不显示当前 topic 的分区数，合法 partition 范围需回树/Topic 页确认。
+- ja 页签「プロデュース」为音译，与 ja Kafka 社区惯用语（送信/プロデューサー）有出入；页签级改动影响面大，仅记录。
+
+### 7.3 已复核无问题维度（本轮实测内容与结论）
+
+| 维度 | 实测内容 | 结论 |
+| --- | --- | --- |
+| 性能（?big=1） | 507 topic 树渲染、过滤响应、选中响应；5000 条消费（limit 手动设 5000）：首行 102ms、末页翻页 630ms；heap 31.7→34.7→43MB（消费→翻页→过滤后）；组表 200 行翻页滚动 | 全部无卡顿无报错；过滤 2ms / 选中 17ms 属即时响应；内存无异常增长 |
+| Kafka 语义·生产 | key+value+headers+partition=1+count=2 组合发送（回显「分区 1，offset 2」且参数捕获逐字段正确）；空 key 不发 `key` 字段（符合后端二选一契约）；1MB 大消息 1671ms 发送成功、字数统计「1048576 字符」；count 填 5000 → 按钮「发送 ×1000」且实际发送 count=1000；双击/三连击发送均受 `sending`/`sendDisabled` 守卫 | 通过 |
+| Kafka 语义·消费 | earliest/最新基线；分区过滤 `1` 只出分区 1；timestamp 策略 `offsetTime` 参数正确（datetime-local → UTC ISO）；per-partition 精确位点 `0=2,1=0` 生效（已扫描 1 · 命中 1）；limit=2 触发「已达条数上限」徽章；commit×过滤互斥、groupId×partitions 互斥（后者以禁用态双向强制）；详情抽屉标题「topic · 分区 N · Offset N」、headers 展示、Esc 关闭 | 通过（除 P1-6 offset 范围） |
+| Kafka 语义·Topic/Schema/ACL/组 | 扩分区合法路径（3→4，`topics/partitions/update` 参数正确 + 通知 + 树刷新）；扩分区弹窗默认值为当前+1；schema 兼容检查：坏 JSON → 「不兼容」badge-danger + 原因消息，合法 JSON → 「兼容」badge-ok；ACL 查询→创建弹窗枚举矩阵（见观察项）；消费组状态 zh 本地化「稳定」、总 lag 计算正确、位点/成员/订阅三子表齐全 | 通过 |
+| 健壮性·错误与竞态 | `?err=1` 全面板：树错误区本地化+title 原文（P2-18 修复确认仍生效）、流「开始」正确禁用、生产发送禁用、无崩溃；弹层连按 6 次开关（连接弹窗、消息抽屉）无残留 backdrop、焦点归还触发钮；删除确认 3 连点仅 1 次 delete 调用（busy 守卫）+「Topic 已删除」通知；流式 10s tick 稳定（heap 26MB）；ag-grid 5000 行结果快速翻页+滚动 0 错误 | 通过（除 P1-7 慢响应竞态） |
+| UX·键盘 | 首屏 Tab 顺序：连接 → 刷新 → 9 页签 → 树刷新 → 折叠 → 过滤框；`/` 聚焦、Esc 清过滤并保留焦点 | 通过（树内选择死角见 P2-22） |
+| UX·危险操作与空态 | 删 topic 双确认（输入完整名 + 不匹配禁删）；重置位点默认 earliest、partitionOffset 空值行内拦截且弹窗保持；删除组有后果说明（无输入确认，与删 topic 分级合理）；只读下生产禁用 + title/aria 原因「请填写消息内容」/「只读连接」 | 通过（空集群空态见 P2-21） |
+| i18n | en/ja/zh-TW × 9 页签全量走查：0 原始键名、0 中英混排、en 无 CJK 泄漏；术语抽查（Group/State/Coordinator/Offset/Broker/Rack、rf 列 RF）符合惯例 | 通过 |
+| a11y | 13 处弹层逐个实测：连接弹窗、Topics ×4、Groups ×2、Brokers 配置、ACL 创建、Schema 注册、消息抽屉——全部 `role="dialog"` + `aria-modal="true"` + 标题结构（P1-5 修复面确认无遗漏）；dark/light 关键前景/背景对比抽样正常 | 通过（aria-live 见 P2-24） |
+
+### 7.4 第 4 轮统计
+
+| 类别 | 数量 | 条目 |
+| --- | --- | --- |
+| 新发现 P0 | 0 | — |
+| 新发现 P1 | 2 | P1-6（offset 范围输入内部异常、功能不可用）、P1-7（慢响应竞态跨 topic 串台） |
+| 新发现 P2 | 5 | P2-20（扩分区报错文案错位）、P2-21（空集群空态误导）、P2-22（树过滤键盘死角 + 507 tab stop）、P2-23（数值无千分位且与分页条不一致）、P2-24（横幅/通知无 aria-live） |
+| 观察项 | 4 | 时间戳时区标注、ACL PatternType 缺 TYPE、生产面板不显示分区数、ja「プロデュース」术语 |
+| 已复核无问题 | 9 维度 | 性能、生产语义、消费语义、Topic/Schema/ACL/组语义、错误与竞态健壮性、键盘、危险操作、i18n、a11y（见 7.3） |
+| 控制台健康度 | 7 场景 | 0 console error / 0 pageerror |
+
+### 7.5 环境收尾
+
+- dev server（:5294，含复用的既有进程）已 kill，端口释放；`/tmp/uiscan-kafka-r3` 下截图已删（脚本与 node_modules 为扫描工具产物，不入库）。
+- 本轮未修改任何产品代码、未提交 git。
+
+### 7.6 第 4 轮修复回填（实施侧，2026-09-06；只加状态标注，不改写上文）
+
+本轮实施范围为 §7.2 全部 7 条（P1 × 2、P2 × 5）。全部改动限 `kafka/frontend/` 内。
+
+| 项 | 状态 | 修复方式与复验结论 |
+| --- | --- | --- |
+| P1-6 | ✅ 关闭 | `MessagesPanel.vue` `optionalNumber` 入参 String 归一（`String(value ?? "").trim()`，与 P1-4B/GroupsPanel 同范式）。复验：消息页「起始 offset 0 / 结束 offset 1」→ 点消费，invoke 捕获实测 `kafka/messages/consume` 请求发出且带 `offsetFrom:0, offsetTo:1`，结果区「已扫描 3 · 命中 3」正常渲染，无 `value.trim is not a function` 横幅；单测 `MessagesPanel.spec` ×2（双端填值 / 仅填 offsetTo）守护 |
+| P1-7 | ✅ 关闭 | `runConsume` 引入请求序号守卫 `consumeSeq`：响应（含失败）落地前比对序号，不一致即丢弃；topic 切换 watch 自增序号并复位 `consuming`（新 topic 可立即重发，旧请求 finally 不再抢先解锁）。复验：invoke 延迟 1.2s 注入下，order-events 消费在途 300ms 内切 payment-gateway 并重发——落地结果实测「已扫描 1 · 命中 1」+ 详情抽屉 `payment-gateway · 分区 0 · Offset 0`（串台的 order-events 3/3 未出现）；单测 `MessagesPanel.spec` 竞态用例（deferred promise 手控时序）守护 |
+| P2-20 | ✅ 关闭 | `TopicsPanel.submitExpand` 改用专用文案键 `topics.expandCountInvalid`（「新分区数必须大于当前值（当前 {count}）」），不再错位复用 `err.partition`；七语同步补键。复验：order-events（2 分区）扩分区填 1 → 横幅实测「新分区数必须大于当前值（当前 2）」且 `topics/partitions/update` 零调用；单测 `TopicsPanel.spec` ×3（小值/相等值/合法值）守护 |
+| P2-21 | ✅ 关闭 | `MessagesPanel` 空态分两态：未选 topic → 新键 `messages.uiNoTopicSelected`（「请先在左侧树中选择 topic 再消费」，七语）；已选 topic 无结果/无匹配 → 维持既有「请调整条件后重新消费」。复验：defineProperty 陷阱空集群夹具下，树空态「集群内暂无 topic」+ 消息主区实测「请先在左侧树中选择 topic 再消费」，不再出现误导文案；单测 `MessagesPanel.spec` 空态两态用例守护 |
+| P2-22 | ✅ 关闭（收敛方案） | 改动小且可验证的方案：① 过滤框 Enter 选中首个（含唯一）匹配项并 emit select；② 清除钮 `tabindex="-1"` 移出 Tab 序（键盘清空走既有 Esc 路径），过滤激活时 Tab 从过滤框直达首个树行。roving tabindex / listbox 化（507 tab stop 全量收敛）留作后续增强。复验：过滤「payment」→ Enter 实测页签徽标与选中态均 payment-gateway；Tab 后 `document.activeElement` 为 `.tree-row`（非清除钮）；单测 `TopicTree.spec` ×3（Enter 选中/无匹配不误发/清除钮 tabindex + 鼠标路径仍可用）守护 |
+| P2-23 | ✅ 关闭 | `kafkaColumns.numberColumn` 统一 `valueFormatter`：`Intl.NumberFormat(工作台 locale)` 千分位（实例按 locale 缓存），字符串数字（startOffset/endOffset 的 VM 为 string）同样格式化，非数值占位（「—」）与空值原样透传——与 ag-grid 分页条「共 5,000」同屏一致。复验：`?big=1` 消费组位点表（bulk-consumer-001）实测单元格 `1,250 / 1,149 / 1,199` 等千分位；单测 `kafkaColumns.spec` ×2（千分位 + 占位透传）守护 |
+| P2-24 | ✅ 关闭 | `App.vue` 错误横幅补 `role="alert"`（隐含 assertive live），成功通知补 `role="status" aria-live="polite"`——与 ProducePanel 成功条既有 `role="status"` 收敛为同一约定。复验：`?audit=denied` 异步错误横幅实测 `role="alert"`；生产成功通知实测 `role="status"` + `aria-live="polite"`；单测 `App.spec` ×2（审计 denied 链触发横幅 + MessagesPanel notify 触发通知）守护 |
+
+观察项 4 条（时间戳时区标注、ACL PatternType 缺 TYPE、生产面板分区数、ja「プロデュース」术语）本轮未动，维持不计级。
+
+验证：`pnpm typecheck` 0 错；`pnpm test` 14 文件 132 用例全绿（基线 118 + MessagesPanel.spec ×4、TopicsPanel.spec ×3、App.spec ×2、TopicTree.spec ×3、kafkaColumns.spec ×2 新增防回归）；playwright（playwright-core 1.63.0 + 系统 Chrome headless `--disable-gpu`，独立实例 `/tmp/uiscan-kafka-r4`，vite :5294）8 项 PASS、0 console error / 0 pageerror；复验截图即删、dev server 已 kill、/tmp 夹具目录工具产物不入库。

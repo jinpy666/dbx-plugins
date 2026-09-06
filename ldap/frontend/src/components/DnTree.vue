@@ -400,7 +400,7 @@ onBeforeUnmount(onMountedCleanup);
         <X aria-hidden="true" />
       </button>
     </div>
-    <div class="tree-rows" @click="closeContextMenu" @keydown="onTreeKeydown">
+    <div class="tree-rows" role="tree" :aria-label="t('tree.title')" @click="closeContextMenu" @keydown="onTreeKeydown">
       <div v-if="!hasBaseDn" class="tree-state">{{ t("tree.missingBaseDn") }}</div>
       <template v-else-if="hasFilter">
         <div v-if="filterLoading" class="tree-state">{{ t("tree.loading") }}</div>

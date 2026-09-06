@@ -29,6 +29,10 @@ export function diffChanges(
  * after a join/split round-trip. Rows whose text is untouched therefore keep
  * their original values verbatim (`sourceValues`); only edited rows are split
  * on "\n" (empty segments dropped, duplicates collapsed).
+ *
+ * Repeated rows with the same attribute name merge into one multi-valued
+ * attribute (values concatenated in row order, duplicates dropped) instead of
+ * the later row silently overwriting the earlier one (UI 扫描 P2-14).
  */
 export interface AttrRowDraftSource {
   name: string;
@@ -49,7 +53,8 @@ export function attrRowsToAttributes(rows: readonly AttrRowDraftSource[]): Recor
       values = [...new Set(values)];
     }
     if (values.length === 0) continue;
-    result[name] = values;
+    const existing = result[name];
+    result[name] = existing ? [...existing, ...values.filter((value) => !existing.includes(value))] : values;
   }
   return result;
 }

@@ -333,8 +333,11 @@ function positiveInt(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function optionalNumber(value: string): number | undefined {
-  const trimmed = value.trim();
+function optionalNumber(value: unknown): number | undefined {
+  // P1-6：Vue 3 对 <input type="number"> 的 v-model 可能给 number（科学计数/清空
+  // 过程），直接 .trim() 抛 TypeError 且消费请求不发出——入参一律 String 归一
+  // （与 ProducePanel/GroupsPanel 同范式修复）。
+  const trimmed = String(value ?? "").trim();
   if (!trimmed) return undefined;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -403,6 +406,10 @@ function buildParams(): ConsumeParams {
   return params;
 }
 
+// P1-7：消费请求序号守卫——topic 切换/重新消费都会自增；晚到的旧响应落地前
+// 与当前序号比对，不一致即丢弃，避免旧 topic 消息串台到新选中 topic 名下。
+let consumeSeq = 0;
+
 async function runConsume() {
   if (consuming.value || !props.topic) return;
   const issues = validateConsumeForm({
@@ -418,18 +425,23 @@ async function runConsume() {
   formIssues.value = issues;
   if (formIssues.value.length > 0) return;
   consuming.value = true;
+  const seq = ++consumeSeq;
   emit("error", "");
   try {
-    applyResult(await kafkaApi.messagesConsume(buildParams()));
+    const response = await kafkaApi.messagesConsume(buildParams());
+    if (seq !== consumeSeq) return; // 竞态守卫：在途期间切了 topic / 重新消费 → 旧响应丢弃
+    applyResult(response);
     // 有结果后表单默认收起为摘要条（localStorage 已有开合记忆时以记忆为准）。
     if (storedFormOpen === null) formOpen.value = false;
     // P1-1：消费后自动滚到结果区顶部，数据行立即可见（空态/无滚动时为 no-op）。
     await nextTick();
     resultMetaEl.value?.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (cause) {
+    if (seq !== consumeSeq) return; // 失败响应同样受守卫：旧请求的报错不打扰新 topic
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
-    consuming.value = false;
+    // 仅当仍是最新请求时复位 consuming，避免旧请求 finally 抢先解锁新在途消费。
+    if (seq === consumeSeq) consuming.value = false;
   }
 }
 
@@ -634,9 +646,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onWindowKeydown));
 
 // topic 切换后清空旧结果（跨 topic 结果混排会误导）；无开合记忆时回到默认展开
 // （「尚无结果默认展开」语义），有记忆则维持记忆。
+// P1-7：切换即自增请求序号使在途旧响应全部作废，并复位 consuming——新 topic
+// 可立即重新消费（旧请求的 finally 因序号不匹配不再抢先复位）。
 watch(
   () => props.topic,
   () => {
+    consumeSeq += 1;
+    consuming.value = false;
     applyResult(null);
     detail.value = null;
     if (storedFormOpen === null) formOpen.value = true;
@@ -1040,7 +1056,9 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         @row-click="(row: unknown) => openDetail(row as MessageRow)"
       />
     </div>
-    <p v-else-if="!consuming" class="empty compact">{{ t("messages.noMessages") }}</p>
+    <!-- P2-21：两态空态——未选 topic 引导先在左侧树选择；已选 topic 尚无结果
+         或结果为空才是「调整条件重新消费」。 -->
+    <p v-else-if="!consuming" class="empty compact">{{ topic ? t("messages.noMessages") : t("messages.uiNoTopicSelected") }}</p>
 
     <teleport to="body">
       <div v-if="detail" class="drawer-backdrop" @click="detail = null" />

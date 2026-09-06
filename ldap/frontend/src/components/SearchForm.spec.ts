@@ -102,4 +102,18 @@ describe("SearchForm (filter builder)", () => {
     await wrapper.vm.$nextTick();
     expect(baseInput.classes()).not.toContain("base-dn-flash");
   });
+
+  it("flags non-numeric size/page inputs instead of silently treating them as unlimited (P2-16)", async () => {
+    const wrapper = await mountForm();
+    const numeric = wrapper.findAll("input.numeric");
+    await numeric[0].setValue("abc");
+    await numeric[1].setValue("-5");
+    const errors = wrapper.findAll(".form-error");
+    expect(errors).toHaveLength(2);
+    expect(errors[0].text()).toBe("请输入正整数（留空或 0 = 不限制）");
+    // 0 与留空 = 不限制，不算非法。
+    await numeric[0].setValue("0");
+    await numeric[1].setValue("");
+    expect(wrapper.findAll(".form-error")).toHaveLength(0);
+  });
 });

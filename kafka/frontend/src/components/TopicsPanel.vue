@@ -183,8 +183,10 @@ function openExpand(topic: KafkaTopic | null) {
 async function submitExpand() {
   if (!selected.value) return;
   const next = Number.parseInt(expandCount.value, 10);
+  // P2-20：扩分区校验用专用文案（语义=新分区数必须大于当前值），不再复用
+  // err.partition（分区无效或 offset 超出范围）造成语义错位。
   if (!Number.isInteger(next) || next <= selected.value.partitionCount) {
-    emit("error", t("err.partition"));
+    emit("error", t("topics.expandCountInvalid", { count: selected.value.partitionCount }));
     return;
   }
   busy.value = true;

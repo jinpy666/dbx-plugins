@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // Modify DN 对话框：新 RDN + 可选新父 DN + deleteOldRdn（tiny-rdm 语义）。
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { X } from "@lucide/vue";
-import { splitFirstDnRdn } from "../lib/dn";
+import { isLikelyRdn, splitFirstDnRdn } from "../lib/dn";
 import { decideBackdropClose, useModalA11y } from "../lib/modal";
 import { t } from "../lib/i18n";
 
@@ -33,8 +33,15 @@ watch(
   { immediate: true },
 );
 
+// 新 RDN 客户端预检（UI 扫描 P2-20）：与新增态（P2-6）同一判定，
+// 非法 RDN 行内提示 + 禁用确认，不等服务器报 invalid DN。
+const rdnInvalid = computed(() => {
+  const rdn = rdnDraft.value.trim();
+  return rdn !== "" && !isLikelyRdn(rdn);
+});
+
 function confirm() {
-  if (!rdnDraft.value.trim()) return;
+  if (!rdnDraft.value.trim() || rdnInvalid.value) return;
   const parent = parentDraft.value.trim();
   emit("confirm", rdnDraft.value.trim(), parent || undefined, deleteOldRdn.value);
 }
@@ -54,7 +61,7 @@ function onBackdropClick() {
 
 <template>
   <div v-if="open" class="modal-backdrop" @click.self="onBackdropClick">
-    <div class="modal small-modal">
+    <div class="modal small-modal" role="dialog" aria-modal="true" :aria-label="t('modifyDn.title')">
       <header>
         <h2>{{ t("modifyDn.title") }}</h2>
         <button class="icon-button" :title="t('close')" @click="emit('close')"><X /></button>
@@ -62,8 +69,9 @@ function onBackdropClick() {
       <p class="entry-dn">{{ dn }}</p>
       <label class="settings-field">
         <span>{{ t("modifyDn.newRdn") }}</span>
-        <input v-model="rdnDraft" type="text" class="mono" spellcheck="false" @keydown.enter.prevent="confirm" />
+        <input v-model="rdnDraft" type="text" class="mono" spellcheck="false" :aria-invalid="rdnInvalid" @keydown.enter.prevent="confirm" />
       </label>
+      <p v-if="rdnInvalid" class="form-error">{{ t("editor.rdnInvalid") }}</p>
       <label class="settings-field">
         <span>{{ t("modifyDn.newParentDn") }}</span>
         <input v-model="parentDraft" type="text" class="mono" :placeholder="baseDn" spellcheck="false" />
@@ -74,7 +82,7 @@ function onBackdropClick() {
       </label>
       <footer>
         <button type="button" @click="emit('close')">{{ t("cancel") }}</button>
-        <button type="button" class="primary-button" :disabled="submitting || !rdnDraft.trim()" @click="confirm">
+        <button type="button" class="primary-button" :disabled="submitting || !rdnDraft.trim() || rdnInvalid" @click="confirm">
           {{ submitting ? "…" : t("confirm") }}
         </button>
       </footer>

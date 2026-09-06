@@ -27,7 +27,7 @@ const emit = defineEmits<{
   (e: "loadMore", node: DnTreeNode): void;
 }>();
 
-function onToggle(event: MouseEvent) {
+function onToggle(event: MouseEvent | KeyboardEvent) {
   event.stopPropagation();
   if (!props.disabled) emit("toggle", props.node);
 }
@@ -66,22 +66,47 @@ const truncatedTitle = computed(() => {
 </script>
 
 <template>
-  <button class="tree-node" :title="node.dn" @click="onSelect" @dblclick="onView" @contextmenu="onMenu">
+  <!-- P2-18/P2-19：外层节点带 treeitem 语义；twisty 与截断徽标降为
+       span[role=button]（button 内不再嵌套 button，twisty 退出 Tab 序，
+       树内导航仍走 DnTree 的 ↑/↓ roving 焦点）。 -->
+  <button
+    class="tree-node"
+    role="treeitem"
+    :aria-level="depth + 1"
+    :aria-selected="selectedDn === node.dn"
+    :aria-expanded="node.loaded && node.children.length > 0 ? node.expanded : undefined"
+    :title="node.dn"
+    @click="onSelect"
+    @dblclick="onView"
+    @contextmenu="onMenu"
+  >
     <span class="tree-row" :class="{ selected: selectedDn === node.dn }" :style="{ paddingLeft: `${6 + depth * 14}px` }">
-      <button class="tree-twist" :aria-expanded="node.expanded" @click.stop="onToggle" @dblclick.stop>
+      <span
+        class="tree-twist"
+        role="button"
+        tabindex="-1"
+        :aria-expanded="node.expanded"
+        :aria-label="node.expanded ? t('tree.collapse') : t('tree.expand')"
+        @click.stop="onToggle"
+        @dblclick.stop
+        @keydown.enter.prevent="onToggle($event)"
+        @keydown.space.prevent="onToggle($event)"
+      >
         <Loader2 v-if="node.loading" class="spinning" />
         <ChevronDown v-else-if="node.expanded && node.children.length > 0" />
         <ChevronRight v-else />
-      </button>
+      </span>
       <span class="tree-label"><span class="tree-name">{{ node.label }}</span></span>
       <span v-if="node.loading" class="tree-badge tree-badge--loading" :title="t('tree.loading')">…</span>
-      <button
+      <span
         v-else-if="node.loaded && node.truncated"
         class="tree-badge tree-badge--truncated"
+        role="button"
+        tabindex="-1"
         :title="truncatedTitle"
         :aria-label="truncatedTitle"
         @click="onLoadMore"
-      >{{ childBadgeText(node, node.children.length) }}</button>
+      >{{ childBadgeText(node, node.children.length) }}</span>
       <span
         v-else-if="node.loaded && node.childCount"
         class="tree-badge"

@@ -68,7 +68,7 @@ useModalA11y(
 
 <template>
   <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal small-modal">
+    <div class="modal small-modal" role="dialog" aria-modal="true" :aria-label="t('connections.title')">
       <header>
         <h2><Network aria-hidden="true" style="width: 14px; height: 14px" /> {{ t("connections.title") }}</h2>
         <span class="actions" style="display: flex; gap: 2px">

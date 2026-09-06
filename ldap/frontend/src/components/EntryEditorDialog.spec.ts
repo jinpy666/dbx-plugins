@@ -277,4 +277,39 @@ describe("EntryEditorDialog", () => {
     expect(wrapper.emitted("close")).toBeUndefined();
     expect((rdnInput(wrapper).element as HTMLInputElement).value).toBe("cn=bo");
   });
+
+  it("ignores an edited dn: line in LDIF mode, shows the lock hint and saves against the original DN (P2-13)", async () => {
+    entryModifyMock.mockResolvedValue({ success: true });
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const editor = wrapper.find(".ldif-editor");
+    const ldif = (editor.element as HTMLTextAreaElement).value
+      .replace("dn: cn=alice,dc=demo,dc=dbx", "dn: uid=ghost,dc=demo,dc=dbx")
+      .replace("cn: alice", "cn: alice2");
+    await editor.setValue(ldif);
+    // 回到表单模式触发 syncRowsFromLdif：DN 变更被忽略并给出可见提示。
+    await wrapper.findAll(".mode-switch button")[0].trigger("click");
+    expect(wrapper.find(".hint").text()).toContain("dn 行不能用于重命名");
+    await saveButton(wrapper).trigger("click");
+    await flushPromises();
+    // modify 仍发往原 DN（LDIF 里的改名请求被忽略），属性变更正常保存。
+    expect(entryModifyMock).toHaveBeenCalledTimes(1);
+    expect(entryModifyMock.mock.calls[0][0]).toBe("cn=alice,dc=demo,dc=dbx");
+    expect(wrapper.emitted("saved")?.[0]).toEqual(["cn=alice,dc=demo,dc=dbx", "edit"]);
+  });
+
+  it("notifies 'no changes' instead of closing silently when only the dn: line was edited (P2-13)", async () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const editor = wrapper.find(".ldif-editor");
+    const ldif = (editor.element as HTMLTextAreaElement).value.replace(
+      "dn: cn=alice,dc=demo,dc=dbx",
+      "dn: uid=ghost,dc=demo,dc=dbx",
+    );
+    await editor.setValue(ldif);
+    await saveButton(wrapper).trigger("click");
+    await flushPromises();
+    expect(entryModifyMock).not.toHaveBeenCalled();
+    expect(wrapper.emitted("notify")?.[0][0]).toBe("没有需要保存的修改");
+  });
 });

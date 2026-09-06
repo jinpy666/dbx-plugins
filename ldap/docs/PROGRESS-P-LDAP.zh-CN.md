@@ -468,3 +468,20 @@ TREE_ROW_HEIGHT）；键盘导航（上下键）沿用以 DOM focus 为准，依
   已在扫描报告收口表标注 optional。
 - 树 aria-tree 语义与 twisty 停止位收敛（完整 roving tabindex）仍留后续：
   本轮按报告建议先收口"↑/↓ 移动 + Enter 选中"。
+
+## UI 扫描第 4 轮修复收口（2026-09-06）
+
+第 3 轮专家视角深度测试（P1×1、P2×9）全部修复并复验，改动均限 `ldap/frontend/`：
+
+- **P1-3 导出子树静默截断**：导出上限提至 5000、消费 `truncated`，截断时通知告知数量（七语）。
+- **P2-13**：LDIF 模式 dn 行锁定（变更忽略 + 可见提示 + 保存仍发往原 DN）；无属性 diff 时通知「没有需要保存的修改」。
+- **P2-14**：同名属性行多值合并去重；**P2-15**：count===sizeLimit 时「已到上限」徽标；**P2-16**：数值输入行内校验（留空/0 = 不限制）。
+- **P2-17/18/19**：5 弹窗 role=dialog/aria-modal；树 role=tree、节点 treeitem/aria-level、表头 aria-sort；button 嵌套清零（twisty/徽标降为 span[role=button]）。
+- **P2-20/21**：ModifyDnDialog RDN 预检（复用 isLikelyRdn）；预设删除前确认。
+- i18n 七语新增/整备：numericHint、invalidNumber、presetRemoveConfirm、ldifDnLocked、noChanges、atLimitBadge（i18n.spec 键集守卫通过）。
+
+验证：`pnpm typecheck` 0 错；`pnpm test` 23 文件 291 用例全绿（基线 279 + 12）；playwright 复验 10/10 断言通过、0 pageerror。修复状态已逐条回填 `UI_SCAN_FINDINGS.zh-CN.md`。未提交 git。
+
+## UI 扫描第 6 轮修复（第 5 轮复核新发现，2026-09-06）
+
+第 5 轮复核扫描新发现 P2×4 全部修复：P2-22 表头 aria-sort 接线（补单测）、P2-23 LDIF dn 锁定提示实时化（watch）、P2-24 连接切换工作台状态重置（结果表/搜索态/写弹窗）、P2-25 删除/改名后结果表联动重搜。验证：typecheck 0 错、295 用例全绿（+1 aria-sort）；浏览器复验 aria-sort/实时提示/删除联动通过，P2-24 留真机多连接复验。

@@ -92,7 +92,7 @@ useModalA11y(
 
 <template>
   <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal panel-modal">
+    <div class="modal panel-modal" role="dialog" aria-modal="true" :aria-label="t('schema.title')">
       <header>
         <h2><Database aria-hidden="true" style="width: 14px; height: 14px" /> {{ t("schema.title") }}</h2>
         <button class="icon-button" :title="t('close')" @click="emit('close')"><X /></button>

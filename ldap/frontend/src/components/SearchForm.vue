@@ -153,6 +153,15 @@ function positiveNumber(value: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+// 数值字段输入校验（UI 扫描 P2-16）：非法输入不再静默按"无限制"发出；
+// 留空或 0 合法（= 不限制），负数/非数字给行内红字。
+function numericInvalid(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed !== "" && trimmed !== "0" && positiveNumber(trimmed) === undefined;
+}
+const sizeLimitInvalid = computed(() => numericInvalid(draft.value.sizeLimit));
+const pageSizeInvalid = computed(() => numericInvalid(draft.value.pageSize));
+
 function activeFilter(): string {
   return builderMode.value ? generatedFilter.value : sourceFilter.value.trim();
 }
@@ -241,6 +250,9 @@ async function savePreset() {
 
 async function removePreset() {
   if (props.disabled || !selectedPresetId.value) return;
+  // 预设是持久化数据（UI 扫描 P2-21）：删除前确认，误删不可恢复。
+  const name = presets.value.find((preset) => preset.id === selectedPresetId.value)?.name ?? "";
+  if (!window.confirm(t("search.presetRemoveConfirm", { name }))) return;
   try {
     const result = await ldapApi.presetsRemove(selectedPresetId.value);
     presets.value = Array.isArray(result.presets) ? result.presets : presets.value.filter((entry) => entry.id !== selectedPresetId.value);
@@ -350,13 +362,15 @@ const derefOptions = computed(() => [
         <span>{{ t("search.attributes") }}</span>
         <input v-model="draft.attributes" type="text" :disabled="disabled" spellcheck="false" />
       </label>
-      <label class="field">
+      <label class="field" :title="t('search.numericHint')">
         <span>{{ t("search.sizeLimit") }}</span>
-        <input v-model="draft.sizeLimit" type="text" inputmode="numeric" :disabled="disabled" class="numeric" />
+        <input v-model="draft.sizeLimit" type="text" inputmode="numeric" :disabled="disabled" class="numeric" :aria-invalid="sizeLimitInvalid" />
+        <span v-if="sizeLimitInvalid" class="form-error">{{ t("search.invalidNumber") }}</span>
       </label>
-      <label class="field">
+      <label class="field" :title="t('search.numericHint')">
         <span>{{ t("search.pageSize") }}</span>
-        <input v-model="draft.pageSize" type="text" inputmode="numeric" :disabled="disabled" class="numeric" />
+        <input v-model="draft.pageSize" type="text" inputmode="numeric" :disabled="disabled" class="numeric" :aria-invalid="pageSizeInvalid" />
+        <span v-if="pageSizeInvalid" class="form-error">{{ t("search.invalidNumber") }}</span>
       </label>
       <label class="field">
         <span>{{ t("search.typesOnly") }}</span>

@@ -53,6 +53,12 @@ const resultTruncated = ref(false);
 const searching = ref(false);
 // 空结果两态（UI 扫描 P2-3）：执行过搜索后的 0 条 ≠ "请先执行搜索"。
 const hasSearched = ref(false);
+// 恰好等于 sizeLimit 的"整页结果"信号（UI 扫描 P2-15）：契约 truncated 只在
+// 后端真实截断时为 true，夹具/真机都可能出现"count===上限但 truncated=false"
+// 的巧合态——此时给"可能不完整"提示而不是假装完整。
+const resultAtLimit = ref(false);
+// 最近一次搜索的 sizeLimit（P2-15 提示文案需要展示上限值）。
+const lastSizeLimit = ref<number>();
 
 const editorOpen = ref(false);
 const editorEntry = ref<LdapEntry>();
@@ -180,6 +186,14 @@ function colorWithAlpha(color: string, alpha: number) {
 
 // -- search flow --------------------------------------------------------------
 
+// 写操作后的结果表联动（UI 扫描 P2-25）：被删/改名条目仍在当前结果里时
+// 重放最近一次搜索，避免残留行双击报 entry not found。无搜索史则跳过。
+async function refreshResultsAfterWrite(affected: (dn: string) => boolean) {
+  if (!hasSearched.value || !searchModel.value) return;
+  if (!results.value.some((entry) => affected(entry.dn))) return;
+  await runSearch(searchModel.value);
+}
+
 async function runSearch(model: SearchFormModel) {
   if (busy.value || searching.value) return;
   searching.value = true;
@@ -191,12 +205,13 @@ async function runSearch(model: SearchFormModel) {
       .split(",")
       .map((entry) => entry.trim())
       .filter(Boolean);
+    const sizeLimit = positiveInt(model.sizeLimit);
     const result = await ldapApi.search({
       baseDn: model.baseDn.trim() || undefined,
       filter: model.filter.trim() || "(objectClass=*)",
       scope: model.scope,
       ...(attributes.length > 0 ? { attributes } : {}),
-      sizeLimit: positiveInt(model.sizeLimit),
+      sizeLimit,
       pageSize: positiveInt(model.pageSize),
       typesOnly: model.typesOnly,
       derefAliases: model.derefAliases,
@@ -204,6 +219,8 @@ async function runSearch(model: SearchFormModel) {
     results.value = Array.isArray(result.entries) ? result.entries : [];
     resultCount.value = Number.isFinite(result.count) ? result.count : results.value.length;
     resultTruncated.value = result.truncated === true;
+    resultAtLimit.value = sizeLimit !== undefined && resultCount.value === sizeLimit;
+    lastSizeLimit.value = sizeLimit;
   } catch (cause) {
     showError(cause);
   } finally {
@@ -282,6 +299,7 @@ async function confirmDelete() {
     deleteOpen.value = false;
     showNotice(t("deleteDialog.deleted"));
     treeRef.value?.invalidate(parentOf(deleteDn.value));
+    void refreshResultsAfterWrite((dn) => dn === deleteDn.value || dn.endsWith(`,${deleteDn.value}`));
   } catch (cause) {
     showError(cause);
   } finally {
@@ -303,6 +321,7 @@ async function confirmRename(newRdn: string, newParentDn: string | undefined, de
     modifyDnOpen.value = false;
     showNotice(t("modifyDn.moved"));
     treeRef.value?.invalidate();
+    void refreshResultsAfterWrite((dn) => dn === modifyDnSource.value || dn.endsWith(`,${modifyDnSource.value}`));
   } catch (cause) {
     showError(cause);
   } finally {
@@ -310,12 +329,24 @@ async function confirmRename(newRdn: string, newParentDn: string | undefined, de
   }
 }
 
+// 导出子树单次抓取上限（条）：契约没有分页游标，前端无法逐页续拉；但
+// pageSize>0 时 sidecar 会做服务端 paged search 聚合，聚合上限 = sizeLimit，
+// 达上限截断并置 truncated=true。这里把导出上限提到契约计数上限量级
+// （5000，与 ldap/count 一致，远大于此前硬编码 500），并消费 truncated：
+// 仍被截断时通知明确告知"仅导出前 N 条"，不再静默残缺（UI 扫描 P1-3）。
+const EXPORT_SIZE_LIMIT = 5000;
+const EXPORT_PAGE_SIZE = 500;
+
 async function exportSubtree(dn: string) {
   ldapError.value = "";
   try {
-    const result = await ldapApi.search({ baseDn: dn, filter: "(objectClass=*)", scope: "sub", sizeLimit: 500, pageSize: 500 });
+    const result = await ldapApi.search({ baseDn: dn, filter: "(objectClass=*)", scope: "sub", sizeLimit: EXPORT_SIZE_LIMIT, pageSize: EXPORT_PAGE_SIZE });
     downloadText(`${rdnOf(dn) || "subtree"}.ldif`, "text/plain", serializeEntriesToLdifText(result.entries));
-    showNotice(t("result.exportDone", { name: "LDIF" }));
+    if (result.truncated === true) {
+      showNotice(t("result.exportTruncated", { count: result.entries.length, limit: EXPORT_SIZE_LIMIT }));
+    } else {
+      showNotice(t("result.exportDone", { name: "LDIF" }));
+    }
   } catch (cause) {
     showError(cause);
   }
@@ -450,8 +481,25 @@ async function initialize() {
   void searchRef.value?.applyBaseDn(baseDn.value, false);
 }
 
+// 连接切换时的状态隔离（UI 扫描 P2-24）：结果表/已开弹窗属于上一个连接，
+// 残留会把写操作发往新连接。树随 baseDn watch 自动重载，无需在此处理。
+let lastSyncedConnectionId = "";
 function syncConnectionContext() {
   setLdapConnectionId(connectionId.value);
+  const current = connectionId.value;
+  const switched = lastSyncedConnectionId !== "" && lastSyncedConnectionId !== current;
+  lastSyncedConnectionId = current;
+  if (switched) {
+    editorOpen.value = false;
+    deleteOpen.value = false;
+    modifyDnOpen.value = false;
+    results.value = [];
+    resultCount.value = 0;
+    resultTruncated.value = false;
+    resultAtLimit.value = false;
+    hasSearched.value = false;
+    searchModel.value = undefined;
+  }
   baseDn.value = contextBaseDn.value;
   void resolveAutoBaseDn();
 }
@@ -560,6 +608,8 @@ onBeforeUnmount(() => {
           :entries="results"
           :count="resultCount"
           :truncated="resultTruncated"
+          :at-limit="resultAtLimit"
+          :size-limit="lastSizeLimit"
           :searched="hasSearched"
           :disabled="searching"
           @open="openEntry"

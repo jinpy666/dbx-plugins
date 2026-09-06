@@ -458,11 +458,11 @@ func TestSchemaServiceNotConfigured(t *testing.T) {
 
 func TestSchemaPayloadAvroRoundtrip(t *testing.T) {
 	payload := []byte(`{"id":7,"name":"dbx"}`)
-	encoded, err := encodeSchemaPayload(payload, testAvroSchema, "AVRO")
+	encoded, err := encodeSchemaPayload(payload, testAvroSchema, "AVRO", "")
 	if err != nil {
 		t.Fatalf("encodeSchemaPayload(avro) error = %v", err)
 	}
-	decoded, err := decodeSchemaPayload(encoded, testAvroSchema, "AVRO")
+	decoded, err := decodeSchemaPayload(encoded, testAvroSchema, "AVRO", "")
 	if err != nil {
 		t.Fatalf("decodeSchemaPayload(avro) error = %v", err)
 	}
@@ -477,22 +477,24 @@ func TestSchemaPayloadAvroRoundtrip(t *testing.T) {
 
 func TestSchemaPayloadJSONValidation(t *testing.T) {
 	schema := `{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`
-	if _, err := encodeSchemaPayload([]byte(`{"id":1}`), schema, "JSON"); err != nil {
+	if _, err := encodeSchemaPayload([]byte(`{"id":1}`), schema, "JSON", ""); err != nil {
 		t.Errorf("valid json payload rejected: %v", err)
 	}
-	if _, err := encodeSchemaPayload([]byte(`{"id":"nope"}`), schema, "JSON"); err == nil {
+	if _, err := encodeSchemaPayload([]byte(`{"id":"nope"}`), schema, "JSON", ""); err == nil {
 		t.Error("invalid json payload accepted")
 	}
-	if _, err := encodeSchemaPayload([]byte(`{bad json`), schema, "JSON"); err == nil {
+	if _, err := encodeSchemaPayload([]byte(`{bad json`), schema, "JSON", ""); err == nil {
 		t.Error("non-JSON payload accepted")
 	}
-	if _, err := encodeSchemaPayload(nil, "{}", "PROTOBUF"); err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Errorf("protobuf encode error = %v", err)
+	// PROTOBUF 分支：schema 非 base64/FDSet → 参数级错误（有效向量见
+	// protobuf_test.go，单测直接复用 kafka-seed fixture）。
+	if _, err := encodeSchemaPayload([]byte(`{}`), "not-base64!!", "PROTOBUF", ""); err == nil {
+		t.Error("protobuf encode with invalid FDSet accepted")
 	}
-	if _, err := decodeSchemaPayload(nil, "{}", "PROTOBUF"); err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Errorf("protobuf decode error = %v", err)
+	if _, err := decodeSchemaPayload([]byte{0x01}, "not-base64!!", "PROTOBUF", ""); err == nil {
+		t.Error("protobuf decode with invalid FDSet accepted")
 	}
-	if _, err := encodeSchemaPayload([]byte("{}"), "{}", "YAML"); err == nil {
+	if _, err := encodeSchemaPayload([]byte("{}"), "{}", "YAML", ""); err == nil {
 		t.Error("bogus format accepted")
 	}
 }
@@ -511,7 +513,7 @@ func TestSchemaDecoderCacheByID(t *testing.T) {
 	ctx := context.Background()
 
 	payload := []byte(`{"id":1,"name":"a"}`)
-	encoded, err := encodeSchemaPayload(payload, testAvroSchema, "AVRO")
+	encoded, err := encodeSchemaPayload(payload, testAvroSchema, "AVRO", "")
 	if err != nil {
 		t.Fatalf("encode payload error = %v", err)
 	}

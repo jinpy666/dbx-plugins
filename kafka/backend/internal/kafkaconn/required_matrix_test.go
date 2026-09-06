@@ -125,6 +125,57 @@ func TestRequiredCombinationMatrix(t *testing.T) {
 			config:  `{` + baseBootstrap + `, "security_protocol": "SASL_SSL", "sasl_mechanism": "GSSAPI", "kerberos_principal": "app@REALM", "kerberos_keytab_path": "/tmp/k.keytab"}`,
 			secrets: `{}`,
 		},
+		// --- Phase 3 OAUTHBEARER（§12.2.3）：SASL_SSL 约束 + token 来源矩阵 ---
+		{
+			name:        "oauthbearer without sasl_ssl",
+			config:      `{` + baseBootstrap + `, "security_protocol": "SASL_PLAINTEXT", "sasl_mechanism": "OAUTHBEARER", "msk_region": "us-east-1"}`,
+			secrets:     `{}`,
+			wantErrSub:  "OAUTHBEARER requires security_protocol SASL_SSL",
+			wantInvalid: true,
+		},
+		{
+			name:        "oauthbearer with plaintext",
+			config:      `{` + baseBootstrap + `, "security_protocol": "PLAINTEXT", "sasl_mechanism": "OAUTHBEARER", "msk_region": "us-east-1"}`,
+			secrets:     `{}`,
+			wantErrSub:  "OAUTHBEARER requires security_protocol SASL_SSL",
+			wantInvalid: true,
+		},
+		{
+			name:        "oauthbearer msk_iam without region",
+			config:      `{` + baseBootstrap + `, "security_protocol": "SASL_SSL", "sasl_mechanism": "OAUTHBEARER"}`,
+			secrets:     `{}`,
+			wantErrSub:  "mskRegion is required",
+			wantInvalid: true,
+		},
+		{
+			name:    "oauthbearer msk_iam with region ok (no sasl username/password needed)",
+			config:  `{` + baseBootstrap + `, "security_protocol": "SASL_SSL", "sasl_mechanism": "OAUTHBEARER", "msk_region": "us-east-1"}`,
+			secrets: `{}`,
+		},
+		{
+			name:        "oauthbearer msk_iam partial static credentials",
+			config:      `{` + baseBootstrap + `, "security_protocol": "SASL_SSL", "sasl_mechanism": "OAUTHBEARER", "msk_region": "us-east-1", "msk_access_key_id": "ak"}`,
+			secrets:     `{}`,
+			wantErrSub:  "must be provided together",
+			wantInvalid: true,
+		},
+		{
+			name:    "oauthbearer msk_iam explicit credentials ok",
+			config:  `{` + baseBootstrap + `, "security_protocol": "SASL_SSL", "sasl_mechanism": "OAUTHBEARER", "msk_region": "us-east-1", "msk_access_key_id": "ak"}`,
+			secrets: `{"msk_secret_access_key": "sk"}`,
+		},
+		{
+			name:        "oauthbearer static_token without token",
+			config:      `{` + baseBootstrap + `, "security_protocol": "SASL_SSL", "sasl_mechanism": "OAUTHBEARER", "oauth_token_source": "static_token"}`,
+			secrets:     `{}`,
+			wantErrSub:  "oauthStaticToken is required",
+			wantInvalid: true,
+		},
+		{
+			name:    "oauthbearer static_token with token ok",
+			config:  `{` + baseBootstrap + `, "security_protocol": "SASL_SSL", "sasl_mechanism": "OAUTHBEARER", "oauth_token_source": "static_token"}`,
+			secrets: `{"oauth_static_token": "tok"}`,
+		},
 	}
 	for _, tc := range cases {
 		service := NewService()

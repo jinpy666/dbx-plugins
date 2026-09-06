@@ -69,8 +69,18 @@ func TestBuildSASLOptMatrix(t *testing.T) {
 	if _, err := buildSASLOpt(profile, secrets); err == nil || !strings.Contains(err.Error(), "principal") {
 		t.Errorf("buildSASLOpt(GSSAPI without principal) error = %v, want principal error", err)
 	}
+	// OAUTHBEARER（Phase 3 已接入）：构造期不触网，msk_iam（缺 region →
+	// provider 层拒绝）与 static_token（缺 token → 拒绝）见 oauth_test.go；
+	// 此处验证合法 msk_iam 参数可构建机制。
+	profile.SASLMechanism = SASLMechanismOAUTHBEARER
+	profile.OauthTokenSource = OauthTokenSourceMSKIAM
+	profile.MSKRegion = "us-east-1"
+	oauthOpt, err := buildSASLOpt(profile, connSecrets{})
+	if err != nil || oauthOpt == nil {
+		t.Errorf("buildSASLOpt(OAUTHBEARER msk_iam) = %v, %v", oauthOpt, err)
+	}
 	// 未知机制 → 拒绝。
-	profile.SASLMechanism = "OAUTHBEARER"
+	profile.SASLMechanism = "OAUTHBEARER-BOGUS"
 	if _, err := buildSASLOpt(profile, secrets); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Errorf("buildSASLOpt(unknown mechanism) error = %v, want unsupported", err)
 	}

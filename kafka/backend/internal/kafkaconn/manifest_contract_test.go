@@ -12,10 +12,10 @@ import (
 )
 
 type manifestField struct {
-	Key      string `json:"key"`
-	Label    string `json:"label"`
-	Binding  string `json:"binding"`
-	Required bool   `json:"required"`
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Binding     string `json:"binding"`
+	Required    bool   `json:"required"`
 	VisibleWhen *struct {
 		Field string   `json:"field"`
 		OneOf []string `json:"one_of"`
@@ -137,6 +137,8 @@ func TestManifestBackendFieldContract(t *testing.T) {
 		"kerberos_keytab_path", "kerberos_krb5_conf_path",
 		"sr_url", "sr_username",
 		"glue_region", "glue_registry_name", "glue_auth_mode", "glue_access_key_id",
+		// Phase 3（OAUTHBEARER，§12.2.3）：token 来源/MSK region/显式 AK。
+		"oauth_token_source", "msk_region", "msk_access_key_id",
 	}
 	for _, key := range wantConfig {
 		field, ok := fields[key]
@@ -152,9 +154,11 @@ func TestManifestBackendFieldContract(t *testing.T) {
 	}
 
 	// 凭据红线：sasl_password / tls_client_key / sr_password /
-	// glue_secret_access_key / glue_session_token 必须 secret binding。
+	// glue_secret_access_key / glue_session_token / msk_secret_access_key /
+	// msk_session_token / oauth_static_token 必须 secret binding。
 	for _, key := range []string{"sasl_password", "tls_client_key", "sr_password",
-		"glue_secret_access_key", "glue_session_token"} {
+		"glue_secret_access_key", "glue_session_token",
+		"msk_secret_access_key", "msk_session_token", "oauth_static_token"} {
 		field, ok := fields[key]
 		if !ok {
 			t.Fatalf("manifest field %q missing", key)
@@ -184,7 +188,7 @@ func TestManifestBackendFieldContract(t *testing.T) {
 	for _, option := range fields["sasl_mechanism"].Options {
 		mechanismValues[option.Value] = true
 	}
-	for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "GSSAPI"} {
+	for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "GSSAPI", "OAUTHBEARER"} {
 		if !mechanismValues[want] {
 			t.Errorf("sasl_mechanism options missing %q", want)
 		}
@@ -274,6 +278,50 @@ func TestManifestBackendFieldContract(t *testing.T) {
 	}
 	if fields["glue_session_token"].RequiredWhen != nil {
 		t.Errorf("glue_session_token required_when = %+v, want nil (可选)", fields["glue_session_token"].RequiredWhen)
+	}
+	// Phase 3（OAUTHBEARER，§12.2.3）：联动链 sasl_mechanism ∈ [OAUTHBEARER]
+	// → oauth_token_source → msk_* 组（msk_iam）/ oauth_static_token
+	//（static_token）。
+	oauthSource := fields["oauth_token_source"]
+	if oauthSource.VisibleWhen == nil || oauthSource.VisibleWhen.Field != "sasl_mechanism" ||
+		len(oauthSource.VisibleWhen.OneOf) != 1 || oauthSource.VisibleWhen.OneOf[0] != "OAUTHBEARER" {
+		t.Errorf("oauth_token_source visible_when = %+v, want sasl_mechanism one_of [OAUTHBEARER]", oauthSource.VisibleWhen)
+	}
+	if oauthSource.RequiredWhen != nil {
+		t.Errorf("oauth_token_source required_when = %+v, want nil", oauthSource.RequiredWhen)
+	}
+	tokenSourceValues := map[string]bool{}
+	for _, option := range fields["oauth_token_source"].Options {
+		tokenSourceValues[option.Value] = true
+	}
+	for _, want := range []string{"msk_iam", "static_token"} {
+		if !tokenSourceValues[want] {
+			t.Errorf("oauth_token_source options missing %q", want)
+		}
+	}
+	for _, key := range []string{"msk_region", "msk_access_key_id", "msk_secret_access_key", "msk_session_token"} {
+		cond := fields[key].VisibleWhen
+		if cond == nil || cond.Field != "oauth_token_source" || len(cond.OneOf) != 1 || cond.OneOf[0] != "msk_iam" {
+			t.Errorf("%s visible_when = %+v, want oauth_token_source one_of [msk_iam]", key, cond)
+		}
+	}
+	if rw := fields["msk_region"].RequiredWhen; rw == nil || rw.Field != "oauth_token_source" ||
+		len(rw.OneOf) != 1 || rw.OneOf[0] != "msk_iam" {
+		t.Errorf("msk_region required_when = %+v, want oauth_token_source one_of [msk_iam]", fields["msk_region"].RequiredWhen)
+	}
+	for _, key := range []string{"msk_access_key_id", "msk_secret_access_key", "msk_session_token"} {
+		if fields[key].RequiredWhen != nil {
+			t.Errorf("%s required_when = %+v, want nil (可选)", key, fields[key].RequiredWhen)
+		}
+	}
+	staticToken := fields["oauth_static_token"]
+	if staticToken.VisibleWhen == nil || staticToken.VisibleWhen.Field != "oauth_token_source" ||
+		len(staticToken.VisibleWhen.OneOf) != 1 || staticToken.VisibleWhen.OneOf[0] != "static_token" {
+		t.Errorf("oauth_static_token visible_when = %+v, want oauth_token_source one_of [static_token]", staticToken.VisibleWhen)
+	}
+	if rw := staticToken.RequiredWhen; rw == nil || rw.Field != "oauth_token_source" ||
+		len(rw.OneOf) != 1 || rw.OneOf[0] != "static_token" {
+		t.Errorf("oauth_static_token required_when = %+v, want oauth_token_source one_of [static_token]", staticToken.RequiredWhen)
 	}
 	// zk_servers 挂在 connection_source ∈ [zookeeper]。
 	zk := fields["zk_servers"]
@@ -378,7 +426,7 @@ func TestManifestSevenLanguages(t *testing.T) {
 			}
 		}
 		mechanismLoc := connFields["sasl_mechanism"]
-		for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "GSSAPI"} {
+		for _, want := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "GSSAPI", "OAUTHBEARER"} {
 			if mechanismLoc.Options[want] == "" {
 				t.Fatalf("localization %s sasl_mechanism option %q label missing", lang, want)
 			}
@@ -390,16 +438,25 @@ func TestManifestSevenLanguages(t *testing.T) {
 			}
 		}
 		// Phase 2/3 新字段逐字段七语 label/description（schema_registry 开关
-		// 同样七语；agent I 条件显隐改造）。
+		// 同样七语；agent I 条件显隐改造；Phase 3 OAUTHBEARER 六字段）。
 		for _, key := range []string{"connection_source", "zk_servers", "schema_registry",
 			"kerberos_service_name", "kerberos_realm", "kerberos_principal",
 			"kerberos_keytab_path", "kerberos_krb5_conf_path",
 			"sr_url", "sr_username", "sr_password",
 			"glue_region", "glue_registry_name", "glue_auth_mode",
-			"glue_access_key_id", "glue_secret_access_key", "glue_session_token"} {
+			"glue_access_key_id", "glue_secret_access_key", "glue_session_token",
+			"oauth_token_source", "msk_region", "msk_access_key_id",
+			"msk_secret_access_key", "msk_session_token", "oauth_static_token"} {
 			entry, ok := connFields[key]
 			if !ok || entry.Label == "" || entry.Description == "" {
 				t.Fatalf("localization %s/%s label/description missing", lang, key)
+			}
+		}
+		// oauth_token_source 选项七语。
+		tokenSourceLoc := connFields["oauth_token_source"]
+		for _, want := range []string{"msk_iam", "static_token"} {
+			if tokenSourceLoc.Options[want] == "" {
+				t.Fatalf("localization %s oauth_token_source option %q label missing", lang, want)
 			}
 		}
 		// glue_auth_mode 选项七语。

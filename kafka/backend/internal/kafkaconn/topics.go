@@ -220,6 +220,112 @@ func (s *Service) DeleteTopics(ctx context.Context, req TopicsDeleteRequest) ([]
 	return results, nil
 }
 
+// ClearTopicRecords 实现 kafka/topics/records/clear（Phase 3 §12.2.1，
+// critical：read_only/allow_delete 与门 + confirmTopic 与 topics/delete 同级）。
+// 实现：ListEndOffsets 取各分区 high watermark → DeleteRecords(offset=hw)
+// （KIP-107；broker <0.11 不支持时分区行内业务错透传，最低 broker 版本见
+// 协议文档）。deleted = 删除前 hw − 删除后 lowWatermark（任一段取不到 →
+// 行内 null，不影响其他分区）。
+func (s *Service) ClearTopicRecords(ctx context.Context, req TopicRecordsClearRequest) (*TopicRecordsClearResult, error) {
+	topic := trimSpace(req.Topic)
+	if err := ensureDeleteAllowed(s.profileOf(req.ConnectionID), "topics/records/clear"); err != nil {
+		s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "blocked", err.Error())
+		return nil, err
+	}
+	if topic == "" {
+		return nil, errf("topic is required")
+	}
+	if err := ensureTopicDeleteConfirm(TopicsDeleteRequest{Topics: []string{topic}, ConfirmTopic: req.ConfirmTopic}); err != nil {
+		// §12.2.1 冻结契约：confirmTopic 不匹配 → -32602 参数错。
+		s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "blocked", err.Error())
+		return nil, &InvalidParamsError{Msg: err.Error()}
+	}
+
+	var result TopicRecordsClearResult
+	err := s.withAdmin(req.ConnectionID, func(client *kgo.Client) error {
+		admin := kadm.NewClient(client)
+		cctx, cancel := context.WithTimeout(ctx, adminTimeout)
+		defer cancel()
+
+		// 1) 删除前：各分区 high watermark（要清空的右开边界）。
+		highs, err := admin.ListEndOffsets(cctx, topic)
+		if err != nil {
+			return err
+		}
+		deleteOffsets := kadm.Offsets{}
+		before := map[int32]int64{}
+		beforeErr := map[int32]error{}
+		for _, item := range highs[topic] {
+			if item.Err != nil {
+				beforeErr[item.Partition] = item.Err
+				continue
+			}
+			at := item.Offset
+			if at < 0 {
+				at = 0
+			}
+			before[item.Partition] = at
+			deleteOffsets.Add(kadm.Offset{Topic: topic, Partition: item.Partition, At: at})
+		}
+		// 2) 删除：offset=hw（清空全部已可见记录；不删除未来写入）。
+		deleted, err := admin.DeleteRecords(cctx, deleteOffsets)
+		if err != nil {
+			return err
+		}
+		// 3) 行合并（纯函数，rows 形状/long|null 单测覆盖）。
+		result.Rows = clearRecordsRows(topic, before, beforeErr, deleted)
+		return nil
+	})
+	if err != nil {
+		s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "error", err.Error())
+		return nil, err
+	}
+	s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "success", sprintf("partitions=%d", len(result.Rows)))
+	return &result, nil
+}
+
+// clearRecordsRows 合并删除前 hw 快照与 DeleteRecords 响应为响应行
+// （纯函数；分区升序；任一段 offset 取不到 → Deleted/LowWatermark=null，
+// 行内 error 不影响其他分区）。
+func clearRecordsRows(topic string, before map[int32]int64, beforeErr map[int32]error, deleted kadm.DeleteRecordsResponses) []TopicRecordsClearRow {
+	partitions := make([]int32, 0, len(before)+len(beforeErr))
+	for p := range before {
+		partitions = append(partitions, p)
+	}
+	for p := range beforeErr {
+		partitions = append(partitions, p)
+	}
+	sort.Slice(partitions, func(i, j int) bool { return partitions[i] < partitions[j] })
+
+	rows := make([]TopicRecordsClearRow, 0, len(partitions))
+	for _, p := range partitions {
+		row := TopicRecordsClearRow{Partition: p}
+		if err := beforeErr[p]; err != nil {
+			row.Error = err.Error()
+			rows = append(rows, row)
+			continue
+		}
+		resp, ok := deleted.Lookup(topic, p)
+		if !ok {
+			row.Error = "no DeleteRecords response for partition"
+			rows = append(rows, row)
+			continue
+		}
+		if resp.Err != nil {
+			row.Error = resp.Err.Error()
+			rows = append(rows, row)
+			continue
+		}
+		low := resp.LowWatermark
+		deletedCount := before[p] - low
+		row.LowWatermark = &low
+		row.Deleted = &deletedCount
+		row.OK = true
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 // UpdatePartitions 实现 kafka/topics/partitions/update（只增）。
 func (s *Service) UpdatePartitions(ctx context.Context, req PartitionsUpdateRequest) ([]MutationResult, error) {
 	if err := ensureWriteAllowed(s.profileOf(req.ConnectionID), "topics/partitions/update"); err != nil {
@@ -377,12 +483,22 @@ func topicInfos(details kadm.TopicDetails) []TopicInfo {
 	topics := details.Sorted()
 	result := make([]TopicInfo, 0, len(topics))
 	for _, topic := range topics {
+		// 健康聚合（§12.2.4）：分区元数据已在 ListTopics 加载，零额外请求；
+		// 判定规则复用 partitionInfos 同款（partitionIsHealthy）。
+		unhealthy := 0
+		for _, partition := range topic.Partitions {
+			if !partitionIsHealthy(partition.Leader, partition.ISR, partition.Replicas, partition.OfflineReplicas, partition.Err) {
+				unhealthy++
+			}
+		}
 		item := TopicInfo{
-			TopicID:           topic.ID.String(),
-			Name:              topic.Topic,
-			IsInternal:        topic.IsInternal,
-			PartitionCount:    len(topic.Partitions),
-			ReplicationFactor: topic.Partitions.NumReplicas(),
+			TopicID:             topic.ID.String(),
+			Name:                topic.Topic,
+			IsInternal:          topic.IsInternal,
+			PartitionCount:      len(topic.Partitions),
+			ReplicationFactor:   topic.Partitions.NumReplicas(),
+			IsHealthy:           topic.Err == nil && unhealthy == 0,
+			UnhealthyPartitions: unhealthy,
 		}
 		if topic.Err != nil {
 			item.Error = topic.Err.Error()
@@ -390,6 +506,15 @@ func topicInfos(details kadm.TopicDetails) []TopicInfo {
 		result = append(result, item)
 	}
 	return result
+}
+
+// partitionIsHealthy 单分区健康判定：leader 有效 + ISR 覆盖全部 replicas +
+// 无 offline 副本（partitionInfos 与 topicInfos 健康聚合共用）。
+func partitionIsHealthy(leader int32, isr, replicas, offline []int32, err error) bool {
+	return err == nil &&
+		leader >= 0 &&
+		len(offline) == 0 &&
+		len(isr) == len(replicas)
 }
 
 func partitionInfos(detail kadm.TopicDetail) []PartitionInfo {
@@ -407,10 +532,7 @@ func partitionInfos(detail kadm.TopicDetail) []PartitionInfo {
 			item.Error = partition.Err.Error()
 		}
 		// 健康判定：leader 有效 + ISR 覆盖全部 replicas + 无 offline 副本。
-		item.IsHealthy = partition.Err == nil &&
-			partition.Leader >= 0 &&
-			len(partition.OfflineReplicas) == 0 &&
-			len(partition.ISR) == len(partition.Replicas)
+		item.IsHealthy = partitionIsHealthy(partition.Leader, partition.ISR, partition.Replicas, partition.OfflineReplicas, partition.Err)
 		partitions = append(partitions, item)
 	}
 	return partitions

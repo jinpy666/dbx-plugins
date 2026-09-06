@@ -4,9 +4,11 @@ package kafkaconn
 //   - read_only=true：produce/create/alter/reset/ACL 写一律拒绝
 //     （错误码语义 blocked，经 main 层 bizError 统一映射 -32000，与 ldap
 //     policy 一致）。
-//   - allow_delete=false：topics/delete、groups/delete、acls/delete 额外拒绝；
-//     read_only 下 allow_delete 无效（两者与门）。
-//   - topics/delete 要求 confirmTopic 与待删 topic 同名（防误删）。
+//   - allow_delete=false：topics/delete、topics/records/clear（Phase 3）、
+//     groups/delete、acls/delete 额外拒绝；read_only 下 allow_delete 无效
+//     （两者与门）。
+//   - topics/delete 要求 confirmTopic 与待删 topic 同名（防误删）；
+//     topics/records/clear 复用同一单 topic 确认语义（防误清空）。
 //   - 凭据（sasl_password、tls_client_key）不落日志、不进审计、不回显。
 
 import (

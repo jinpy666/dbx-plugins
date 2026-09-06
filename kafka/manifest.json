@@ -106,6 +106,10 @@
             {
               "label": "GSSAPI (Kerberos)",
               "value": "GSSAPI"
+            },
+            {
+              "label": "OAUTHBEARER (MSK IAM / static token)",
+              "value": "OAUTHBEARER"
             }
           ],
           "default": "PLAIN",
@@ -161,6 +165,108 @@
               "PLAIN",
               "SCRAM-SHA-256",
               "SCRAM-SHA-512"
+            ]
+          }
+        },
+        {
+          "key": "oauth_token_source",
+          "label": "OAuth token source",
+          "description": "Where the OAUTHBEARER token comes from: AWS MSK IAM signed token (default) or a static token.",
+          "type": "select",
+          "options": [
+            {
+              "label": "AWS MSK IAM (signed token)",
+              "value": "msk_iam"
+            },
+            {
+              "label": "Static token",
+              "value": "static_token"
+            }
+          ],
+          "default": "msk_iam",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "OAUTHBEARER"
+            ]
+          }
+        },
+        {
+          "key": "msk_region",
+          "label": "MSK AWS region",
+          "description": "AWS region of the MSK cluster used to sign the IAM token (for example us-east-1); required when the OAuth token source is MSK IAM.",
+          "placeholder": "us-east-1",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "oauth_token_source",
+            "one_of": [
+              "msk_iam"
+            ]
+          },
+          "required_when": {
+            "field": "oauth_token_source",
+            "one_of": [
+              "msk_iam"
+            ]
+          }
+        },
+        {
+          "key": "msk_access_key_id",
+          "label": "AWS access key ID",
+          "description": "Access key ID used to sign the MSK IAM token; leave empty to use the default AWS credential chain.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "oauth_token_source",
+            "one_of": [
+              "msk_iam"
+            ]
+          }
+        },
+        {
+          "key": "msk_secret_access_key",
+          "label": "AWS secret access key",
+          "description": "Secret access key used to sign the MSK IAM token (provided together with the access key ID); stored via host secret binding, never persisted by the plugin.",
+          "type": "password",
+          "binding": "secret",
+          "visible_when": {
+            "field": "oauth_token_source",
+            "one_of": [
+              "msk_iam"
+            ]
+          }
+        },
+        {
+          "key": "msk_session_token",
+          "label": "AWS session token",
+          "description": "Optional temporary session token (STS) for the MSK IAM credentials; leave empty for long-lived keys.",
+          "type": "password",
+          "binding": "secret",
+          "visible_when": {
+            "field": "oauth_token_source",
+            "one_of": [
+              "msk_iam"
+            ]
+          }
+        },
+        {
+          "key": "oauth_static_token",
+          "label": "OAuth static token",
+          "description": "Static OAUTHBEARER bearer token sent as-is during SASL authentication; required when the OAuth token source is static token; stored via host secret binding, never persisted by the plugin.",
+          "type": "password",
+          "binding": "secret",
+          "visible_when": {
+            "field": "oauth_token_source",
+            "one_of": [
+              "static_token"
+            ]
+          },
+          "required_when": {
+            "field": "oauth_token_source",
+            "one_of": [
+              "static_token"
             ]
           }
         },
@@ -584,7 +690,8 @@
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
                 "SCRAM-SHA-512": "SCRAM-SHA-512",
-                "GSSAPI": "GSSAPI（Kerberos）"
+                "GSSAPI": "GSSAPI（Kerberos）",
+                "OAUTHBEARER": "OAUTHBEARER（MSK IAM / 静态 token）"
               }
             },
             "sasl_username": {
@@ -594,6 +701,34 @@
             "sasl_password": {
               "label": "SASL 密码",
               "description": "SASL 认证使用的密码；PLAIN/SCRAM 机制必填（GSSAPI 不需要）；经宿主 secret binding 存储，插件不持久化。"
+            },
+            "oauth_token_source": {
+              "label": "OAuth token 来源",
+              "description": "OAUTHBEARER token 的来源：AWS MSK IAM 签名 token（默认）或静态 token。",
+              "options": {
+                "msk_iam": "AWS MSK IAM（签名 token）",
+                "static_token": "静态 token"
+              }
+            },
+            "msk_region": {
+              "label": "MSK AWS 区域",
+              "description": "MSK 集群所在的 AWS 区域（如 us-east-1），用于签名 IAM token；OAuth token 来源选 MSK IAM 时必填。"
+            },
+            "msk_access_key_id": {
+              "label": "AWS Access Key ID",
+              "description": "签名 MSK IAM token 使用的 Access Key ID；留空使用 AWS 默认凭据链。"
+            },
+            "msk_secret_access_key": {
+              "label": "AWS Secret Access Key",
+              "description": "签名 MSK IAM token 使用的 Secret Access Key（与 Access Key ID 成对填写）；经宿主 secret binding 存储，插件不持久化。"
+            },
+            "msk_session_token": {
+              "label": "AWS Session Token",
+              "description": "MSK IAM 凭据的可选临时会话令牌（STS）；长期密钥请留空。"
+            },
+            "oauth_static_token": {
+              "label": "OAuth 静态 token",
+              "description": "SASL 认证原样携带的 OAUTHBEARER 静态 token；OAuth token 来源选静态 token 时必填；经宿主 secret binding 存储，插件不持久化。"
             },
             "tls_ca_cert": {
               "label": "CA 证书（PEM）",
@@ -745,7 +880,8 @@
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
                 "SCRAM-SHA-512": "SCRAM-SHA-512",
-                "GSSAPI": "GSSAPI（Kerberos）"
+                "GSSAPI": "GSSAPI（Kerberos）",
+                "OAUTHBEARER": "OAUTHBEARER（MSK IAM / 靜態 token）"
               }
             },
             "sasl_username": {
@@ -755,6 +891,34 @@
             "sasl_password": {
               "label": "SASL 密碼",
               "description": "SASL 認證使用的密碼；PLAIN/SCRAM 機制必填（GSSAPI 不需要）；經宿主 secret binding 儲存，外掛不持久化。"
+            },
+            "oauth_token_source": {
+              "label": "OAuth token 來源",
+              "description": "OAUTHBEARER token 的來源：AWS MSK IAM 簽章 token（預設）或靜態 token。",
+              "options": {
+                "msk_iam": "AWS MSK IAM（簽章 token）",
+                "static_token": "靜態 token"
+              }
+            },
+            "msk_region": {
+              "label": "MSK AWS 區域",
+              "description": "MSK 叢集所在的 AWS 區域（如 us-east-1），用於簽署 IAM token；OAuth token 來源選 MSK IAM 時必填。"
+            },
+            "msk_access_key_id": {
+              "label": "AWS Access Key ID",
+              "description": "簽署 MSK IAM token 使用的 Access Key ID；留空使用 AWS 預設憑證鏈。"
+            },
+            "msk_secret_access_key": {
+              "label": "AWS Secret Access Key",
+              "description": "簽署 MSK IAM token 使用的 Secret Access Key（與 Access Key ID 成對填寫）；經宿主 secret binding 儲存，外掛不持久化。"
+            },
+            "msk_session_token": {
+              "label": "AWS Session Token",
+              "description": "MSK IAM 憑證的選用臨時工作階段權杖（STS）；長期金鑰請留空。"
+            },
+            "oauth_static_token": {
+              "label": "OAuth 靜態 token",
+              "description": "SASL 認證原樣攜帶的 OAUTHBEARER 靜態 token；OAuth token 來源選靜態 token 時必填；經宿主 secret binding 儲存，外掛不持久化。"
             },
             "tls_ca_cert": {
               "label": "CA 憑證（PEM）",
@@ -906,7 +1070,8 @@
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
                 "SCRAM-SHA-512": "SCRAM-SHA-512",
-                "GSSAPI": "GSSAPI (Kerberos)"
+                "GSSAPI": "GSSAPI (Kerberos)",
+                "OAUTHBEARER": "OAUTHBEARER (MSK IAM / static token)"
               }
             },
             "sasl_username": {
@@ -916,6 +1081,34 @@
             "sasl_password": {
               "label": "SASL password",
               "description": "Password for the SASL mechanism; required for PLAIN and SCRAM mechanisms (not needed for GSSAPI); stored via host secret binding, never persisted by the plugin."
+            },
+            "oauth_token_source": {
+              "label": "OAuth token source",
+              "description": "Where the OAUTHBEARER token comes from: AWS MSK IAM signed token (default) or a static token.",
+              "options": {
+                "msk_iam": "AWS MSK IAM (signed token)",
+                "static_token": "Static token"
+              }
+            },
+            "msk_region": {
+              "label": "MSK AWS region",
+              "description": "AWS region of the MSK cluster used to sign the IAM token (for example us-east-1); required when the OAuth token source is MSK IAM."
+            },
+            "msk_access_key_id": {
+              "label": "AWS access key ID",
+              "description": "Access key ID used to sign the MSK IAM token; leave empty to use the default AWS credential chain."
+            },
+            "msk_secret_access_key": {
+              "label": "AWS secret access key",
+              "description": "Secret access key used to sign the MSK IAM token (provided together with the access key ID); stored via host secret binding, never persisted by the plugin."
+            },
+            "msk_session_token": {
+              "label": "AWS session token",
+              "description": "Optional temporary session token (STS) for the MSK IAM credentials; leave empty for long-lived keys."
+            },
+            "oauth_static_token": {
+              "label": "OAuth static token",
+              "description": "Static OAUTHBEARER bearer token sent as-is during SASL authentication; required when the OAuth token source is static token; stored via host secret binding, never persisted by the plugin."
             },
             "tls_ca_cert": {
               "label": "CA certificate (PEM)",
@@ -1067,7 +1260,8 @@
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
                 "SCRAM-SHA-512": "SCRAM-SHA-512",
-                "GSSAPI": "GSSAPI (Kerberos)"
+                "GSSAPI": "GSSAPI (Kerberos)",
+                "OAUTHBEARER": "OAUTHBEARER (MSK IAM / token estático)"
               }
             },
             "sasl_username": {
@@ -1077,6 +1271,34 @@
             "sasl_password": {
               "label": "Contraseña SASL",
               "description": "Contraseña para el mecanismo SASL; obligatoria para los mecanismos PLAIN y SCRAM (no se necesita para GSSAPI); se guarda mediante secret binding del host, el plugin nunca la persiste."
+            },
+            "oauth_token_source": {
+              "label": "Origen del token OAuth",
+              "description": "De dónde proviene el token OAUTHBEARER: token firmado de AWS MSK IAM (predeterminado) o token estático.",
+              "options": {
+                "msk_iam": "AWS MSK IAM (token firmado)",
+                "static_token": "Token estático"
+              }
+            },
+            "msk_region": {
+              "label": "Región de AWS de MSK",
+              "description": "Región de AWS del clúster de MSK usada para firmar el token de IAM (por ejemplo us-east-1); obligatoria cuando el origen del token OAuth es MSK IAM."
+            },
+            "msk_access_key_id": {
+              "label": "ID de clave de acceso de AWS",
+              "description": "ID de clave de acceso usado para firmar el token de IAM de MSK; déjelo vacío para usar la cadena de credenciales predeterminada de AWS."
+            },
+            "msk_secret_access_key": {
+              "label": "Clave de acceso secreta de AWS",
+              "description": "Clave de acceso secreta usada para firmar el token de IAM de MSK (se proporciona junto con el ID de clave de acceso); se guarda mediante secret binding del host, el complemento nunca la persiste."
+            },
+            "msk_session_token": {
+              "label": "Token de sesión de AWS",
+              "description": "Token de sesión temporal opcional (STS) para las credenciales de MSK IAM; déjelo vacío para claves de larga duración."
+            },
+            "oauth_static_token": {
+              "label": "Token estático de OAuth",
+              "description": "Token estático de OAUTHBEARER enviado tal cual durante la autenticación SASL; obligatorio cuando el origen del token OAuth es token estático; se guarda mediante secret binding del host, el complemento nunca lo persiste."
             },
             "tls_ca_cert": {
               "label": "Certificado CA (PEM)",
@@ -1228,7 +1450,8 @@
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
                 "SCRAM-SHA-512": "SCRAM-SHA-512",
-                "GSSAPI": "GSSAPI (Kerberos)"
+                "GSSAPI": "GSSAPI (Kerberos)",
+                "OAUTHBEARER": "OAUTHBEARER (MSK IAM / token statico)"
               }
             },
             "sasl_username": {
@@ -1238,6 +1461,34 @@
             "sasl_password": {
               "label": "Password SASL",
               "description": "Password per il meccanismo SASL; obbligatoria per i meccanismi PLAIN e SCRAM (non necessaria per GSSAPI); salvata tramite secret binding dell'host, mai persistita dal plugin."
+            },
+            "oauth_token_source": {
+              "label": "Origine del token OAuth",
+              "description": "Da dove proviene il token OAUTHBEARER: token firmato AWS MSK IAM (predefinito) o token statico.",
+              "options": {
+                "msk_iam": "AWS MSK IAM (token firmato)",
+                "static_token": "Token statico"
+              }
+            },
+            "msk_region": {
+              "label": "Regione AWS di MSK",
+              "description": "Regione AWS del cluster MSK usata per firmare il token IAM (ad esempio us-east-1); obbligatoria quando l'origine del token OAuth è MSK IAM."
+            },
+            "msk_access_key_id": {
+              "label": "ID chiave di accesso AWS",
+              "description": "ID della chiave di accesso usato per firmare il token IAM di MSK; lascia vuoto per usare la catena di credenziali predefinita AWS."
+            },
+            "msk_secret_access_key": {
+              "label": "Chiave di accesso segreta AWS",
+              "description": "Chiave di accesso segreta usata per firmare il token IAM di MSK (fornita insieme all'ID chiave di accesso); salvata tramite secret binding dell'host, il plugin non la persiste."
+            },
+            "msk_session_token": {
+              "label": "Token di sessione AWS",
+              "description": "Token di sessione temporaneo facoltativo (STS) per le credenziali MSK IAM; lascia vuoto per chiavi di lunga durata."
+            },
+            "oauth_static_token": {
+              "label": "Token statico OAuth",
+              "description": "Token statico OAUTHBEARER inviato così com'è durante l'autenticazione SASL; obbligatorio quando l'origine del token OAuth è token statico; salvato tramite secret binding dell'host, il plugin non lo persiste."
             },
             "tls_ca_cert": {
               "label": "Certificato CA (PEM)",
@@ -1389,7 +1640,8 @@
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
                 "SCRAM-SHA-512": "SCRAM-SHA-512",
-                "GSSAPI": "GSSAPI (Kerberos)"
+                "GSSAPI": "GSSAPI (Kerberos)",
+                "OAUTHBEARER": "OAUTHBEARER（MSK IAM / 静的トークン）"
               }
             },
             "sasl_username": {
@@ -1399,6 +1651,34 @@
             "sasl_password": {
               "label": "SASL パスワード",
               "description": "SASL 認証に使用するパスワード。PLAIN/SCRAM メカニズムでは必須（GSSAPI では不要）。ホストの secret binding で保存され、プラグインは永続化しません。"
+            },
+            "oauth_token_source": {
+              "label": "OAuth トークンソース",
+              "description": "OAUTHBEARER トークンの取得元: AWS MSK IAM 署名トークン（既定）または静的トークン。",
+              "options": {
+                "msk_iam": "AWS MSK IAM（署名トークン）",
+                "static_token": "静的トークン"
+              }
+            },
+            "msk_region": {
+              "label": "MSK AWS リージョン",
+              "description": "MSK クラスターの AWS リージョン（例: us-east-1）。IAM トークンの署名に使用します。OAuth トークンソースが MSK IAM の場合は必須。"
+            },
+            "msk_access_key_id": {
+              "label": "AWS アクセスキー ID",
+              "description": "MSK IAM トークンの署名に使うアクセスキー ID。空にすると AWS デフォルト認証情報チェーンを使用します。"
+            },
+            "msk_secret_access_key": {
+              "label": "AWS シークレットアクセスキー",
+              "description": "MSK IAM トークンの署名に使うシークレットアクセスキー（アクセスキー ID とセットで提供）。ホストの secret binding で保存され、プラグインは永続化しません。"
+            },
+            "msk_session_token": {
+              "label": "AWS セッショントークン",
+              "description": "MSK IAM 認証情報用の任意の一時セッショントークン（STS）。長期キーの場合は空にします。"
+            },
+            "oauth_static_token": {
+              "label": "OAuth 静的トークン",
+              "description": "SASL 認証でそのまま送信する OAUTHBEARER 静的トークン。OAuth トークンソースが静的トークンの場合は必須。ホストの secret binding で保存され、プラグインは永続化しません。"
             },
             "tls_ca_cert": {
               "label": "CA 証明書（PEM）",
@@ -1550,7 +1830,8 @@
                 "PLAIN": "PLAIN",
                 "SCRAM-SHA-256": "SCRAM-SHA-256",
                 "SCRAM-SHA-512": "SCRAM-SHA-512",
-                "GSSAPI": "GSSAPI (Kerberos)"
+                "GSSAPI": "GSSAPI (Kerberos)",
+                "OAUTHBEARER": "OAUTHBEARER (MSK IAM / token estático)"
               }
             },
             "sasl_username": {
@@ -1560,6 +1841,34 @@
             "sasl_password": {
               "label": "Senha SASL",
               "description": "Senha para o mecanismo SASL; obrigatória para os mecanismos PLAIN e SCRAM (não é necessária para GSSAPI); armazenada via secret binding do host, nunca persistida pelo plugin."
+            },
+            "oauth_token_source": {
+              "label": "Origem do token OAuth",
+              "description": "De onde vem o token OAUTHBEARER: token assinado da AWS MSK IAM (padrão) ou token estático.",
+              "options": {
+                "msk_iam": "AWS MSK IAM (token assinado)",
+                "static_token": "Token estático"
+              }
+            },
+            "msk_region": {
+              "label": "Região da AWS do MSK",
+              "description": "Região da AWS do cluster MSK usada para assinar o token do IAM (por exemplo us-east-1); obrigatória quando a origem do token OAuth for MSK IAM."
+            },
+            "msk_access_key_id": {
+              "label": "ID da chave de acesso da AWS",
+              "description": "ID da chave de acesso usado para assinar o token do IAM do MSK; deixe vazio para usar a cadeia de credenciais padrão da AWS."
+            },
+            "msk_secret_access_key": {
+              "label": "Chave de acesso secreta da AWS",
+              "description": "Chave de acesso secreta usada para assinar o token do IAM do MSK (fornecida junto com o ID da chave de acesso); armazenada via secret binding do host, o plugin nunca a persiste."
+            },
+            "msk_session_token": {
+              "label": "Token de sessão da AWS",
+              "description": "Token de sessão temporário opcional (STS) para as credenciais do MSK IAM; deixe vazio para chaves de longa duração."
+            },
+            "oauth_static_token": {
+              "label": "Token estático do OAuth",
+              "description": "Token estático OAUTHBEARER enviado como está durante a autenticação SASL; obrigatório quando a origem do token OAuth for token estático; armazenado via secret binding do host, o plugin nunca o persiste."
             },
             "tls_ca_cert": {
               "label": "Certificado CA (PEM)",

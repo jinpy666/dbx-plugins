@@ -1,0 +1,15 @@
+// orders.proto：PROTOBUF seed fixture 的手写参考（IMPL_PLAN §12.4）。
+//
+// 同目录 orders_fdset.b64 是其 FileDescriptorSet 的 base64（由
+// kafka/backend/cmd/gen-protobuf-fixture 程序化生成并提交入库，本机无
+// protoc；两文件必须逐字段一致）。seed / smoke / 单测运行时只消费 b64，
+// 不需要 protoc。
+syntax = "proto3";
+
+package com.dbx.test;
+
+message Order {
+  string id = 1;
+  int64 amount = 2;
+  string item = 3;
+}

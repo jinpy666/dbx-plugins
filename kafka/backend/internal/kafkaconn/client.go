@@ -10,8 +10,9 @@ package kafkaconn
 // runtime.host:port 兜底（单 seed）。
 //
 // TLS（CA/client cert/insecure skip verify）+ SASL（PLAIN/SCRAM-SHA-256/
-// SCRAM-SHA-512/GSSAPI）取值面与 tinyrdm kafkaSASLOpt / kafkaDialer 对齐
-// （GSSAPI/Kerberos 为 Phase 2 接入，见 kerberos.go）。
+// SCRAM-SHA-512/GSSAPI/OAUTHBEARER）取值面与 tinyrdm kafkaSASLOpt / kafkaDialer
+// 对齐（GSSAPI/Kerberos 为 Phase 2 接入，见 kerberos.go；OAUTHBEARER 为
+// Phase 3 接入，见 oauth.go）。
 
 import (
 	"crypto/sha256"
@@ -37,6 +38,10 @@ type connSecrets struct {
 	SRPassword          string
 	GlueSecretAccessKey string // AWS Glue static 凭据（Phase 3）
 	GlueSessionToken    string // AWS Glue 会话 token（可选）
+	// OAUTHBEARER（Phase 3 §12.2.3）：凭据走 secret binding，不进 Profile。
+	MSKSecretAccessKey string // msk_iam 显式覆盖默认链的 SK（可选，与 AK 成对）
+	MSKSessionToken    string // msk_iam 会话 token（可选，STS 临时凭据）
+	OauthStaticToken   string // static_token 来源的静态 bearer token
 }
 
 // connTarget 是一次拨号需要的运行时端点（bootstrap 空时兜底）。
@@ -91,6 +96,14 @@ func (e *connEntry) computeFingerprint() string {
 		e.profile.GlueRegistryName,
 		e.profile.GlueAuthMode,
 		e.profile.GlueAccessKeyID,
+		// Phase 3：OAUTHBEARER 参数（token 来源/region/显式 AK + secret）进
+		// 摘要（换凭据/换 token 源 → 失效重建；凭据只进摘要不落日志）。
+		e.profile.OauthTokenSource,
+		e.profile.MSKRegion,
+		e.profile.MSKAccessKeyID,
+		e.secrets.MSKSecretAccessKey,
+		e.secrets.MSKSessionToken,
+		e.secrets.OauthStaticToken,
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])
@@ -215,10 +228,14 @@ func buildSASLOpt(profile Profile, secrets connSecrets) (kgo.Opt, error) {
 			return nil, err
 		}
 		return kgo.SASL(auth.AsMechanismWithClose()), nil
+	case SASLMechanismOAUTHBEARER:
+		// OAUTHBEARER（Phase 3 §12.2.3）：token provider 按来源构造
+		// （msk_iam 签名在拨号时按会话调用，构造期不触网）。
+		return buildOauthSASLOpt(profile, secrets)
 	case "":
 		return nil, errf("saslMechanism is required for %s", profile.SecurityProtocol)
 	default:
-		return nil, errf("unsupported SASL mechanism %q (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI)", profile.SASLMechanism)
+		return nil, errf("unsupported SASL mechanism %q (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI, OAUTHBEARER)", profile.SASLMechanism)
 	}
 }
 
@@ -348,6 +365,10 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 		GlueRegistryName: params.ConfigString("glue_registry_name"),
 		GlueAuthMode:     params.ConfigString("glue_auth_mode"),
 		GlueAccessKeyID:  params.ConfigString("glue_access_key_id"),
+		// --- Phase 3（OAUTHBEARER，§12.2.3）：非凭据参数入 Profile ---
+		OauthTokenSource: params.ConfigString("oauth_token_source"),
+		MSKRegion:        params.ConfigString("msk_region"),
+		MSKAccessKeyID:   params.ConfigString("msk_access_key_id"),
 	}
 	profile.TLSInsecureSkipVerify = params.ConfigBool("tls_insecure_skip_verify")
 	// 只读门禁收敛：连接表单 read_only ∥ 宿主标准 read_only。
@@ -360,6 +381,10 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 		SRPassword:          params.SecretString("sr_password"),
 		GlueSecretAccessKey: params.SecretString("glue_secret_access_key"),
 		GlueSessionToken:    params.SecretString("glue_session_token"),
+		// OAUTHBEARER 凭据（secret binding，红线：不落日志/审计/回显）。
+		MSKSecretAccessKey: params.SecretString("msk_secret_access_key"),
+		MSKSessionToken:    params.SecretString("msk_session_token"),
+		OauthStaticToken:   params.SecretString("oauth_static_token"),
 	}
 	profile = NormalizeProfile(profile)
 	if err := profile.Validate(); err != nil {

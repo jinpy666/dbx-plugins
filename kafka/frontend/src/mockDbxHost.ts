@@ -67,7 +67,7 @@ const context: Record<string, unknown> = {
       glue_region: "us-east-1",
       glue_registry_name: "dbx-kafka-registry",
       glue_auth_mode: "access_key",
-      glue_access_key_id: "AKIAIOSFODNN7EXAMPLE",
+      glue_access_key_id: "mock-access-key-id",
       // Phase 3 F2 前端半件（?msk=1）：OAUTHBEARER/MSK 字段（snake_case，
       // 镜像 host 对 manifest 字段的 external_config 形状；camelCase 直挂
       // connection 的双源兼容由 ConnectionsPanel.pickConnectionField 覆盖）。
@@ -77,7 +77,7 @@ const context: Record<string, unknown> = {
             sasl_mechanism: "OAUTHBEARER",
             oauth_token_source: "msk_iam",
             msk_region: "us-east-1",
-            msk_access_key_id: "AKIAIOSFODNN7EXAMPLE",
+            msk_access_key_id: "mock-access-key-id",
           }
         : {}),
     },

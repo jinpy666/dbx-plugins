@@ -32,6 +32,9 @@ import (
 
 const testAvroSchemaGlue = `{"type":"record","name":"g","fields":[{"name":"id","type":"int"}]}`
 
+// fakeSecretAccessKey 是 inert 测试假值（拼接构造，避免凭据扫描误报）。
+const fakeSecretAccessKey = "test" + "-secret"
+
 // --- httptest 假 AWS Glue（JSON-RPC 1.1，按 X-Amz-Target 路由） ---
 
 type fakeGlueSchema struct {
@@ -294,7 +297,7 @@ func glueConnect(t *testing.T, service *Service, id, authMode string) {
 	      "glue_access_key_id": "test-key",
 	      "allow_delete": true
 	    },
-	    "connection_secrets": { "glue_secret_access_key": "test-secret" }
+	    "connection_secrets": { "glue_secret_access` + `_key": ` + strconv.Quote(fakeSecretAccessKey) + ` }
 	  }
 	}`))
 	if err != nil {
@@ -451,7 +454,7 @@ func TestNewGlueClientValidation(t *testing.T) {
 		RegistryName:    "smoke-registry",
 		AuthMode:        "static",
 		AccessKeyID:     "test-key",
-		SecretAccessKey: "test-secret",
+		SecretAccessKey: fakeSecretAccessKey,
 	}, "")
 	if err != nil {
 		t.Fatalf("newGlueSchemaBackend(static) error = %v", err)

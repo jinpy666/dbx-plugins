@@ -38,15 +38,17 @@ func ensureDeleteAllowed(profile Profile, action string) error {
 
 // ensureTopicDeleteConfirm 校验 topics/delete 的确认字段（§6：confirmTopic
 // 与待删 topic 同名防误删）。多 topic 用 confirmTopics 逐一对齐。
+// 失败路径返回 *InvalidParamsError（§3.2 冻结语义：confirm 不匹配是参数错
+// → -32602，与 Phase 3 topics/records/clear 对齐）。
 func ensureTopicDeleteConfirm(req TopicsDeleteRequest) error {
 	topics := normalizeTopicNames(req.Topics)
 	if len(topics) == 0 {
-		return fmt.Errorf("topics is required")
+		return &InvalidParamsError{Msg: "topics is required"}
 	}
 	confirm := req.ConfirmTopic
 	if len(topics) > 1 {
 		if len(req.ConfirmTopics) != len(topics) {
-			return fmt.Errorf("confirmTopics must list exactly the topics to delete (got %d, want %d)", len(req.ConfirmTopics), len(topics))
+			return &InvalidParamsError{Msg: fmt.Sprintf("confirmTopics must list exactly the topics to delete (got %d, want %d)", len(req.ConfirmTopics), len(topics))}
 		}
 		confirmed := map[string]struct{}{}
 		for _, name := range normalizeTopicNames(req.ConfirmTopics) {
@@ -54,16 +56,16 @@ func ensureTopicDeleteConfirm(req TopicsDeleteRequest) error {
 		}
 		for _, topic := range topics {
 			if _, ok := confirmed[topic]; !ok {
-				return fmt.Errorf("confirmTopics mismatch: topic %q not confirmed (confirmTopic guard)", topic)
+				return &InvalidParamsError{Msg: fmt.Sprintf("confirmTopics mismatch: topic %q not confirmed (confirmTopic guard)", topic)}
 			}
 		}
 		return nil
 	}
 	if strings.TrimSpace(confirm) == "" {
-		return fmt.Errorf("confirmTopic must match the topic name to delete (confirmTopic guard)")
+		return &InvalidParamsError{Msg: "confirmTopic must match the topic name to delete (confirmTopic guard)"}
 	}
 	if strings.TrimSpace(confirm) != topics[0] {
-		return fmt.Errorf("confirmTopic %q does not match topic %q (confirmTopic guard)", strings.TrimSpace(confirm), topics[0])
+		return &InvalidParamsError{Msg: fmt.Sprintf("confirmTopic %q does not match topic %q (confirmTopic guard)", strings.TrimSpace(confirm), topics[0])}
 	}
 	return nil
 }

@@ -53,11 +53,13 @@ Usage:
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json as jsonlib
 import os
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -446,8 +448,10 @@ def run_s10(client: SidecarClient) -> None:
             lambda: domain(client, "kafka/topics/delete", {"topics": [topic]}),
             markers=("confirm", "topic"),
         )
-        if cause.code not in (None, -32000):
-            raise AssertionError(f"expected business error -32000, got {cause.code}: {cause}")
+        # §3.2 冻结语义：confirmTopic 不匹配是参数错（-32602），
+        # 与 topics/records/clear 的 S13 断言一致。
+        if cause.code != -32602:
+            raise AssertionError(f"expected param error -32602, got {cause.code}: {cause}")
         result = data_of(domain(client, "kafka/topics/delete",
                                 {"topics": [topic], "confirmTopic": topic}))
         results = result.get("results", [])
@@ -981,10 +985,41 @@ def kafka_reachable() -> tuple[bool, str]:
         return False, f"no Kafka broker at {BOOTSTRAP} ({cause})"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Disable redirect following: the harness must not chase off-host URLs."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _ensure_local_url(url: str) -> None:
+    """SSRF guard: only allow http(s) URLs resolving to loopback/private addresses."""
+    parsed = urllib.parse.urlparse(url)
+    default_port = 443 if parsed.scheme == "https" else 80
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise SystemExit(f"KAFKA_TEST_SR_URL must be an http(s) URL, got {url!r}")
+    try:
+        infos = socket.getaddrinfo(
+            parsed.hostname, parsed.port or default_port, proto=socket.IPPROTO_TCP
+        )
+    except socket.gaierror as exc:
+        raise SystemExit(f"cannot resolve SR host {parsed.hostname!r}: {exc}") from exc
+    for info in infos:
+        addr = ipaddress.ip_address(info[4][0])
+        if not (addr.is_loopback or addr.is_private):
+            raise SystemExit(
+                f"refusing SR requests to non-private address {addr} (from {url!r})"
+            )
+
+
 def sr_reachable() -> bool:
     """Phase 2: probe the redpanda Confluent-compatible Schema Registry."""
+    _ensure_local_url(SR_URL)
     try:
-        with urllib.request.urlopen(f"{SR_URL}/subjects", timeout=3.0):
+        with _OPENER.open(f"{SR_URL}/subjects", timeout=3.0):
             return True
     except (urllib.error.URLError, OSError):
         return False
@@ -997,12 +1032,13 @@ def sr_rest(method: str, path: str, payload: dict | None = None, timeout: float 
     /subjects/<s>/versions to register, matching schema.go); S14 needs the
     raw response/HTTPError body as PROTOBUF support evidence.
     """
+    _ensure_local_url(f"{SR_URL}{path}")
     data = jsonlib.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
         f"{SR_URL}{path}", data=data, method=method,
         headers={"Content-Type": "application/vnd.schemaregistry.v1+json"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with _OPENER.open(request, timeout=timeout) as response:
         return jsonlib.loads(response.read())
 
 

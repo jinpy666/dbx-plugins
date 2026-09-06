@@ -647,3 +647,27 @@ SKIP 语义三层）✓；对标/清单（本节 + PROGRESS-B §9 + PROGRESS-P �
 - H：StreamPanel 时区显示跟随缺省 local（未统一 tz toggle）；decimal
   逻辑类型 goavro 编码限制（已知）。
 - topics/delete confirmTopic 错误码对齐（-32000 vs -32602，契约外遗留）。
+  ✅ 已于 §12.9 收口。
+
+### 12.9 测试覆盖完善轮（2026-09-07，双路并发 + 主线收口）
+
+- **backend**：总覆盖率 55.1% → **73.0%**（kafkaconn 72.8% / lifecycle
+  86.8% / store 76.1%）；新增 7 个测试文件 + 2 处既有扩展共 49 个测试
+  函数，acls/groups/messages/stream/topics/client/service 的映射纯函数、
+  枚举矩阵与离线校验分支全补（明细见 PROGRESS-B §10）。仍 <50% 者均为
+  broker 依赖路径（admin 回调体 / PollRecords 主循环 / stream runLoop），
+  后续可用内存 broker 或 withAdmin client 接口抽象覆盖（登记不实施）。
+- **契约遗留收口**：topics/delete confirmTopic 不匹配从 -32000 对齐为
+  **-32602**（`InvalidParamsError`，PROTOCOL §3.2 冻结语义，与 clear
+  一致）；policy/topics Service 层测试锁定映射；smoke S10 断言同步并
+  PASS——§12.8 遗留第 4 条关闭。
+- **frontend**：接入 `@vitest/coverage-v8`（新增 `pnpm test:coverage`，
+  既有 `test` script 不动）；statements 65.98% → **72.82%**（branches
+  61.08% / funcs 63.31% / lines 75.39%）；补齐 6 个无 spec 面板
+  （Monitor/Stream/Acls/Brokers/AuditFeed/DbxAgGrid），+39 用例 →
+  23 文件 **219 用例**全绿；新增 `kafka/frontend/.gitignore` 忽略
+  coverage/ 产物。下一轮低覆盖目标：hostTheme/TopicsPanel/SchemasPanel/
+  App/TopicTree/MessagesPanel（清单见 PROGRESS-P §10）。
+- **验证**：`scripts/test.sh` 全绿（前端三件套 + go vet/test 3 包 +
+  package + smoke `total=15 PASS=11 FAIL=0 SKIP=4`，S10/S13 按 -32602
+  断言 PASS）。

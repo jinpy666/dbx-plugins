@@ -560,3 +560,43 @@ manifest：python 断言脚本「manifest conditional fields ok; fields total = 
 - **观察登记**：既有 topics/delete confirmTopic 不匹配 -32000 与
   PROTOCOL §3.2 -32602 的偏差（Phase 1 遗留）——维持现状，待对齐。
 - 真实 MSK 往返（S15）待真环境；无 IMDS 环境超时实测待做。
+
+## 10. 测试覆盖完善轮（2026-09-07，backend 覆盖 agent）
+
+### 10.1 交付
+
+- 总覆盖率 **55.1% → 73.0%**（kafkaconn 72.8% / lifecycle 86.8% / store
+  76.1%）；新增 7 测试文件 + helpers_test/lifecycle_test 扩展，共 49 个
+  测试函数：`acls_test.go`（builder/枚举矩阵/门禁与审计 9）、
+  `groups_test.go`（三表合并/lag/Option 语义/校验矩阵 8）、
+  `messages_more_test.go`（四通道 matcher/操作符全枚举/离线校验 12）、
+  `stream_more_test.go`（appendBatch/会话控制/节流 emit 5）、
+  `topics_more_test.go`（configEntries/listedOffsetRows/confirm 守卫 4）、
+  `client_more_test.go`（filter 数值/状态三态/离线构造/关闭幂等 6）、
+  `service_more_test.go`（Test 拨号路径/CloseAll/缓存矩阵/挂载门禁 5）、
+  helpers +5、lifecycle +3。
+
+### 10.2 契约修复
+
+- `ensureTopicDeleteConfirm` 全部失败路径 `fmt.Errorf` →
+  `*InvalidParamsError`（-32602，PROTOCOL §3.2 冻结语义，与
+  `topics/records/clear` 对齐）；policy_test 类型断言 +
+  `TestDeleteTopicsConfirmGateMapsInvalidParams` Service 层锁定；smoke
+  S10 断言同步（`!= -32602`）并 PASS；ClearTopicRecords 既有 errors.As
+  包装行为不变。§12.8 遗留第 4 条关闭。
+
+### 10.3 仍 <50% 清单（全部 broker/网络依赖，不强测）
+
+topics/groups/acls 的 withAdmin 回调体（List/Describe/Create/Delete/
+Reset 17%-48%）、Produce 的 ProduceSync 拨号后路径（37%）、
+consumeMessages 的 PollRecords 主循环（35%）、stream runLoop（0%）、zk
+discoverBrokersViaZK 读取体、buildClientOpts(WithSeeds) 44%/47%、
+closeLocked 40%、buildOauthSASLOpt authFn 闭包（36%）。方法头部离线
+校验/门禁分支均已覆盖。后续路线：内存 Kafka testcontainer 或 withAdmin
+client 接口抽象（超出本轮"不重构"约束，登记不实施）。
+
+### 10.4 验证
+
+`CGO_ENABLED=0 go vet ./...` 通过；`go test ./... -count=1` 3 包 ok
+（kafkaconn 169 用例全 PASS）；cover total 73.0%；smoke 全套
+`total=15 PASS=11 FAIL=0 SKIP=4`（S10/S13 -32602 断言 PASS）。

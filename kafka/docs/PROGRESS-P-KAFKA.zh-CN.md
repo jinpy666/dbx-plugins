@@ -829,3 +829,46 @@ P1 与明确回归项；状态回填见该文档 §6.7。
   需 `*big.Rat`——生成值大概率编码失败（已知差异，登记不动）。
 - 第 4 轮观察项「生产面板不显示分区数」「时间戳时区标注（Messages）」
   由本轮收口（F6-4/F6-3）；其余观察项维持。
+
+## 10. 测试覆盖完善轮（2026-09-07，frontend 覆盖 agent）
+
+### 10.1 覆盖率工具接入
+
+- devDependencies 新增 `@vitest/coverage-v8@^4.1.11`（与 vitest 4.1.11
+  同线）；scripts 新增 `test:coverage`；**既有 `test` script 未动**
+  （test.sh 依赖面不变）；新增 `kafka/frontend/.gitignore` 忽略
+  `coverage/`（工作区规则 4）。零 vitest config（v8 provider 默认约定）。
+
+### 10.2 覆盖率与新增 spec
+
+- 总覆盖 statements 65.98% → **72.82%**（branches 56.00 → 61.08 / funcs
+  55.81 → 63.31 / lines 68.33 → 75.39）；23 文件 **219 用例**全绿
+  （基线 17 文件 180，+6 文件 +39）。
+- 六个无 spec 面板补齐：`MonitorPanel.spec`（7：禁用态/lag 表/阈值告警
+  每轮上穿一次/方案存取删）、`StreamPanel.spec`（8：启停桥参数/暂停恢复
+  /session 过滤/error friendlyKafkaError 归一/quickFilter 防抖/Older-
+  Newer clamp/无 topic 禁用）、`AclsPanel.spec`（7：过宽拦截/渲染/创建
+  校验/删除确认/canWrite·canDelete/抽屉）、`BrokersPanel.spec`（4）、
+  `AuditFeedPanel.spec`（6：denied 自动展开/计数徽标/clear）、
+  `DbxAgGrid.spec`（7：vi.mock ag-grid 锁定 quickFilter 透传/分页持久化
+  /窄容器降级/rowClick/goToLatest）。
+- 文件级亮点：AuditFeedPanel 100%、MonitorPanel 88% lines、
+  BrokersPanel 93.47% lines；DbxAgGrid 0 → 80.55% lines。
+
+### 10.3 下一轮低覆盖目标（lines 升序）
+
+hostTheme 30 / TopicsPanel 44.55 / SchemasPanel 55.83 / App 57.14 /
+TopicTree 57.89 / MessagesPanel 61.75 / api 70.17 / ProducePanel 72.86。
+
+### 10.4 行为锁定（现行为认知点，非 bug）
+
+- StreamPanel 事件内嵌错误经 friendlyKafkaError 归一（设计行为）；
+- MonitorPanel `monitor.needGroup` 分支因按钮 disabled 在 UI 不可达
+  （防御性代码）；
+- AuditFeedPanel 清空后若从未展开则整个 section 消失、手动展开过则保留
+  空态摘要。
+
+### 10.5 验证
+
+`pnpm typecheck` 0 错；`pnpm test` 23 文件 219 用例全绿；`pnpm build`
+通过（chunk warning 为既有现象）；改动仅 `kafka/frontend/**`。

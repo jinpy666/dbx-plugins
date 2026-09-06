@@ -146,3 +146,62 @@ func TestParseEmptyAndInvalid(t *testing.T) {
 		t.Error("Parse(invalid) expected error, got nil")
 	}
 }
+
+func TestConfigBoolStringAndFallback(t *testing.T) {
+	// bool 的字符串形态（textarea 输入）与非法值兜底。
+	params := mustParse(t, `{"connection":{"external_config":{
+		"read_only": "true",
+		"allow_delete": " false ",
+		"bad_flag": "not-a-bool"
+	}}}`)
+	if !params.ConfigBool("read_only") {
+		t.Error(`ConfigBool("true") = false`)
+	}
+	if params.ConfigBool("allow_delete") {
+		t.Error(`ConfigBool(" false ") = true`)
+	}
+	if params.ConfigBool("bad_flag") || params.ConfigBool("missing") {
+		t.Error("invalid/missing bool should be false")
+	}
+}
+
+func TestConfigIntMatrix(t *testing.T) {
+	params := mustParse(t, `{"connection":{"external_config":{
+		"timeout_ms": 5000,
+		"retries_s": "30",
+		"bad_int": "abc"
+	}}}`)
+	if got := params.ConfigInt("timeout_ms"); got != 5000 {
+		t.Errorf("ConfigInt(number) = %d, want 5000", got)
+	}
+	if got := params.ConfigInt("retries_s"); got != 30 {
+		t.Errorf(`ConfigInt("30") = %d, want 30`, got)
+	}
+	if got := params.ConfigInt("bad_int"); got != 0 {
+		t.Errorf("ConfigInt(bad) = %d, want 0", got)
+	}
+	if got := params.ConfigInt("missing"); got != 0 {
+		t.Errorf("ConfigInt(missing) = %d, want 0", got)
+	}
+}
+
+func TestAnyToStringMatrix(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"nil", nil, ""},
+		{"string", "  v  ", "v"},
+		{"int float", float64(42), "42"},
+		{"frac float", float64(1.25), "1.25"},
+		{"bool true", true, "true"},
+		{"bool false", false, "false"},
+		{"unsupported", []int{1}, ""},
+	}
+	for _, tc := range cases {
+		if got := anyToString(tc.value); got != tc.want {
+			t.Errorf("%s: anyToString = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

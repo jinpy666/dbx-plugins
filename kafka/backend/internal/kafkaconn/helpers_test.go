@@ -4,6 +4,7 @@ package kafkaconn
 // reset 模式 / 常量契约）。
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kadm"
@@ -146,5 +147,141 @@ func TestContractConstants(t *testing.T) {
 	}
 	if maxExportRecords != 10000 {
 		t.Errorf("maxExportRecords = %d, want 10000", maxExportRecords)
+	}
+}
+
+func TestJoinHelpers(t *testing.T) {
+	if got := joinNames([]string{"a", "b", "c"}); got != "a,b,c" {
+		t.Errorf("joinNames = %q", got)
+	}
+	// map key 拼接顺序稳定（按字典序）。
+	if got := joinMapKeys(map[string]int32{"b": 2, "a": 1, "c": 3}); got != "a,b,c" {
+		t.Errorf("joinMapKeys = %q, want a,b,c", got)
+	}
+	if got := joinMapKeys(nil); got != "" {
+		t.Errorf("joinMapKeys(nil) = %q", got)
+	}
+}
+
+func TestMutationResultsMappers(t *testing.T) {
+	okErr := errors.New("topic exists")
+	topic := mutationResultsTopic(kadm.CreateTopicResponses{
+		"t-ok":  {Topic: "t-ok"},
+		"t-err": {Topic: "t-err", Err: okErr},
+	})
+	if len(topic) != 2 || topic[0].Topic != "t-err" || topic[0].OK || topic[0].Error != "topic exists" {
+		t.Errorf("topic = %+v (want sorted with error first)", topic)
+	}
+	if topic[1].Topic != "t-ok" || !topic[1].OK || topic[1].Error != "" {
+		t.Errorf("topic[1] = %+v, want ok", topic[1])
+	}
+
+	partitions := mutationResultsCreatePartitions(kadm.CreatePartitionsResponses{
+		"p-ok":  {Topic: "p-ok"},
+		"p-err": {Topic: "p-err", Err: okErr},
+	})
+	if len(partitions) != 2 || partitions[0].Topic != "p-err" || partitions[0].OK {
+		t.Errorf("partitions = %+v", partitions)
+	}
+
+	deletes := mutationResultsTopicDelete(kadm.DeleteTopicResponses{
+		"d-ok":  {Topic: "d-ok"},
+		"d-err": {Topic: "d-err", Err: okErr},
+	})
+	if len(deletes) != 2 || deletes[1].Topic != "d-ok" || !deletes[1].OK {
+		t.Errorf("deletes = %+v", deletes)
+	}
+
+	alters := alterConfigResults(kadm.AlterConfigsResponses{
+		{Name: "orders"},
+		{Name: "orders", Err: okErr},
+	}, "orders")
+	if len(alters) != 2 || alters[0].Topic != "orders" || !alters[0].OK {
+		t.Errorf("alters = %+v", alters)
+	}
+	if alters[1].OK || alters[1].Error != "topic exists" {
+		t.Errorf("alters[1] = %+v", alters[1])
+	}
+
+	// 空响应 → 空切片（非 nil）。
+	if got := mutationResultsTopic(kadm.CreateTopicResponses{}); got == nil || len(got) != 0 {
+		t.Errorf("empty = %#v", got)
+	}
+}
+
+func TestACLResourceTypeFullEnum(t *testing.T) {
+	cases := map[string]kmsg.ACLResourceType{
+		"any":              kmsg.ACLResourceTypeAny,
+		"ANY":              kmsg.ACLResourceTypeAny,
+		" topic ":          kmsg.ACLResourceTypeTopic,
+		"group":            kmsg.ACLResourceTypeGroup,
+		"cluster":          kmsg.ACLResourceTypeCluster,
+		"transactionalid":  kmsg.ACLResourceTypeTransactionalId,
+		"transactional_id": kmsg.ACLResourceTypeTransactionalId,
+		"delegationToken":  kmsg.ACLResourceTypeDelegationToken,
+		"delegation_token": kmsg.ACLResourceTypeDelegationToken,
+		"user":             kmsg.ACLResourceTypeUser,
+	}
+	for raw, want := range cases {
+		got, err := aclResourceType(raw)
+		if err != nil || got != want {
+			t.Errorf("aclResourceType(%q) = %v, %v (want %v)", raw, got, err, want)
+		}
+	}
+	if _, err := aclResourceType("queue"); err == nil {
+		t.Error("unknown resourceType expected error")
+	}
+}
+
+func TestACLOperationTypeFullEnum(t *testing.T) {
+	cases := map[string]kmsg.ACLOperation{
+		"":                 kmsg.ACLOperationAny,
+		"any":              kmsg.ACLOperationAny,
+		"all":              kmsg.ACLOperationAll,
+		"read":             kmsg.ACLOperationRead,
+		"WRITE":            kmsg.ACLOperationWrite,
+		"create":           kmsg.ACLOperationCreate,
+		"delete":           kmsg.ACLOperationDelete,
+		"alter":            kmsg.ACLOperationAlter,
+		"describe":         kmsg.ACLOperationDescribe,
+		"clusteraction":    kmsg.ACLOperationClusterAction,
+		"cluster_action":   kmsg.ACLOperationClusterAction,
+		"describeconfigs":  kmsg.ACLOperationDescribeConfigs,
+		"describe_configs": kmsg.ACLOperationDescribeConfigs,
+		"alterconfigs":     kmsg.ACLOperationAlterConfigs,
+		"alter_configs":    kmsg.ACLOperationAlterConfigs,
+		"idempotentwrite":  kmsg.ACLOperationIdempotentWrite,
+		"idempotent_write": kmsg.ACLOperationIdempotentWrite,
+		"createtokens":     kmsg.ACLOperationCreateTokens,
+		"create_tokens":    kmsg.ACLOperationCreateTokens,
+		"describetokens":   kmsg.ACLOperationDescribeTokens,
+		"describe_tokens":  kmsg.ACLOperationDescribeTokens,
+	}
+	for raw, want := range cases {
+		got, err := aclOperationType(raw)
+		if err != nil || got != want {
+			t.Errorf("aclOperationType(%q) = %v, %v (want %v)", raw, got, err, want)
+		}
+	}
+	if _, err := aclOperationType("bogus"); err == nil {
+		t.Error("unknown operation expected error")
+	}
+}
+
+func TestACLPermissionTypeFullEnum(t *testing.T) {
+	cases := map[string]kmsg.ACLPermissionType{
+		"any":   kmsg.ACLPermissionTypeAny,
+		"":      kmsg.ACLPermissionTypeAllow,
+		"allow": kmsg.ACLPermissionTypeAllow,
+		"deny":  kmsg.ACLPermissionTypeDeny,
+	}
+	for raw, want := range cases {
+		got, err := aclPermissionType(raw)
+		if err != nil || got != want {
+			t.Errorf("aclPermissionType(%q) = %v, %v (want %v)", raw, got, err, want)
+		}
+	}
+	if _, err := aclPermissionType("bogus"); err == nil {
+		t.Error("unknown permission expected error")
 	}
 }

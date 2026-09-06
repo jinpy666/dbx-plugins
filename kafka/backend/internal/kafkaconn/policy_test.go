@@ -3,6 +3,7 @@ package kafkaconn
 // policy_test.go：read_only × allow_delete 门禁矩阵与 confirmTopic 守卫（§6）。
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -78,6 +79,20 @@ func TestEnsureTopicDeleteConfirm(t *testing.T) {
 	// 空 topics 拒绝。
 	if err := ensureTopicDeleteConfirm(TopicsDeleteRequest{}); err == nil {
 		t.Error("empty topics expected error")
+	}
+
+	// §3.2 冻结语义：confirm 守卫失败一律 *InvalidParamsError（-32602）。
+	for name, req := range map[string]TopicsDeleteRequest{
+		"empty topics":     {},
+		"missing confirm":  {Topics: []string{"orders"}},
+		"mismatch confirm": {Topics: []string{"orders"}, ConfirmTopic: "other"},
+		"partial confirms": {Topics: []string{"a", "b"}, ConfirmTopics: []string{"a"}},
+	} {
+		err := ensureTopicDeleteConfirm(req)
+		var paramErr *InvalidParamsError
+		if !errors.As(err, &paramErr) {
+			t.Errorf("%s: error = %v, want *InvalidParamsError (-32602)", name, err)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import TopicTree from "./TopicTree.vue";
 import type { KafkaTopic } from "../lib/api";
+import { t } from "../lib/i18n";
 
 const topics: KafkaTopic[] = [
   { name: "_schemas", partitionCount: 1, replicationFactor: 1, isInternal: true },
@@ -49,6 +50,21 @@ describe("TopicTree", () => {
     const node = wrapper.find(".tree-error");
     expect(node.text()).toBe("boom");
     expect(node.attributes("title")).toBeFalsy();
+  });
+
+  // F6-5：isHealthy===false 红点 + title「N 个分区不健康」（无额外请求）；
+  // 健康行与旧 sidecar 缺省字段不出红点。
+  it("marks unhealthy topics with a count-titled red dot (F6-5)", () => {
+    const withUnhealthy: KafkaTopic[] = [
+      { name: "degraded-topic", partitionCount: 2, replicationFactor: 1, isHealthy: false, unhealthyPartitions: 1 },
+      { name: "order-events", partitionCount: 2, replicationFactor: 1, isHealthy: true },
+      { name: "legacy-topic", partitionCount: 1, replicationFactor: 1 },
+    ];
+    const wrapper = mount(TopicTree, { props: { topics: withUnhealthy, loading: false, error: "", selectedTopic: "" } });
+    const dots = wrapper.findAll(".tree-health-dot");
+    expect(dots).toHaveLength(1);
+    expect(dots[0].attributes("title")).toBe(t("tree.unhealthyTitle", { count: 1 }));
+    expect(dots[0].attributes("aria-label")).toBe(t("tree.unhealthyTitle", { count: 1 }));
   });
 
   it("filters by keyword and emits select with the topic name", async () => {

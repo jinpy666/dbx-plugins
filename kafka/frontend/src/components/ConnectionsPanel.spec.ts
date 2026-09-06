@@ -171,6 +171,55 @@ describe("ConnectionsPanel", () => {
     expect(items[1].text()).not.toContain("us-east-1");
   });
 
+  // Phase 3 F2 前端半件：OAUTHBEARER/MSK 摘要徽标（token source/region/key +
+  // secret 配置态；secret 只显「已配置」，值不出现在任何来源）。
+  it("shows the OAUTHBEARER/MSK summary with configured-state secrets (Phase 3 F2)", async () => {
+    installBridge(() => ({
+      statuses: [
+        { ...baseStatus, connectionId: "conn-test" },
+        { ...baseStatus, connectionId: "other-conn" },
+      ],
+    }));
+    const wrapper = mountPanel({
+      connection: {
+        external_config: {
+          oauth_token_source: "msk_iam",
+          msk_region: "eu-central-1",
+          msk_access_key_id: "AKIAMSK",
+        },
+        connection_secrets: ["msk_secret_access_key"],
+      },
+    });
+    await flushPromises();
+    const items = wrapper.findAll(".settings-list li");
+    expect(items[0].text()).toContain(t("connections.oauthBadge"));
+    expect(items[0].text()).toContain(t("connections.oauthSource", { source: "msk_iam" }));
+    expect(items[0].text()).toContain("eu-central-1");
+    expect(items[0].text()).toContain("AKIAMSK");
+    // secret 字段只显已配置态（值不在 connection 上，仅名单含名字）。
+    expect(items[0].text()).toContain(t("connections.mskSecretLabel"));
+    expect(items[0].text()).toContain(t("connections.glueConfigured"));
+    expect(items[0].text()).toContain(t("connections.glueNotConfigured"));
+    // 非当前连接不展示 OAUTH 摘要。
+    expect(items[1].text()).not.toContain(t("connections.oauthBadge"));
+  });
+
+  it("shows the static-token secret row for token_source=static_token", async () => {
+    installBridge(() => ({ statuses: [{ ...baseStatus, connectionId: "conn-test" }] }));
+    const wrapper = mountPanel({
+      connection: {
+        oauthTokenSource: "static_token",
+        connection_secrets: ["oauth_static_token"],
+      },
+    });
+    await flushPromises();
+    const item = wrapper.findAll(".settings-list li")[0];
+    expect(item.text()).toContain(t("connections.oauthStaticTokenLabel"));
+    expect(item.text()).toContain(t("connections.glueConfigured"));
+    // msk_* 组不展示。
+    expect(item.text()).not.toContain(t("connections.mskSecretLabel"));
+  });
+
   it("import assistant parses pasted properties into a masked mapping table", async () => {
     installBridge(() => ({ statuses: [] }));
     const wrapper = mountPanel();

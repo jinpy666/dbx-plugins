@@ -22,16 +22,21 @@ import {
   type MatchMode,
   type OffsetStrategy,
   type SchemaAttach,
+  type SchemaFormat,
   type SchemaSubject,
 } from "../lib/api";
 import {
   MINIMAL_MESSAGE_FIELDS,
   messageColumns,
+  toggleWorkbenchTimestampTz,
   toMessageRows,
+  workbenchTimestampTz,
   type MessageRow,
 } from "../lib/kafkaColumns";
 import {
   capRows,
+  copyTextToClipboard,
+  debounce,
   decideModalKeydown,
   fieldFilterIssue,
   focusableElements,
@@ -44,7 +49,9 @@ import {
   offsetTimeToUnixMs,
   parsePartitionList,
   parsePartitionOffsetsText,
+  serializeMessagesToJson,
   switchTimeInputMode,
+  timestampIso,
   truncatedValuePreview,
   validateConsumeForm,
   type DecodedValue,
@@ -243,7 +250,7 @@ const schemaEnabled = ref(false);
 const schemaSubjects = ref<SchemaSubject[]>([]);
 const schemaSubject = ref("");
 const schemaVersionText = ref("");
-const schemaFormat = ref<"avro" | "json">("avro");
+const schemaFormat = ref<SchemaFormat>("avro");
 // Phase P：Glue 仅管理面（消息编解码仅 Confluent wire format，后端 -32000 拒绝），
 // 前端同步禁用挂载区并提示（保留 discoverability，不隐藏）。
 const glueSchemaDisabled = computed(() => props.srProvider === "glue");
@@ -274,7 +281,7 @@ watch(schemaEnabled, (enabled) => {
 watch(schemaSubject, () => {
   schemaVersionText.value = "";
   const found = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
-  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as "avro" | "json") ?? "avro";
+  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as SchemaFormat) ?? "avro";
 });
 
 function buildSchemaAttach(): SchemaAttach | undefined {
@@ -299,22 +306,73 @@ const detail = shallowRef<KafkaMessage | null>(null);
 const messageRows = shallowRef<MessageRow[]>([]);
 const rowsTotal = ref(0);
 const rowsDropped = computed(() => Math.max(0, rowsTotal.value - messageRows.value.length));
-const messageCols = computed(() => messageColumns() as ColDef<MessageRow>[]);
+const messageCols = computed(() =>
+  messageColumns({ onCopyJson: (row) => void copyMessageJson(row) }) as ColDef<MessageRow>[],
+);
+
+// -- 即时搜索（F6-1）/时区切换（F6-3）/复制族（F6-2）---------------------------
+// quickFilter：输入防抖 150ms 后喂给 DbxAgGrid.quickFilterText（只过滤已加载行）。
+const quickFilterInput = ref("");
+const quickFilter = ref("");
+const applyQuickFilter = debounce((value: string) => {
+  quickFilter.value = value;
+}, 150);
+
+onBeforeUnmount(() => applyQuickFilter.cancel());
+
+const tzLabel = computed(() => (workbenchTimestampTz.value === "utc" ? "UTC" : t("messages.tzLocal")));
+
+function toggleTz() {
+  toggleWorkbenchTimestampTz();
+}
+
+async function copyWithNotify(text: string) {
+  const ok = await copyTextToClipboard(text);
+  if (ok) emit("notify", t("copied"));
+  else emit("error", t("messages.copyFailed"));
+}
+
+function messageJsonText(message: KafkaMessage): string {
+  return serializeMessagesToJson([message]);
+}
+
+function copyMessageJson(row: MessageRow) {
+  void copyWithNotify(messageJsonText(row.raw));
+}
+
+function copyDetail(part: "key" | "value" | "headers" | "json") {
+  const message = detail.value;
+  if (!message) return;
+  if (part === "key") void copyWithNotify(message.key ?? "");
+  else if (part === "value") void copyWithNotify(messageFullValueText(message));
+  else if (part === "headers") void copyWithNotify(message.headers ? JSON.stringify(message.headers) : "");
+  else void copyWithNotify(messageJsonText(message));
+}
 // P1-1：结果区统计行锚点（消费后滚动目标）。
 const resultMetaEl = ref<HTMLElement | null>(null);
 // 消息表实例（跳到最新经 DbxAgGrid.goToLatest 走 gridApi：末页 + 滚入视口）。
 const messagesGrid = ref<InstanceType<typeof DbxAgGrid> | null>(null);
+
+/** 行数组重建（tz 切换/结果落地共用）：capRows 裁剪 → toMessageRows（按当前
+ *  时区格式化）→ 引用替换一次性提交。 */
+function rebuildRows() {
+  const capped = capRows(result.value?.messages ?? []);
+  messageRows.value = toMessageRows(capped.rows);
+  triggerRef(messageRows);
+  rowsTotal.value = capped.total;
+}
 
 /** 消费结果落地（唯一入口）：capRows 裁剪（保留最新 N 条）→ 批量构建行数组 →
  *  引用替换一次性提交（DbxAgGrid 以单次 setGridOption 批量应用，配合稳定
  *  getRowId，无逐条更新）。 */
 function applyResult(next: ConsumeResult | null) {
   result.value = next;
-  const capped = capRows(next?.messages ?? []);
-  messageRows.value = toMessageRows(capped.rows);
-  triggerRef(messageRows);
-  rowsTotal.value = capped.total;
+  rebuildRows();
 }
+
+// F6-3：时区切换后行内已格式化文本需要重建（列 valueFormatter 是响应式的，
+// 行文本不是——统一在这里重算）。
+watch(workbenchTimestampTz, () => rebuildRows());
 
 function openDetail(row: MessageRow) {
   // 详情 raw 单份存储：直接引用行内 raw（与 result.messages 同一对象，不拷贝）。
@@ -505,7 +563,7 @@ async function applyPreset(id: string) {
     schemaEnabled.value = Boolean(params.schema);
     schemaSubject.value = params.schema?.subject ?? "";
     schemaVersionText.value = params.schema?.version !== undefined ? String(params.schema.version) : "";
-    schemaFormat.value = params.schema?.format ?? "avro";
+    schemaFormat.value = params.schema?.format === "protobuf" || params.schema?.format === "json" ? params.schema.format : "avro";
     emit("notify", t("messages.presetApplied"));
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
@@ -977,7 +1035,8 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
                 <select v-model="schemaFormat" :disabled="glueSchemaDisabled">
                   <option value="avro">avro</option>
                   <option value="json">json</option>
-                </select>
+                  <option value="protobuf">protobuf</option>
+              </select>
               </label>
             </template>
           </div>
@@ -1031,6 +1090,26 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         </span>
       </span>
       <span class="inline-actions">
+        <input
+          v-model="quickFilterInput"
+          class="quick-filter-input"
+          type="text"
+          :placeholder="t('messages.quickFilterPlaceholder')"
+          :title="t('messages.quickFilterTitle')"
+          spellcheck="false"
+          data-testid="quick-filter"
+          @input="applyQuickFilter(quickFilterInput)"
+        />
+        <button
+          class="tz-toggle"
+          :class="{ 'is-utc': workbenchTimestampTz === 'utc' }"
+          type="button"
+          :title="t('messages.tzToggleTitle')"
+          data-testid="tz-toggle"
+          @click="toggleTz"
+        >
+          {{ tzLabel }}
+        </button>
         <button class="toolbar-button" :title="t('messages.uiJumpLatest')" :disabled="messageRows.length === 0" @click="jumpToLatest">
           <ChevronsDown aria-hidden="true" /><span>{{ t("messages.uiJumpLatest") }}</span>
         </button>
@@ -1052,6 +1131,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         :row-data="messageRows"
         :column-defs="messageCols"
         :compact-fields="MINIMAL_MESSAGE_FIELDS"
+        :quick-filter="quickFilter"
         row-selection="single"
         @row-click="(row: unknown) => openDetail(row as MessageRow)"
       />
@@ -1070,7 +1150,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         <div class="drawer-body">
           <dl class="kv-grid">
             <dt>{{ t("messages.colTimestamp") }}</dt>
-            <dd>{{ formatTimestamp(detail.timestamp) }}</dd>
+            <dd :title="timestampIso(detail.timestamp)">{{ formatTimestamp(detail.timestamp, workbenchTimestampTz) }}</dd>
             <dt>{{ t("messages.colKey") }}</dt>
             <dd>{{ detail.key ?? "—" }}</dd>
             <dt>{{ t("messages.colHeaders") }}</dt>
@@ -1112,6 +1192,20 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
             </button>
             <button class="toolbar-button" type="button" :title="t('messages.downloadValue')" @click="downloadValue">
               <Download aria-hidden="true" /><span>{{ t("messages.downloadValue") }}</span>
+            </button>
+            <!-- F6-2 复制族：key/value/headers/整条 JSON 四按钮（clipboard API +
+                 execCommand 兜底在 lib/kafkaModel.copyWithNotify）。 -->
+            <button class="toolbar-button" type="button" :title="t('messages.copyKey')" data-testid="copy-key" @click="copyDetail('key')">
+              {{ t("messages.copyKey") }}
+            </button>
+            <button class="toolbar-button" type="button" :title="t('messages.copyValue')" data-testid="copy-value" @click="copyDetail('value')">
+              {{ t("messages.copyValue") }}
+            </button>
+            <button class="toolbar-button" type="button" :title="t('messages.copyHeaders')" data-testid="copy-headers" @click="copyDetail('headers')">
+              {{ t("messages.copyHeaders") }}
+            </button>
+            <button class="toolbar-button" type="button" :title="t('messages.copyJson')" data-testid="copy-json" @click="copyDetail('json')">
+              {{ t("messages.copyJson") }}
             </button>
           </div>
           <pre v-if="showFullBase64" class="value-view">{{ detail.valueBase64 ?? detail.valueText ?? "" }}</pre>

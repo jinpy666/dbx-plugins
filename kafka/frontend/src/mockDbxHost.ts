@@ -14,6 +14,10 @@
  *   ?glue=1              Glue-only 模式：statuses.provider=glue、仅 Glue subjects、
  *                        confluent 探测返回 none、schema 挂载 -32000 拒绝
  *                        （默认模式 = Confluent + Glue 双 registry 配置，可切换）
+ *   ?msk=1               OAUTHBEARER/MSK IAM 模式（Phase 3 F2 前端半件）：连接摘要
+ *                        携带 oauth_token_source=msk_iam + msk_region/msk_access_key_id，
+ *                        connection_secrets 含 msk_secret_access_key/msk_session_token
+ *                        （ConnectionsPanel 摘要徽标路径；照 ?glue=1 开关范式）
  *   ?big=1               大数据量压测 fixture：+500 topic、+200 group、
  *                        big-throughput topic 4 分区共 5000 条消息（纯内存生成，
  *                        无凭据）；consume 未显式 limit 时默认取 5000。
@@ -37,6 +41,8 @@ const allowDelete = params.get("nodelete") !== "1";
 const injectError = params.get("err") === "1";
 const glueOnly = params.get("glue") === "1";
 const bigMode = params.get("big") === "1";
+// OAUTHBEARER/MSK 连接摘要夹具（?msk=1）：照 ?glue=1 开关范式。
+const mskMode = params.get("msk") === "1";
 // 审计链夹具（?audit=denied）：见文件头注释。
 const auditDeniedInject = params.get("audit") === "denied";
 // 连接默认 SR provider（无 registry 参数的 kafka/schema/* 调用落到这里）。
@@ -62,9 +68,21 @@ const context: Record<string, unknown> = {
       glue_registry_name: "dbx-kafka-registry",
       glue_auth_mode: "access_key",
       glue_access_key_id: "AKIAIOSFODNN7EXAMPLE",
+      // Phase 3 F2 前端半件（?msk=1）：OAUTHBEARER/MSK 字段（snake_case，
+      // 镜像 host 对 manifest 字段的 external_config 形状；camelCase 直挂
+      // connection 的双源兼容由 ConnectionsPanel.pickConnectionField 覆盖）。
+      ...(mskMode
+        ? {
+            security_protocol: "SASL_SSL",
+            sasl_mechanism: "OAUTHBEARER",
+            oauth_token_source: "msk_iam",
+            msk_region: "us-east-1",
+            msk_access_key_id: "AKIAIOSFODNN7EXAMPLE",
+          }
+        : {}),
     },
     // secret binding 名单：仅名字，不含值（前端据此显示「已配置」）。
-    connection_secrets: ["glue_secret_access_key"],
+    connection_secrets: mskMode ? ["glue_secret_access_key", "msk_secret_access_key", "msk_session_token"] : ["glue_secret_access_key"],
   },
 };
 
@@ -113,6 +131,9 @@ interface MockTopic {
   replicationFactor: number;
   /** 分区 → 消息数组（offset = 数组下标）。 */
   partitions: MockMessage[][];
+  /** Phase 3 F6-4 后端半件镜像（topics/list 下发；缺省 = 健康）。 */
+  isHealthy?: boolean;
+  unhealthyPartitions?: number;
 }
 
 function utf8ToBase64(text: string): string {
@@ -195,6 +216,16 @@ seedTopic("user-signup", 1, false, [
 seedTopic("payment-gateway", 1, false, [{ key: "p-1", value: "5" }]);
 seedTopic("connect-offsets", 1, true, [{ key: "c", value: "state" }]);
 seedTopic("_schemas", 1, true, [{ key: "s-1", value: '{"schema":"x"}' }]);
+
+// Phase 3 F6-5：不健康 topic 行夹具（isHealthy:false + unhealthyPartitions=1，
+// partition 1 leader 缺失）——树红点徽标与 describe 健康列可在 mock 验证。
+function seedUnhealthyTopic(name: string, partitionCount: number) {
+  seedTopic(name, partitionCount, false, []);
+  const topic = topics.get(name)!;
+  topic.isHealthy = false;
+  topic.unhealthyPartitions = 1;
+}
+seedUnhealthyTopic("degraded-topic", 2);
 
 // Phase P：codec-lab 假 topic——四种压缩算法各一条消息（详情抽屉二次解码走查用）。
 // gzip/zstd 用固定 base64 常量（浏览器无同步 gzip 压缩器；fzstd 仅解码），
@@ -319,13 +350,13 @@ interface KafkaAclFixture {
 interface SchemaVersionFixture {
   version: number;
   id: number;
-  format: "avro" | "json";
+  format: "avro" | "json" | "protobuf";
   schema: string;
 }
 
 interface SchemaSubjectFixture {
   subject: string;
-  formats: Array<"avro" | "json">;
+  formats: Array<"avro" | "json" | "protobuf">;
   versions: SchemaVersionFixture[];
   compatibilityLevel: string;
   /** Phase P：subject 所属 registry（confluent | glue）。 */
@@ -334,7 +365,7 @@ interface SchemaSubjectFixture {
 
 let schemaIdSeq = 100;
 
-function makeSchemaVersion(subject: SchemaSubjectFixture, format: "avro" | "json", schema: string): SchemaVersionFixture {
+function makeSchemaVersion(subject: SchemaSubjectFixture, format: "avro" | "json" | "protobuf", schema: string): SchemaVersionFixture {
   schemaIdSeq += 1;
   return { version: subject.versions.length + 1, id: schemaIdSeq, format, schema };
 }
@@ -388,6 +419,28 @@ const userSubject: SchemaSubjectFixture = {
 };
 userSubject.versions.push(makeSchemaVersion(userSubject, "json", userSchemaV1));
 schemaSubjects.set(userSubject.subject, userSubject);
+
+// Phase 3 F1/F5：PROTOBUF subject 样例（subjects/list formats 含 protobuf）——
+// SchemasPanel 树视图「文本 + 行内提示」路径与 ProducePanel Flow schema_random
+// 「命中非 AVRO subject → 改用 template」提示路径可在 mock 验证。
+// fixture 用 proto3 源文本（真实 SR 元数据为 base64 FileDescriptorSet，G 路域）。
+const ordersProtoSchema = `syntax = "proto3";
+
+package demo.v1;
+
+message Order {
+  string order_id = 1;
+  int32 amount = 2;
+}`;
+const ordersProtoSubject: SchemaSubjectFixture = {
+  subject: "orders-proto-value",
+  formats: ["protobuf"],
+  versions: [],
+  compatibilityLevel: "BACKWARD",
+  provider: "confluent",
+};
+ordersProtoSubject.versions.push(makeSchemaVersion(ordersProtoSubject, "protobuf", ordersProtoSchema));
+schemaSubjects.set(ordersProtoSubject.subject, ordersProtoSubject);
 
 // Phase P：AWS Glue 假 subjects（管理面假数据；兼容性枚举为 Glue 命名）。
 const glueOrderSubject: SchemaSubjectFixture = {
@@ -635,20 +688,34 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const includeInternal = input.includeInternal === true;
     const list = [...topics.values()]
       .filter((topic) => includeInternal || !topic.isInternal)
-      .map((topic) => ({ name: topic.name, topicId: topic.topicId, isInternal: topic.isInternal, partitionCount: topic.partitionCount, replicationFactor: topic.replicationFactor }));
+      .map((topic) => ({
+        name: topic.name,
+        topicId: topic.topicId,
+        isInternal: topic.isInternal,
+        partitionCount: topic.partitionCount,
+        replicationFactor: topic.replicationFactor,
+        // Phase 3 F6-4 镜像：健康度字段（12.2.4；缺省 = 全分区健康）。
+        isHealthy: topic.isHealthy !== false,
+        ...(topic.unhealthyPartitions !== undefined ? { unhealthyPartitions: topic.unhealthyPartitions } : {}),
+      }));
     result = { topics: list };
   } else if (method === "kafka/topics/describe") {
     const topic = requireTopic(String(input.topic ?? ""));
     result = {
-      partitions: topic.partitions.map((partition, index) => ({
-        partition: index,
-        leader: brokers[index % brokers.length].nodeId,
-        leaderEpoch: 0,
-        replicas: [brokers[index % brokers.length].nodeId],
-        isr: [brokers[index % brokers.length].nodeId],
-        offlineReplicas: [],
-        isHealthy: true,
-      })),
+      partitions: topic.partitions.map((partition, index) => {
+        // degraded-topic：partition 1（超 0 时末位）标不健康（offline replica）。
+        const unhealthyIndex = topic.isHealthy === false ? topic.partitions.length - 1 : -1;
+        const isUnhealthy = index === unhealthyIndex;
+        return {
+          partition: index,
+          leader: brokers[index % brokers.length].nodeId,
+          leaderEpoch: 0,
+          replicas: [brokers[index % brokers.length].nodeId],
+          isr: isUnhealthy ? [] : [brokers[index % brokers.length].nodeId],
+          offlineReplicas: isUnhealthy ? [brokers[index % brokers.length].nodeId] : [],
+          isHealthy: !isUnhealthy,
+        };
+      }),
     };
   } else if (method === "kafka/topics/create") {
     const names = (input.topics ?? []) as string[];
@@ -1007,14 +1074,17 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     result = { isCompatible, messages };
   } else if (method === "kafka/schema/register") {
     const subjectName = String(input.subject ?? "");
-    const format = String(input.format ?? "avro") as "avro" | "json";
+    const format = String(input.format ?? "avro") as "avro" | "json" | "protobuf";
     const schemaText = String(input.schema ?? "");
     const provider = resolveProvider(input);
     guardWrite("schema/register", subjectName);
-    try {
-      JSON.parse(schemaText);
-    } catch (cause) {
-      throw new Error(`schema is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
+    // PROTOBUF 注册体是 proto3 文本（非 JSON）；AVRO/JSON 才做 JSON 语法校验。
+    if (format !== "protobuf") {
+      try {
+        JSON.parse(schemaText);
+      } catch (cause) {
+        throw new Error(`schema is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
     }
     let subject = findSubject(subjectName, provider);
     if (!subject) {

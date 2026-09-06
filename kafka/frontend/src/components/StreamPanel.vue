@@ -5,8 +5,8 @@
 // 自动滚动在用户上滚时暂停，回到底部恢复。
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Pause, Play, Square } from "@lucide/vue";
-import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaSubject, type StreamStatus } from "../lib/api";
-import { appendStreamRows, formatTimestamp, previewText } from "../lib/kafkaModel";
+import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaFormat, type SchemaSubject, type StreamStatus } from "../lib/api";
+import { appendStreamRows, debounce, filterMessagesByKeyword, formatTimestamp, previewText } from "../lib/kafkaModel";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
@@ -43,7 +43,7 @@ const schemaEnabled = ref(false);
 const schemaSubjects = ref<SchemaSubject[]>([]);
 const schemaSubject = ref("");
 const schemaVersionText = ref("");
-const schemaFormat = ref<"avro" | "json">("avro");
+const schemaFormat = ref<SchemaFormat>("avro");
 // Phase P：Glue 仅管理面（消息编解码仅 Confluent wire format，后端 -32000 拒绝），
 // 前端同步禁用挂载区并提示（保留 discoverability，不隐藏）。
 const glueSchemaDisabled = computed(() => props.srProvider === "glue");
@@ -72,7 +72,7 @@ watch(schemaEnabled, (enabled) => {
 watch(schemaSubject, () => {
   schemaVersionText.value = "";
   const found = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
-  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as "avro" | "json") ?? "avro";
+  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as SchemaFormat) ?? "avro";
 });
 
 function buildSchemaAttach(): SchemaAttach | undefined {
@@ -243,7 +243,18 @@ watch(sessionActive, (active) => {
 
 onBeforeUnmount(() => {
   window.clearInterval(statusTimer);
+  applyQuickFilter.cancel();
 });
+
+// -- 即时搜索（F6-1）：流面板是自绘行而非 ag-grid，语义对齐 Messages 表的
+// quickFilter——输入防抖 150ms，只过滤已加载（缓冲内）行，不触发任何请求。
+const quickFilterInput = ref("");
+const quickFilter = ref("");
+const applyQuickFilter = debounce((value: string) => {
+  quickFilter.value = value;
+}, 150);
+
+const visibleRows = computed(() => filterMessagesByKeyword(rows.value, quickFilter.value));
 
 function positiveInt(value: unknown, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
@@ -297,7 +308,8 @@ defineExpose({ pushEvent });
           <select v-model="schemaFormat" :disabled="glueSchemaDisabled">
             <option value="avro">avro</option>
             <option value="json">json</option>
-          </select>
+            <option value="protobuf">protobuf</option>
+              </select>
         </label>
       </template>
       <label class="checkbox">
@@ -334,6 +346,17 @@ defineExpose({ pushEvent });
       <span>{{ t("stream.buffer", { count: bufferSize }) }}</span>
       <span v-if="droppedRows > 0" class="badge badge-warn">{{ t("stream.dropped", { count: droppedRows }) }}</span>
       <span class="tab-spacer" />
+      <!-- F6-1：即时搜索（只过滤已加载行，防抖 150ms） -->
+      <input
+        v-model="quickFilterInput"
+        class="quick-filter-input"
+        type="text"
+        :placeholder="t('messages.quickFilterPlaceholder')"
+        :title="t('messages.quickFilterTitle')"
+        spellcheck="false"
+        data-testid="stream-quick-filter"
+        @input="applyQuickFilter(quickFilterInput)"
+      />
       <!-- P2-4：分页按钮 ≥32px 热区（原 36×20px 易脱靶），禁用态带说明 title -->
       <button class="qb-add stream-pager" type="button" :disabled="!sessionActive" :title="t('stream.loadOlder')" @click="loadOlder">{{ t("stream.loadOlder") }}</button>
       <button class="qb-add stream-pager" type="button" :disabled="!sessionActive" :title="t('stream.loadNewer')" @click="loadNewer">{{ t("stream.loadNewer") }}</button>
@@ -349,7 +372,8 @@ defineExpose({ pushEvent });
       </div>
       <div ref="scrollBox" class="stream-scroll" @scroll="onScroll">
         <p v-if="rows.length === 0" class="empty compact">{{ t("stream.noMessages") }}</p>
-        <div v-for="message in rows" :key="`${message.partition}:${message.offset}`" class="stream-row">
+        <p v-else-if="visibleRows.length === 0" class="empty compact">{{ t("stream.quickFilterNoMatch") }}</p>
+        <div v-for="message in visibleRows" :key="`${message.partition}:${message.offset}`" class="stream-row">
           <span class="mono-s">{{ message.partition }}</span>
           <span class="mono-s">{{ message.offset }}</span>
           <span class="mono-s">{{ formatTimestamp(message.timestamp) }}</span>

@@ -111,6 +111,12 @@ function isInternal(topic: KafkaTopic): boolean {
   return topic.isInternal === true || topic.name.startsWith("_");
 }
 
+// F6-5：topic 级健康徽标（isHealthy===false 红点 + title「N 个分区不健康」）。
+// 字段由 topics/list 直接下发（12.2.4），无额外请求；旧 sidecar 缺省 = 视为健康。
+function unhealthyCount(topic: KafkaTopic): number {
+  return topic.isHealthy === false ? Math.max(1, Number(topic.unhealthyPartitions ?? 0) || 0) : 0;
+}
+
 function clearFilter() {
   keyword.value = "";
 }
@@ -207,6 +213,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
               <HardDrive aria-hidden="true" class="icon-13" :class="isInternal(topic) ? 'icon-neutral' : 'icon-violet'" />
               <span class="tree-name mono">{{ topic.name }}</span>
             </span>
+            <!-- F6-5：不健康红点（title = N 个分区不健康），无额外请求 -->
+            <span
+              v-if="unhealthyCount(topic) > 0"
+              class="tree-health-dot"
+              :title="t('tree.unhealthyTitle', { count: unhealthyCount(topic) })"
+              :aria-label="t('tree.unhealthyTitle', { count: unhealthyCount(topic) })"
+            />
             <span v-if="isInternal(topic)" class="badge badge-internal">{{ t("tree.internal") }}</span>
             <span v-else class="tree-badge">{{ t("tree.partitions", { count: topic.partitionCount }) }}</span>
           </button>

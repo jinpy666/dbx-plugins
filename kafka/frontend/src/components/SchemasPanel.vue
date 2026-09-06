@@ -11,12 +11,14 @@ import { computed, onMounted, ref, watch } from "vue";
 import { GitCompare, Plus, RefreshCw, ShieldQuestion, Trash2, X } from "@lucide/vue";
 import type { ColDef } from "ag-grid-community";
 import DbxAgGrid from "./DbxAgGrid.vue";
+import SchemaTree from "./SchemaTree.vue";
 import {
   kafkaApi,
   type SchemaCompatibilityCheckResult,
   type SchemaCompatibilityLevel,
   type SchemaDetail,
   type SchemaDiff,
+  type SchemaFormat,
   type SchemaRegistryProvider,
   type SchemaSubject,
   type SchemaVersionRow,
@@ -31,7 +33,7 @@ import {
   type SchemaVersionVm,
   type SubjectVm,
 } from "../lib/kafkaColumns";
-import { prettyJson } from "../lib/kafkaModel";
+import { buildSchemaTree, prettyJson, schemaTemplateFor, type SchemaTreeNode } from "../lib/kafkaModel";
 import { useModalBehavior } from "../lib/modalBehavior";
 import { t } from "../lib/i18n";
 
@@ -151,9 +153,13 @@ const diffBusy = ref(false);
 
 const registerOpen = ref(false);
 const registerSubject = ref("");
-const registerFormat = ref<"avro" | "json">("avro");
+const registerFormat = ref<SchemaFormat>("avro");
 const registerSchemaText = ref("");
+// F5 克隆：来源版本号（弹窗标题/提示用；普通注册为 null）。
+const registerClonedFrom = ref<number | null>(null);
+// PROTOBUF schema 是 proto3 文本（非 JSON），不做 JSON 校验（SR 侧校验）。
 const registerJsonError = computed(() => {
+  if (registerFormat.value === "protobuf") return "";
   if (!registerSchemaText.value.trim()) return "";
   const parsed = parseJsonCandidate(registerSchemaText.value);
   return parsed.ok ? "" : parsed.error;
@@ -184,10 +190,21 @@ useModalBehavior({ open: computed(() => deletePlan.value !== null), container: d
 
 const subjectGridRows = computed(() => toSubjectRows(subjects.value));
 const subjectGridCols = computed(() => subjectColumns() as ColDef<SubjectVm>[]);
+// F5：版本表带行操作「克隆」列（kafkaColumns.actionColumn 原生 button 渲染）。
 const versionGridRows = computed(() => toSchemaVersionRows(versions.value));
-const versionGridCols = computed(() => schemaVersionColumns() as ColDef<SchemaVersionVm>[]);
+const versionGridCols = computed(() => schemaVersionColumns({ onClone: (row) => void cloneVersion(row) }) as ColDef<SchemaVersionVm>[]);
 const versionOptions = computed(() => versions.value.map((row) => row.version));
 const schemaText = computed(() => (detail.value ? prettyJson(detail.value.schema) : ""));
+
+// F5 树视图：详情区 树/文本 toggle（缺省文本 = 既有行为；PROTOBUF 树化后续）。
+const viewMode = ref<"text" | "tree">("text");
+const schemaTreeRoot = computed<SchemaTreeNode | null>(() => {
+  if (!detail.value || detail.value.format === "protobuf") return null;
+  return buildSchemaTree(detail.value.schema);
+});
+const treeAvailable = computed(() => schemaTreeRoot.value !== null);
+// PROTOBUF：保持文本 + 行内提示（后端 FDSet 树化登记后续，§12.2.7）。
+const treeUnsupported = computed(() => Boolean(detail.value && detail.value.format === "protobuf"));
 
 async function loadSubjects() {
   loading.value = true;
@@ -297,7 +314,31 @@ function openRegister() {
   registerSubject.value = selectedSubject.value ? `${selectedSubject.value}` : "";
   registerFormat.value = "avro";
   registerSchemaText.value = "";
+  registerClonedFrom.value = null;
   registerOpen.value = true;
+}
+
+// F5 克隆：版本表行操作「克隆」→ 取该版本 schema 文本（schemaGet 已有数据形状）
+// 预填注册弹窗，subject 默认原值可改。
+async function cloneVersion(row: SchemaVersionVm) {
+  if (!selectedSubject.value) return;
+  emit("error", "");
+  try {
+    const detailRow = await kafkaApi.schemaGet(selectedSubject.value, row.version, registry.value);
+    registerSubject.value = selectedSubject.value;
+    registerFormat.value = (["avro", "json", "protobuf"].includes(detailRow.format) ? detailRow.format : "avro") as SchemaFormat;
+    registerSchemaText.value = detailRow.schema ?? "";
+    registerClonedFrom.value = row.version;
+    registerOpen.value = true;
+  } catch (cause) {
+    emit("error", cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+/** F5 模板：format 选定后插入对应静态模板（覆盖当前文本）。 */
+function insertTemplate() {
+  console.log("INSERT called, format=", registerFormat.value);
+  registerSchemaText.value = schemaTemplateFor(registerFormat.value);
 }
 
 function parseJsonCandidate(text: string): { ok: true } | { ok: false; error: string } {
@@ -315,10 +356,13 @@ async function submitRegister() {
     emit("error", !subject ? t("schemas.needSubject") : t("schemas.needSchema"));
     return;
   }
-  const parsed = parseJsonCandidate(registerSchemaText.value);
-  if (!parsed.ok) {
-    emit("error", `${t("schemas.registerInvalidJson")}: ${parsed.error}`);
-    return;
+  // PROTOBUF 是 proto3 文本，SR 侧校验；AVRO/JSON 才做前端 JSON 语法校验。
+  if (registerFormat.value !== "protobuf") {
+    const parsed = parseJsonCandidate(registerSchemaText.value);
+    if (!parsed.ok) {
+      emit("error", `${t("schemas.registerInvalidJson")}: ${parsed.error}`);
+      return;
+    }
   }
   busy.value = true;
   emit("error", "");
@@ -558,7 +602,36 @@ onMounted(async () => {
           {{ t("schemas.viewSchema") }} · v{{ detail.version }} · id {{ detail.id }} · {{ detail.format }}
           <span v-if="detail.references && detail.references.length > 0" class="badge">{{ t("schemas.references") }}: {{ detail.references.length }}</span>
         </p>
-        <pre class="value-view schema-view">{{ schemaText }}</pre>
+        <!-- F5 树/文本 toggle：AVRO/JSON 递归树；PROTOBUF 保持文本 + 行内提示。 -->
+        <div class="inline-actions schema-view-toggle">
+          <button
+            class="tz-toggle"
+            :class="{ 'is-utc': viewMode === 'text' }"
+            type="button"
+            :aria-pressed="viewMode === 'text'"
+            data-testid="schema-view-text"
+            @click="viewMode = 'text'"
+          >
+            {{ t("schemas.viewText") }}
+          </button>
+          <button
+            class="tz-toggle"
+            :class="{ 'is-utc': viewMode === 'tree' }"
+            type="button"
+            :disabled="!treeAvailable"
+            :title="treeAvailable ? t('schemas.viewTree') : t('schemas.treeUnsupportedHint')"
+            :aria-pressed="viewMode === 'tree'"
+            data-testid="schema-view-tree"
+            @click="viewMode = 'tree'"
+          >
+            {{ t("schemas.viewTree") }}
+          </button>
+        </div>
+        <p v-if="treeUnsupported" class="hint" data-testid="schema-tree-hint">{{ t("schemas.treeUnsupportedHint") }}</p>
+        <div v-if="viewMode === 'tree' && treeAvailable" class="value-view schema-view schema-tree-box" data-testid="schema-tree">
+          <SchemaTree :node="schemaTreeRoot!" :default-expanded="true" />
+        </div>
+        <pre v-else class="value-view schema-view">{{ schemaText }}</pre>
       </div>
 
       <div v-if="diff" class="schema-diff">
@@ -586,7 +659,9 @@ onMounted(async () => {
       <div v-if="registerOpen" class="modal-backdrop" @click.self="registerOpen = false">
         <div class="modal panel-modal" ref="registerModalEl" tabindex="-1" role="dialog" aria-modal="true">
           <header>
-            <h2>{{ t("schemas.registerTitle") }}</h2>
+            <h2>
+              {{ registerClonedFrom !== null ? t("schemas.cloneTitle", { version: registerClonedFrom }) : t("schemas.registerTitle") }}
+            </h2>
             <button class="icon-button" :title="t('close')" @click="registerOpen = false"><X /></button>
           </header>
           <div class="settings-body">
@@ -599,12 +674,18 @@ onMounted(async () => {
               <select v-model="registerFormat">
                 <option value="avro">avro</option>
                 <option value="json">json</option>
+                <option value="protobuf">protobuf</option>
               </select>
             </label>
             <label class="settings-field">
               <span>{{ t("schemas.registerSchemaJson") }}</span>
               <textarea v-model="registerSchemaText" rows="10" class="mono" spellcheck="false" />
             </label>
+            <div class="inline-actions">
+              <button class="toolbar-button" type="button" data-testid="insert-template" @click="insertTemplate">
+                {{ t("schemas.insertTemplate") }}
+              </button>
+            </div>
             <p v-if="registerJsonError" class="form-error">{{ t("schemas.registerInvalidJson") }}: {{ registerJsonError }}</p>
           </div>
           <footer>
@@ -696,6 +777,8 @@ onMounted(async () => {
 
 <style scoped>
 .schema-view { min-height: 120px; max-height: 240px; }
+.schema-view-toggle { padding: 0 8px 4px; }
+.schema-tree-box { overflow: auto; }
 .schema-detail, .schema-diff { display: flex; min-height: 0; flex-direction: column; }
 .diff-hunk {
   display: grid;

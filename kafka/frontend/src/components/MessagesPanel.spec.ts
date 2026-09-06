@@ -8,6 +8,8 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h, type PropType } from "vue";
 import MessagesPanel from "./MessagesPanel.vue";
 import { setKafkaConnectionId, type ConsumeResult, type KafkaMessage } from "../lib/api";
+import { formatTimestamp } from "../lib/kafkaModel";
+import { setWorkbenchTimestampTz } from "../lib/kafkaColumns";
 import { t } from "../lib/i18n";
 
 // -- DbxAgGrid 轻量 stub（镜像真实桥形状，见 GroupsPanel.spec 同款） -----------------
@@ -19,6 +21,7 @@ const DbxAgGridStub = defineComponent({
     tableKey: { type: String, default: "" },
     rowSelection: { type: [String, Boolean] as PropType<"single" | false>, default: "single" as const },
     emitRowClick: { type: Boolean, default: true },
+    quickFilter: { type: String, default: "" },
   },
   emits: ["selection-changed", "row-click"],
   setup(props, { emit, expose }) {
@@ -30,7 +33,7 @@ const DbxAgGridStub = defineComponent({
     return () =>
       h(
         "div",
-        { class: "grid-stub", "data-key": props.tableKey },
+        { class: "grid-stub", "data-key": props.tableKey, "data-quick-filter": props.quickFilter },
         (props.rowData ?? []).map((row, index) =>
           h(
             "button",
@@ -42,7 +45,8 @@ const DbxAgGridStub = defineComponent({
                 if (props.emitRowClick) emit("row-click", row);
               },
             },
-            `${props.tableKey}-row-${index}`,
+            // 时间戳列文案进 stub 行文本（tz 切换断言用；VM 由 toMessageRows 产出）。
+            `${props.tableKey}-row-${index}${(row as { timestampText?: string }).timestampText ? ` ts:${(row as { timestampText?: string }).timestampText}` : ""}`,
           ),
         ),
       );
@@ -176,5 +180,115 @@ describe("MessagesPanel", () => {
     expect(wrapper.find(".empty").text()).toBe(t("messages.uiNoTopicSelected"));
     await wrapper.setProps({ topic: "order-events" });
     expect(wrapper.find(".empty").text()).toBe(t("messages.noMessages"));
+  });
+
+  // F6-1：即时搜索输入 → 150ms 防抖后喂给 grid 的 quickFilterText。
+  it("debounces the quick filter input into the grid quickFilter (F6-1)", async () => {
+    vi.useFakeTimers();
+    try {
+      installBridge({
+        "kafka/presets/list": { presets: [] },
+        "kafka/messages/consume": consumeResult("order-events", 1),
+      });
+      const wrapper = mountPanel();
+      await flushPromises();
+      await wrapper.find(".form-footer .primary-button").trigger("click");
+      await flushPromises();
+      const input = wrapper.find('[data-testid="quick-filter"]');
+      expect(input.exists()).toBe(true);
+      expect(input.attributes("placeholder")).toBe(t("messages.quickFilterPlaceholder"));
+      await input.setValue("order");
+      await input.setValue("order-a");
+      // 未到防抖窗口：尚未下传。
+      vi.advanceTimersByTime(100);
+      expect(wrapper.find(".grid-stub").attributes("data-quick-filter")).toBe("");
+      await vi.advanceTimersByTimeAsync(60);
+      expect(wrapper.find(".grid-stub").attributes("data-quick-filter")).toBe("order-a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // F6-3：本地/UTC toggle → localStorage `kafka.ts.tz` 持久化 + 行时间戳按 UTC 渲染。
+  it("persists the timestamp timezone toggle and renders UTC cells (F6-3)", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": consumeResult("order-events", 1),
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    const toggle = wrapper.find('[data-testid="tz-toggle"]');
+    expect(toggle.text()).toBe(t("messages.tzLocal"));
+    // 固定向量：1700000000000 → UTC 2023-11-14 22:13:20（本地时区逐分量断言）。
+    const rowBefore = wrapper.find(".grid-stub-row").text();
+    expect(rowBefore).toContain(`ts:${formatTimestamp(1_700_000_000_000, "local")}`);
+    await toggle.trigger("click");
+    await flushPromises();
+    expect(localStorage.getItem("kafka.ts.tz")).toBe("utc");
+    expect(wrapper.find('[data-testid="tz-toggle"]').text()).toBe("UTC");
+    expect(wrapper.find(".grid-stub-row").text()).toContain("ts:2023-11-14 22:13:20");
+    // 重挂载读取持久化偏好。
+    const remounted = mountPanel();
+    await flushPromises();
+    // 首次消费后表单已收起为摘要条（开合记忆持久化）——重挂载走摘要条的重跑按钮。
+    const rerun = remounted.find(".msg-summary-bar .mini-button");
+    expect(rerun.exists()).toBe(true);
+    await rerun.trigger("click");
+    await flushPromises();
+    expect(remounted.find('[data-testid="tz-toggle"]').text()).toBe("UTC");
+    expect(remounted.find(".grid-stub-row").text()).toContain("ts:2023-11-14 22:13:20");
+    setWorkbenchTimestampTz("local");
+  });
+
+  // F6-2：详情抽屉复制四按钮（key/value/headers/整条 JSON）+ 行操作「复制 JSON」。
+  it("copies key/value/headers/message JSON from the drawer and rows (F6-2)", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": {
+        messages: [
+          {
+            topic: "order-events",
+            partition: 0,
+            offset: 1,
+            timestamp: 1_700_000_000_000,
+            key: "k-1",
+            valueText: '{"v":"body"}',
+            valueBase64: btoa('{"v":"body"}'),
+            headers: { trace: "t-9" },
+          },
+        ],
+        scanned: 1,
+        matched: 1,
+        limited: false,
+        hasMore: false,
+      },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    // 行点击打开详情抽屉（行操作「复制 JSON」列的渲染面由 kafkaColumns.spec 覆盖）。
+    await wrapper.find(".grid-stub-row").trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="copy-key"]').trigger("click");
+    await wrapper.find('[data-testid="copy-value"]').trigger("click");
+    await wrapper.find('[data-testid="copy-headers"]').trigger("click");
+    await wrapper.find('[data-testid="copy-json"]').trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledTimes(4);
+    const [keyArg, valueArg, headersArg, jsonArg] = writeText.mock.calls.map((call) => call[0] as string);
+    expect(keyArg).toBe("k-1");
+    expect(valueArg).toBe('{"v":"body"}');
+    expect(JSON.parse(headersArg)).toEqual({ trace: "t-9" });
+    // serializeMessagesToJson 输出 JSON 数组（单元素）。
+    const parsed = (JSON.parse(jsonArg) as Array<Record<string, unknown>>)[0];
+    expect(parsed.topic).toBe("order-events");
+    expect(parsed.value).toBe('{"v":"body"}');
+    // 通知走既有「已复制」文案。
+    expect((wrapper.emitted("notify") ?? []).flat()).toContain(t("copied"));
   });
 });

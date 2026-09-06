@@ -1,6 +1,7 @@
 # IMPL PLAN — DBX Kafka 插件（io.dbx.kafka）
 
-> 状态：Phase 1（基础版）+ Phase 2（商用化）已实施，收口验证见 §11。
+> 状态：Phase 1（基础版）+ Phase 2（商用化）已实施，收口验证见 §11；
+> Phase 3（对标 Confluent for IntelliJ）已立项登记，实施方案见 §12。
 > 决策记录：本文件是 kafka 插件**唯一工作来源**。工作区 AGENTS.md 原有
 > "聚焦三插件、不做任何新插件" 约束，经用户于 2026-09-05 明确指令新增
 > kafka 插件而解除；根 README.md / AGENTS.md 随本次任务同步修订登记。
@@ -37,14 +38,17 @@ Kafka 实现重写为 DBX 插件：
 ### 0.2 非目标
 
 原 Phase 2 项（Schema Registry、Kerberos、ZooKeeper 发现）已于 2026-09-05
-商用化轮次全部落地（见 §11）。当前剩余非目标（Phase 3 登记）：
+商用化轮次全部落地（见 §11）；原登记的 PROTOBUF 载荷编解码、
+OAUTHBEARER/AWS MSK IAM 已于 2026-09-06 对标 Confluent for IntelliJ 后
+立项进入 Phase 3 范围（见 §12）。当前剩余非目标：
 
-- OAUTHBEARER / AWS MSK IAM 鉴权（tinyrdm/host 均无；sidecar 无 token 回调通道）。
-  AWS Glue SR 管理面已于 2026-09-05 第三轮落地（见 §11.5），tinyrdm 双 SR 后端
-  全覆盖；aws-profile 凭据模式由 default 链覆盖，无独立开关。
-- PROTOBUF 载荷编解码（SR 场景，明确报未实现）。
-- 幂等/事务生产参数、ACL 之外的 quota/reassignment/log dir。
+- 通用 OIDC 的 OAUTHBEARER token 回调通道（sidecar 无回调面；MSK IAM 与
+  静态 token 两类 token 源已覆盖主流场景，见 §12.2.3）。
+- 幂等/事务生产参数、ACL 之外的 quota/reassignment/log dir（维持登记不动，
+  本轮对标未提升其优先级）。
 - 与宿主 MQ 控制台（topics/groups/ACL 治理面）的互通。
+- CCloud/IDE 专属能力（CCloud OAuth、Scaffold 代码脚手架、Spring gutter
+  建连、语言依赖检测、遥测上报）：理由存档 §12.6。
 
 ## 1. 三方功能对标（范围依据）
 
@@ -367,3 +371,213 @@ fetch 错误指数退避 500ms→30s；**只读策略下禁止 commit**。
   test.sh 全绿。
 - 遗留：真实 AWS Glue 往返需凭据环境跑 S12；Glue DISABLED 与 Confluent NONE
   语义差异文档化；proto 载荷/幂等生产参数仍 Phase 3。
+
+## 12. Phase 3 实施计划（2026-09-06 立项：对标 Confluent for IntelliJ）
+
+> 对标对象：`github.com/confluentinc/intellij`（原 JetBrains Big Data Tools
+> Kafka 客户端，2026 年更名 "Confluent"，Apache 2 开源）。依据：其仓库
+> `resources/META-INF/plugin.xml` 动作/扩展点全表、`docs/architecture-overview.md`、
+> 各包源码结构与官方文档页（未实机运行）。本节是 Phase 3 唯一工作来源；
+> §12.2 为冻结契约，实施偏差回主线裁决，不得各路私改形状。
+
+### 12.0 对标结论摘要
+
+- **我方领先（保持不动）**：ACL 全 CRUD（对方无 ACL 面）、字段级过滤引擎
+  （三通道 + matchMode + JSON path + 数值比较）、流式会话语义（ring
+  buffer/暂停恢复/会话分页）、Lag 趋势监控告警（MonitorPanel）、宿主治理
+  （read_only/审计/分级删除门禁）、broker config 视图、消息二进制保真。
+- **差距（本轮范围 F1-F6）**：PROTOBUF 编解码、OAUTHBEARER/MSK IAM、
+  Clear Topic 清空消息、Schema 随机测试数据生成（Flow）、Schema 克隆/模板/
+  树视图、六项便利性 UI（§12.2.6）。
+- **不跟进（§12.6 存档）**：CCloud OAuth/环境浏览/Scaffold 脚手架、
+  Spring gutter 建连、语言依赖检测、遥测上报。
+
+### 12.1 特性总表
+
+| id | 特性 | 归属路 | 后端改动 | 前端改动 | smoke |
+| --- | --- | --- | --- | --- | --- |
+| F1 | PROTOBUF 载荷编解码（Confluent SR） | G | codec 增分支 + FDSet 解析 | Format 枚举/提示透传 | S14 真跑 |
+| F2 | OAUTHBEARER（MSK IAM + 静态 token） | G | SASL 扩展 + manifest 6 字段 | 连接表单联动 | S15 env 门 |
+| F3 | Clear Topic 清空消息 | G | 新方法 + critical 门禁 | TopicsPanel 双确认 | S13 真跑 |
+| F4 | Flow 随机测试数据生成 | H | 无（复用 produce schema 挂载） | ProducePanel + 生成器 | 前端 spec |
+| F5 | Schema 三件套（克隆/模板/树视图） | H | 无 | SchemasPanel | 前端 spec |
+| F6 | UI 体验打磨族（6 项） | G+H | topics/list 增 isHealthy | §12.2.6 全件 | 前端 spec |
+
+### 12.2 契约明细（冻结）
+
+#### 12.2.1 F3 `kafka/topics/records/clear`
+
+- 请求 `{connectionId, topic, confirmTopic}`；confirmTopic 必须与 topic 同名
+  （复用 `ensureTopicDeleteConfirm` 单 topic 语义）。
+- 门禁分级与 topics/delete 一致：read_only → -32000 blocked；
+  allow_delete=false → -32000 blocked；confirmTopic 不匹配 → -32602。
+- 实现：kadm `ListOffsets(WatermarkHigh)` 取各分区 hw →
+  `DeleteRecords(offset=hw)`；旧 broker（<0.11）不支持时业务错透传，
+  文档标注最低 broker 版本。
+- 响应 `{rows:[{partition:int, deleted:long|null, lowWatermark:long|null,
+  ok:bool, error?:string}]}`；deleted = 删除前 hw − 删除后 lowWatermark
+  （任一段取不到置 null）。
+- 审计：action `topics.records.clear`，detail `partitions=N`。
+- PROTOCOL §3 topics 域新增行（G 路同步）。
+
+#### 12.2.2 F1 PROTOBUF codec（schema.go）
+
+- 新依赖 `google.golang.org/protobuf`（纯 Go，CGO=0 不受影响）。
+- SR 元数据事实：PROTOBUF subject 的 schema 字段 =
+  base64(FileDescriptorSet)，`SchemaMeta.SchemaType="PROTOBUF"`。
+- `decodeSchemaPayload`/`encodeSchemaPayload` 增 protobuf 分支（删除现有
+  "PROTOBUF 未实现" 显式报错分支）：
+  - 解码：base64 → `descriptorpb.FileDescriptorSet` → `protodesc.NewFiles`
+    → 动态消息 `proto.Unmarshal` → `protojson` 渲染 JSON；
+  - 消息消歧（按序）：① FDSet 恰含 1 个 message → 用之；② subject 约定
+    匹配（剥 `-key`/`-value` 后缀，PascalCase 匹配 message 全名尾段）；
+    ③ 仍无法唯一 → 报错并列出候选全名（进 decodeError，不中断消费）；
+  - 编码：`protojson.Unmarshal`（JSON → dynamicpb）→ `proto.Marshal` →
+    `encodeWireFrame(meta.ID)`；
+  - `SchemaRef.Format` 枚举 `avro|json` → **`avro|json|protobuf`**（可空 =
+    按注册元数据；字段注释同步）。
+- 契约不变：消息形状、schemaId/schemaSubject/schemaVersion 字段、
+  per-consume 元数据缓存、Glue 下挂载仍业务错（编解码仅 Confluent wire
+  format，§11.5 语义不变）。
+
+#### 12.2.3 F2 OAUTHBEARER
+
+- 新依赖 `github.com/aws/aws-msk-iam-sasl-signer-go`（Apache-2，纯 Go；
+  aws-sdk-go-v2 已在依赖树）；机制层用 franz-go `pkg/sasl/oauth`。
+- types.go：`SASLMechanismOAUTHBEARER="OAUTHBEARER"` 入取值面 +
+  NormalizeSASLMechanism；validateProfile 增约束：OAUTHBEARER ⇒
+  security_protocol=SASL_SSL（否则 -32602）；token_source=msk_iam ⇒
+  mskRegion 必填；static_token ⇒ oauthStaticToken 必填。
+- TokenProvider 两实现（client.go SASL 构建矩阵扩展 + 单测）：
+  - `msk_iam`：`signer.GenerateAuthToken(ctx, region, creds, "kafka")`；
+    凭据走 default 链（照 §11.5 Glue auth_mode=default 范式），
+    `mskAccessKeyID`/`mskSecretAccessKey`/`mskSessionToken`（均 secret）
+    可选显式覆盖；
+  - `static_token`：`oauthStaticToken`（secret binding）直供，Expiration=0
+    表示不过期。
+- Profile 新字段（json camelCase）：`oauthTokenSource` / `mskRegion` /
+  `mskAccessKeyID` / `mskSecretAccessKey` / `mskSessionToken` /
+  `oauthStaticToken`。
+- manifest 新增 6 字段 + sasl_mechanism 枚举 +1（七语逐字段
+  label/description；visible_when 联动链：OAUTHBEARER →
+  oauth_token_source → 各字段组）。
+- 凭据红线照 §6：全部走 secret binding，不落日志/审计/回显。
+- OIDC token endpoint 交换仍非目标（§0.2）。
+
+#### 12.2.4 F6 后端半件：topics/list 增健康度
+
+- `TopicInfo` 增 `isHealthy bool` + `unhealthyPartitions int`（additive
+  无开关；分区元数据已在 ListTopics 加载，零额外请求）。
+- 判定复用 `partitionInfos` 同款（leader 有效 + ISR=replicas + 无
+  offline）；topic 级 = 全分区健康；unhealthyPartitions = 不健康分区数
+  （树徽标 title 用）。
+- PROTOCOL topics/list 响应行同步两字段。
+
+#### 12.2.5 F4 Flow 随机测试数据生成（前端）
+
+- 契约：零后端改动——复用 `kafka/messages/produce` + `schema` 挂载
+  （SchemaRef.Version 缺省 = latest，后端已有语义）。
+- ProducePanel 新「测试数据生成」组：
+  - mode：manual（现状）| flow；flow 参数：来源 `schema_random` | `template`、
+    countPerSend 1..100（默认 1）、intervalMs 250..10000（默认 1000）、
+    启动/停止按钮 + 运行徽标 + 累计发送计数与最近 1 条回显；
+  - 自动停止条件：read_only、校验失败、发送连续失败 ≥3；
+  - schema_random：subject 发现按 `kafka/schema/subjects/list` 行前缀匹配
+    `<topic>-key` / `<topic>-value`（比裸猜名稳），取该 subject 的 latest
+    schema 生成 JSON；命中 PROTOBUF/JSON Schema subject → 行内提示改用
+    template（PROTOBUF 前端生成不做，§12.6）；
+  - template：JSON 模板 + 占位符 `{uuid}` `{now}` `{int:min,max}`
+    `{float:min,max}` `{pick:a|b|c}`。
+- 生成器落 `lib/kafkaModel.ts`：`generateAvroRandom(schema, rng)` 递归覆盖
+  record/array/map/union（非 null 首支）/enum/fixed + 逻辑类型
+  date/timestamp-millis/uuid/decimal；RNG 用 mulberry32 固定种子，spec
+  固定向量断言（照 §11.5 zstd 固定向量范式）。
+
+#### 12.2.6 F6 UI 体验打磨族（前端）
+
+| # | 项 | 落点 | 契约/要点 |
+| --- | --- | --- | --- |
+| 1 | 即时搜索 | Messages/Stream 表 | ag-grid quickFilterText 输入框（防抖 150ms，只过滤已加载行），七语 placeholder |
+| 2 | 复制族 | 详情抽屉 + 消息表 | 抽屉：复制 key/value/headers/整条 JSON 四按钮；表：行操作「复制 JSON」；navigator.clipboard + execCommand 兜底 |
+| 3 | 时间戳时区切换 | MessagesPanel 工具栏 | 本地/UTC toggle（localStorage `kafka.ts.tz`），formatTimestamp 带 tz 参数，单元格 title 显完整 ISO |
+| 4 | 生产面板分区数 | ProducePanel | App 把选中 topic 的 partitionCount（topics/list 已有）传入；头部显示「分区数 N」，partition 超界行内校验（第 4 轮扫描观察项收口） |
+| 5 | 树健康徽标 | TopicTree | isHealthy===false 红点 + title「N 个分区不健康」；无额外请求（消费 12.2.4） |
+| 6 | 列头筛选增强 | DbxAgGrid/kafkaColumns | timestamp 列 date filter、offset/lag/endOffset 列 number filter（ag-grid community 自带）；`AG_GRID_LOCALE_KEYS` 补 date/number filter 键（七语；照 UI_SCAN P2-19 范式从包内核对实际消费键名） |
+
+#### 12.2.7 F5 Schema 三件套（前端）
+
+- 克隆：版本表行操作「克隆」→ 注册弹窗预填 schema 文本（GetSchema 已有
+  数据），subject 默认原值可改。
+- 模板：注册弹窗 format 选定后「插入模板」——AVRO/JSON Schema/Protobuf
+  三段静态模板（代码常量，非 i18n）。
+- 树视图：详情区增 树/文本 toggle；AVRO/JSON 递归渲染（record/array/
+  union/类型/默认值，可折叠）；PROTOBUF 保持文本 + 提示（后端 FDSet
+  树化登记后续）。
+
+### 12.3 并发分路（契约冻结后并行，无目录交叉）
+
+| 路 | 范围 | 目录边界 | 交付 |
+| --- | --- | --- | --- |
+| G | F1+F2+F3+12.2.4；manifest/PROTOCOL 增量；protobuf seed fixture | `backend/**`、`manifest.json`、`docs/PROTOCOL`、`scripts/kafka-seed/protobuf/` | go vet/test 过；新方法注册；单测齐 |
+| H | F4+F5+F6 前端全件 + 七语新键 | `frontend/**` | typecheck/test/build 过；spec 齐 |
+| 主线 | 契约裁决、smoke S13-S15、对标清单/PROGRESS 回填、四件套核验 | `scripts/smoke*`、`docs/IMPL_PLAN`、`docs/PROGRESS-*` | test.sh 全绿 |
+
+- manifest 归 G 独占；H 消费新字段只改 ConnectionsPanel 表单联动与 mock 桥
+  （镜像真实桥新形状，工作区规则 7）。
+- mock 夹具归 H：unhealthy topic 行（12.2.4）、PROTOBUF subject 样例
+  （SchemasPanel 树视图提示路径）在 mockDbxHost.ts 落地；G 不碰 frontend。
+- 收口合并顺序：G/H 各自全绿 → 主线联调（真跑 S13/S14）→ 四件套核验。
+
+### 12.4 测试计划
+
+- G 单测：protobuf codec 向量（roundtrip / 消歧三分支 / 坏 FDSet / 非 wire
+  format 载荷）、clear 门禁矩阵（read_only × allow_delete × confirmTopic ×
+  rows 形状）、oauth provider（static / msk_iam mock / SASL_SSL 约束 /
+  normalize 扩展）、TopicInfo 健康聚合。
+- H spec：生成器固定向量 + 占位符展开、Flow 启停与自动停止、SchemasPanel
+  克隆预填/模板插入/树渲染、quick filter 防抖、复制兜底、tz 切换持久化、
+  produce 分区校验、树徽标；七语完整性守卫自动覆盖新键。
+- smoke：
+  - S13 Clear Topic：produce 5 → clear → offsets/list latest==earliest →
+    consume 0（容器真跑）；
+  - S14 PROTOBUF roundtrip：seed 注册 PROTOBUF subject（fixture 见下）→
+    produce(schema 挂载) → consume decode（容器真跑；若 Redpanda SR 不支持
+    PROTOBUF 则降级登记 SKIP 并记 PROGRESS）；
+  - S15 OAUTHBEARER：默认 SKIP（无 MSK 环境），env 门范式照 S12（Glue）。
+- fixture：`scripts/kafka-seed/protobuf/orders.proto` + 离线 protoc 预生成
+  的 `orders_fdset.b64`（提交入库；运行时不需要 protoc）。
+- 收口：`scripts/test.sh` 全绿（SKIP 允许）。
+
+### 12.5 完成定义四件套映射
+
+| 项 | 本轮要求 |
+| --- | --- |
+| 单测 | G 新增 ≥15 例、H 新增 ≥15 例，全绿 |
+| smoke | S1-S15（S13/S14 真跑、S15 SKIP 门），SKIP 语义照 §8 |
+| 对标/清单 | §12 回填实施记录；PROGRESS-B/-P 各增 Phase 3 小节 |
+| 七语 | manifest 6 字段 ×7 + 前端新键 ×7（spec 守卫绿） |
+
+### 12.6 明确不跟进（存档）
+
+- CCloud OAuth 登录、环境/资源浏览、Scaffold 代码脚手架（CCloud API 模板
+  生成各语言工程）：Confluent Cloud 生态 + IDE 生成器形态，与 DBX GUI
+  定位不符。
+- Spring Boot gutter 一键建连、spark/flink/akka/.NET/python 依赖检测：IDE
+  专属；等价能力 = 既有 Confluent properties 导入助手。
+- PROTOBUF 前端 schema_random 生成与树视图渲染（12.2.5/12.2.7 注记）：本轮
+  PROTOBUF 仅做后端编解码。
+- 多标签并行消费（IDE 编辑器多 tab 天然能力）：以消费条件预设覆盖，观察
+  后续轮次。
+- 幂等/事务生产参数、quota/reassignment/log dir：维持 §0.2 登记不动。
+
+### 12.7 风险与备注
+
+- 两个新 Go 依赖需公网拉取进 go.sum（google.golang.org/protobuf、
+  aws-msk-iam-sasl-signer-go），均纯 Go；打包照 §11.2 原生 CLI 二进制路径。
+- Redpanda 内置 SR 的 PROTOBUF 支持度需 S14 真跑确认（降级路径见 12.4）。
+- protojson 输出采用 proto 字段名；与 Confluent 序列化器的 JSON 渲染在
+  int64/枚举表示上可能存在已知差异——登记为已知差异，不强行对齐。
+- msk signer 在无 IMDS/无凭据环境的失败要快速收敛（config load 超时收紧），
+  错误串入 friendlyKafkaError 映射（H 路同步）。
+- clear 依赖 AdminClient DeleteRecords（KIP-107），文档标注最低 broker
+  版本；不支持时业务错透传。

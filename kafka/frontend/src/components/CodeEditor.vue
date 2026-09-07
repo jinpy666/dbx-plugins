@@ -21,6 +21,7 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { json } from "@codemirror/lang-json";
+import { xml } from "@codemirror/lang-xml";
 import { tags as lezerTags } from "@lezer/highlight";
 import { jsonErrorLine } from "../lib/kafkaModel";
 import { t } from "../lib/i18n";
@@ -28,7 +29,7 @@ import { t } from "../lib/i18n";
 const props = withDefaults(
   defineProps<{
     modelValue: string;
-    language?: "json" | "text";
+    language?: "json" | "xml" | "text";
     placeholder?: string;
     disabled?: boolean;
     minHeight?: string;
@@ -146,9 +147,19 @@ const jsonHighlightStyle = HighlightStyle.define([
   { tag: [lezerTags.punctuation, lezerTags.separator], color: "var(--cm-punct)" },
 ]);
 
+// XML token 色：与 JSON 同源 --cm-* 变量（标签名/属性名/属性值/注释）。
+const xmlHighlightStyle = HighlightStyle.define([
+  { tag: lezerTags.tagName, color: "var(--cm-prop)" },
+  { tag: lezerTags.attributeName, color: "var(--cm-key)" },
+  { tag: lezerTags.attributeValue, color: "var(--cm-string)" },
+  { tag: lezerTags.comment, color: "var(--muted-foreground)" },
+  { tag: lezerTags.angleBracket, color: "var(--cm-punct)" },
+]);
+
 function languageExtensions(): Extension[] {
-  if (props.language !== "json") return [];
-  return [json(), syntaxHighlighting(jsonHighlightStyle)];
+  if (props.language === "json") return [json(), syntaxHighlighting(jsonHighlightStyle)];
+  if (props.language === "xml") return [xml(), syntaxHighlighting(xmlHighlightStyle)];
+  return [];
 }
 
 function readOnlyExtensions(): Extension[] {

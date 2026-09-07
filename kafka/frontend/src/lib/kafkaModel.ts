@@ -52,7 +52,7 @@ export async function inflateGzip(bytes: Uint8Array): Promise<{ bytes: Uint8Arra
 
 // -- value format pipeline ------------------------------------------------------
 
-export type ValueFormat = "raw" | "json" | "hex" | "bitset";
+export type ValueFormat = "raw" | "json" | "xml" | "hex" | "bitset";
 export type DecodeMode = "none" | "base64";
 export type Decompression = "none" | "gzip" | "lz4" | "zstd" | "snappy";
 
@@ -86,6 +86,86 @@ export function looksLikeJson(text: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function looksLikeXml(text: string): boolean {
+  return /^\s*<\s*[A-Za-z_?![]/.test(text);
+}
+
+/**
+ * XML 格式化（词法级缩进，不做 DOM 解析）。
+ *
+ * 安全红线（不可信载荷）：含 DOCTYPE/ENTITY 的文本一律原样返回——不解析、
+ * 不展开、不重排，杜绝实体歧义；良构性只做词法校验（标签开闭栈匹配），
+ * 不平衡即放弃重排。实体引用（&amp; 等）按原样保留在文本节点中。
+ */
+export function prettyXml(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("<")) return text;
+  if (/<!DOCTYPE|<!ENTITY/i.test(trimmed)) return text;
+  const tokens = trimmed.match(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[^>]+>|[^<]+|</g);
+  if (!tokens) return text;
+
+  // 良构校验（词法级）：注释/CDATA/PI/声明跳过，开闭标签名栈匹配。
+  const stack: string[] = [];
+  const nameOf = (tag: string): string => tag.match(/^<\/?\s*([A-Za-z_][\w.:-]*)/)?.[1] ?? "";
+  for (const token of tokens) {
+    if (!token.startsWith("<")) continue;
+    if (token.startsWith("<!--") || token.startsWith("<![") || token.startsWith("<?") || token.startsWith("<!")) continue;
+    if (token.startsWith("</")) {
+      if (stack.pop() !== nameOf(token)) return text;
+      continue;
+    }
+    if (token.endsWith("/>")) continue;
+    const name = nameOf(token);
+    if (!name) return text;
+    stack.push(name);
+  }
+  if (stack.length !== 0) return text;
+
+  const lines: string[] = [];
+  let depth = 0;
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    // `<a>text</a>` 三连同行（最常见的紧凑叶子节点）。
+    if (
+      token.startsWith("<") &&
+      !token.startsWith("</") &&
+      !token.endsWith("/>") &&
+      !token.startsWith("<!--") &&
+      !token.startsWith("<![") &&
+      !token.startsWith("<?") &&
+      !token.startsWith("<!")
+    ) {
+      const textNode = tokens[index + 1];
+      const close = tokens[index + 2];
+      if (textNode !== undefined && !textNode.startsWith("<") && textNode.trim() && close !== undefined && close.startsWith("</")) {
+        lines.push("  ".repeat(depth) + token.trim() + textNode.trim() + close.trim());
+        index += 3;
+        continue;
+      }
+    }
+    if (token.startsWith("</")) {
+      depth = Math.max(0, depth - 1);
+      lines.push("  ".repeat(depth) + token.trim());
+    } else if (!token.startsWith("<")) {
+      if (token.trim()) lines.push("  ".repeat(depth) + token.trim());
+    } else {
+      lines.push("  ".repeat(depth) + token.trim());
+      if (
+        !token.endsWith("/>") &&
+        !token.startsWith("<!--") &&
+        !token.startsWith("<![") &&
+        !token.startsWith("<?") &&
+        !token.startsWith("<!")
+      ) {
+        depth += 1;
+      }
+    }
+    index += 1;
+  }
+  return lines.join("\n");
 }
 
 // BitSet 展示：把整数字符串（十进制/0x 十六进制/二进制字面量）转成从
@@ -183,6 +263,8 @@ export async function formatMessageValue(message: KafkaMessage, options: ValueFo
   switch (options.format) {
     case "json":
       return { text: prettyJson(text), error };
+    case "xml":
+      return { text: prettyXml(text), error };
     case "hex":
       return { text: bytesToHex(bytes).replace(/(..)(?=.)/g, "$1 "), error };
     case "bitset": {

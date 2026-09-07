@@ -251,6 +251,15 @@ const codecSamples: Array<{ label: string; payloadB64: string }> = [
     label: "lz4",
     payloadB64: bytesToBase64(lz4Compress(new TextEncoder().encode('{"algo":"lz4","ok":true}'))),
   },
+  // XML 明文样本:详情抽屉 XML 高亮/格式化自动识别走查用(属性/嵌套/自闭合)。
+  {
+    label: "xml",
+    payloadB64: bytesToBase64(
+      new TextEncoder().encode(
+        '<order id="A-1009" currency="USD"><customer><name>Alice</name><tier>gold</tier></customer><items><item sku="S-1" qty="2"/><item sku="S-2" qty="1"/></items><paid>true</paid></order>',
+      ),
+    ),
+  },
 ];
 const codecTopic: MockTopic = {
   name: "codec-lab",

@@ -412,8 +412,10 @@ onBeforeUnmount(() => {
           <MessagesPanel
             v-show="activePanel === 'messages'"
             :topic="selectedTopic"
+            :topics="topics"
             :can-write="canWrite"
             :sr-provider="srProvider"
+            @select-topic="selectTopic"
             @error="showError"
             @notify="showNotice"
           />

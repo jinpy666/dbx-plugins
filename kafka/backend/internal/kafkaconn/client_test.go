@@ -133,6 +133,20 @@ func TestBuildTLSConfigMatrix(t *testing.T) {
 	}
 }
 
+func TestZooKeeperSelectionIgnoresPreviousBootstrapAndRuntimeSeeds(t *testing.T) {
+	entry := &connEntry{
+		profile: Profile{ConnectionSource: ConnectionSourceZookeeper, BootstrapServers: []string{"old-broker:9092"}},
+		target:  connTarget{Host: "old-tunnel", Port: 19092},
+	}
+	if got := entry.seedBrokers(); len(got) != 0 {
+		t.Fatalf("ZooKeeper mode kept inactive bootstrap seeds: %v", got)
+	}
+	entry.profile.ConnectionSource = ConnectionSourceBootstrap
+	if got := entry.seedBrokers(); len(got) != 1 || got[0] != "old-broker:9092" {
+		t.Fatalf("switching back did not restore bootstrap seeds: %v", got)
+	}
+}
+
 func TestSeedBrokersFallback(t *testing.T) {
 	entry := &connEntry{profile: Profile{BootstrapServers: []string{"k1:9092"}}}
 	if got := entry.seedBrokers(); len(got) != 1 || got[0] != "k1:9092" {

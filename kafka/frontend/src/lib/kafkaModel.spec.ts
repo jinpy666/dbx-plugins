@@ -32,6 +32,9 @@ import {
   partitionOffsetsToText,
   parsePropertiesText,
   prettyJson,
+  looksLikeJson,
+  looksLikeXml,
+  prettyXml,
   previewText,
   propertiesToConnectionForm,
   serializeMessagesToCsv,
@@ -93,6 +96,43 @@ describe("format pipeline", () => {
   it("pretty-prints JSON only when parseable", () => {
     expect(prettyJson('{"a":1}')).toBe('{\n  "a": 1\n}');
     expect(prettyJson("plain text")).toBe("plain text");
+  });
+
+  it("pretty-prints well-formed XML with leaf nodes inline", () => {
+    expect(prettyXml("<a><b>1</b><c/><d x=\"2\">y</d></a>")).toBe(
+      ["<a>", "  <b>1</b>", "  <c/>", '  <d x="2">y</d>', "</a>"].join("\n"),
+    );
+  });
+
+  it("leaves malformed XML, text, and DOCTYPE/ENTITY payloads untouched (no parsing)", () => {
+    // 不良构：标签不平衡 → 原样。
+    expect(prettyXml("<a><b></a>")).toBe("<a><b></a>");
+    // 纯文本 → 原样。
+    expect(prettyXml("hello world")).toBe("hello world");
+    // DOCTYPE/ENTITY：安全红线——不解析不重排，原样返回。
+    expect(prettyXml('<!DOCTYPE a [<!ENTITY x "y">]><a>&x;</a>')).toBe(
+      '<!DOCTYPE a [<!ENTITY x "y">]><a>&x;</a>',
+    );
+    // 实体引用按原样保留在文本节点中。
+    expect(prettyXml("<a>r&amp;D</a>")).toBe("<a>r&amp;D</a>");
+  });
+
+  it("detects xml/json shapes for auto format selection", () => {
+    expect(looksLikeXml("<order id=\"1\"/>")).toBe(true);
+    expect(looksLikeXml("<?xml version=\"1.0\"?><a/>")).toBe(true);
+    expect(looksLikeXml('{"a":1}')).toBe(false);
+    expect(looksLikeJson('{"a":1}')).toBe(true);
+    expect(looksLikeJson("<a/>")).toBe(false);
+  });
+
+  it("formats xml values through the pipeline", async () => {
+    const result = await formatMessageValue(msg({ valueBase64: b64('<r><a>1</a></r>') }), {
+      decode: "none",
+      decompression: "none",
+      format: "xml",
+    });
+    expect(result.text).toBe("<r>\n  <a>1</a>\n</r>");
+    expect(result.error).toBeUndefined();
   });
 
   it("formats bitsets from decimal/hex/binary literals", () => {

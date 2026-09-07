@@ -7,9 +7,10 @@
 // 布局压缩（R 路）：有结果后表单默认收起为一行摘要 chips 条（开合记忆
 // dbx.kafka.ui.msgFormOpen），结果表格吃满剩余高度；大数据量防护见各标注。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, triggerRef, watch } from "vue";
-import { ChevronDown, ChevronsDown, Download, Play, Plus, Save, Trash2, X } from "@lucide/vue";
+import { ChevronDown, ChevronsDown, Copy, Download, Play, Plus, Save, SlidersHorizontal, Trash2, X } from "@lucide/vue";
 import type { ColDef } from "ag-grid-community";
 import DbxAgGrid from "./DbxAgGrid.vue";
+import CodeEditor from "./CodeEditor.vue";
 import {
   kafkaApi,
   type ConsumeParams,
@@ -19,6 +20,7 @@ import {
   type FieldFilter,
   type IsolationLevel,
   type KafkaMessage,
+  type KafkaTopic,
   type MatchMode,
   type OffsetStrategy,
   type SchemaAttach,
@@ -43,6 +45,8 @@ import {
   formatMessageValue,
   formatTimestamp,
   isRangeReversed,
+  looksLikeJson,
+  looksLikeXml,
   messageFullValueText,
   nowDatetimeLocal,
   offsetTimeToParam,
@@ -52,7 +56,6 @@ import {
   serializeMessagesToJson,
   switchTimeInputMode,
   timestampIso,
-  truncatedValuePreview,
   validateConsumeForm,
   type DecodedValue,
   type ValueFormat,
@@ -62,6 +65,8 @@ import { t } from "../lib/i18n";
 const props = defineProps<{
   topic: string;
   canWrite: boolean;
+  /** 当前连接 topic 列表（consume-bar 下拉选择；与左侧树同一 App 状态源）。 */
+  topics?: KafkaTopic[];
   /** 连接 SR provider（Phase P）：glue 时 schema 挂载区禁用并提示（管理面 only）。 */
   srProvider?: string;
 }>();
@@ -69,7 +74,13 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "error", message: string): void;
   (e: "notify", message: string): void;
+  (e: "selectTopic", topic: string): void;
 }>();
+
+/** 消费条上的 topic 下拉选择：上抛 App.selectTopic（与左侧树同源联动）。 */
+function onTopicSelect(name: string) {
+  if (name && name !== props.topic) emit("selectTopic", name);
+}
 
 // -- form state ---------------------------------------------------------------
 
@@ -121,7 +132,8 @@ function loadStoredFormOpen(): boolean | null {
 }
 
 const storedFormOpen = loadStoredFormOpen();
-const formOpen = ref(storedFormOpen ?? true);
+// 条件抽屉（consume-drawer）默认收起：单行消费条 + 结果表格是常态布局。
+const formOpen = ref(storedFormOpen ?? false);
 
 watch(formOpen, (open) => {
   try {
@@ -489,8 +501,8 @@ async function runConsume() {
     const response = await kafkaApi.messagesConsume(buildParams());
     if (seq !== consumeSeq) return; // 竞态守卫：在途期间切了 topic / 重新消费 → 旧响应丢弃
     applyResult(response);
-    // 有结果后表单默认收起为摘要条（localStorage 已有开合记忆时以记忆为准）。
-    if (storedFormOpen === null) formOpen.value = false;
+    // 消费成功后收起条件抽屉，结果表格立即可见（开合记忆仍由 watch(formOpen) 落盘）。
+    formOpen.value = false;
     // P1-1：消费后自动滚到结果区顶部，数据行立即可见（空态/无滚动时为 no-op）。
     await nextTick();
     resultMetaEl.value?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -609,6 +621,8 @@ function downloadText(name: string, contentType: string, text: string) {
 }
 
 // -- detail drawer（本地二次 decode/format，valueBase64 保真来源）-----------------
+// 详情体验 v2：headers 表格 ⇄ JSON 切换 + 行级复制；value 走 CodeEditor 只读
+//（JSON 高亮/换行开关/内部滚动），复制按钮收敛到各区块标题行（行内/头部 icon）。
 
 const viewFormat = ref<ValueFormat>("raw");
 const viewDecode = ref<DecodeMode>("none");
@@ -616,19 +630,27 @@ const viewDecompression = ref<Decompression>("none");
 const viewResult = ref<DecodedValue>({ text: "" });
 const viewBusy = ref(false);
 const showFullBase64 = ref(false);
+// headers 展示形态：表格（key|value+行复制，默认）/ 格式化 JSON。
+const headersView = ref<"table" | "json">("table");
+// Headers / Value 区块折叠态（抽屉内会话级；默认全展开）。
+const sectionsOpen = ref({ headers: true, value: true });
+const headersEntries = computed(() => Object.entries(detail.value?.headers ?? {}));
+const headersJsonText = computed(() => JSON.stringify(detail.value?.headers ?? {}, null, 2));
 
 watch(detail, (message) => {
   showFullBase64.value = false;
+  headersView.value = "table";
+  sectionsOpen.value = { headers: true, value: true };
   if (!message) return;
-  viewFormat.value = message.valueBase64 && looksJson(message) ? "json" : "raw";
+  const text = messageFullValueText(message).trim();
+  viewFormat.value = looksLikeXml(text) ? "xml" : looksLikeJson(text) ? "json" : "raw";
   viewDecode.value = "none";
   viewDecompression.value = "none";
   void renderView();
 });
 
-function looksJson(message: KafkaMessage): boolean {
-  const text = (message.valueText ?? "").trim();
-  return text.startsWith("{") || text.startsWith("[");
+function toggleSection(name: "headers" | "value") {
+  sectionsOpen.value = { ...sectionsOpen.value, [name]: !sectionsOpen.value[name] };
 }
 
 async function renderView() {
@@ -646,9 +668,8 @@ async function renderView() {
   }
 }
 
-// 大 value 截断预览（R 路）：默认只渲染头尾（DETAIL_VALUE_PREVIEW_MAX），
-// 512KB 级文本不整段塞 DOM 文本节点；「查看完整 / 下载」复用既有入口。
-const valuePreview = computed(() => truncatedValuePreview(viewResult.value.text));
+// 编辑器直接承载全量解码/格式化文本（CodeMirror 虚拟渲染，16384 截断预览
+// 退役）——「所见即所复制」：copy-value 复制当前解码/格式化结果文本。
 
 function downloadValue() {
   const message = detail.value;
@@ -713,7 +734,6 @@ watch(
     consuming.value = false;
     applyResult(null);
     detail.value = null;
-    if (storedFormOpen === null) formOpen.value = true;
   },
 );
 
@@ -722,24 +742,58 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
 
 <template>
   <section class="section-block messages-panel" :class="{ 'has-result': Boolean(result) }">
-    <!-- 收起态：一行摘要条（chips 概括当前消费条件，表格吃满剩余高度） -->
-    <div v-if="!formOpen" class="msg-summary-bar">
-      <span class="msg-chip mono" :title="t('messages.topic')">{{ topic || "—" }}</span>
-      <span class="msg-chip" :title="t('messages.offsetStrategy')">{{ strategyLabel }}</span>
-      <span class="msg-chip" :title="t('messages.limit')">{{ t("messages.limit") }} {{ limit }}</span>
-      <span class="msg-chip" :class="{ 'msg-chip--active': filterCount > 0 }" :title="t('messages.uiGroupFilter')">
-        {{ t("messages.uiGroupFilter") }} ×{{ filterCount }}
+    <!-- 单行消费条：topic 下拉 + 条件开关（活跃条件数 badge）+ 摘要 chips + 消费。
+         原「收起态摘要条 / 展开态大表单」两种占位合并为常驻一行，条件收进抽屉。 -->
+    <div class="consume-bar">
+      <label class="consume-bar__topic">
+        <span class="consume-bar__label">{{ t("messages.topic") }}</span>
+        <select
+          :value="topic"
+          class="mono"
+          data-testid="topic-select"
+          :title="topic || t('messages.topicPlaceholder')"
+          @change="onTopicSelect(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="" disabled>{{ t("messages.topicPlaceholder") }}</option>
+          <option v-for="topicItem in topics" :key="topicItem.name" :value="topicItem.name">{{ topicItem.name }}</option>
+          <!-- topics 未下发时兜底展示当前选中，保证下拉不空挂 -->
+          <option v-if="topic && !(topics ?? []).some((topicItem) => topicItem.name === topic)" :value="topic">{{ topic }}</option>
+        </select>
+      </label>
+      <button
+        class="consume-bar__filters"
+        type="button"
+        :class="{ 'is-active': formOpen }"
+        :aria-expanded="formOpen"
+        data-testid="filters-toggle"
+        @click="toggleFormOpen"
+      >
+        <SlidersHorizontal aria-hidden="true" />
+        <span>{{ t("messages.filtersToggle") }}</span>
+        <span v-if="filterCount > 0" class="badge badge-warn">{{ filterCount }}</span>
+      </button>
+      <span class="consume-bar__summary">
+        <span class="msg-chip" :title="t('messages.offsetStrategy')">{{ strategyLabel }}</span>
+        <span class="msg-chip" :title="t('messages.limit')">{{ t("messages.limit") }} {{ limit }}</span>
+        <span v-if="groupId.trim()" class="msg-chip mono" :title="t('messages.groupId')">{{ groupId }}</span>
+        <span class="msg-chip" :title="t('messages.decode')">{{ decodeLabel }}</span>
       </span>
-      <span v-if="groupId.trim()" class="msg-chip mono" :title="t('messages.groupId')">{{ groupId }}</span>
-      <span class="msg-chip" :title="t('messages.decode')">{{ decodeLabel }}</span>
-      <span class="msg-summary-spacer" />
-      <button class="mini-button" type="button" :disabled="consuming || !topic || tsRangeReversed" @click="runConsume">
+      <span class="consume-bar__spacer" />
+      <button
+        class="primary-button compact"
+        type="button"
+        :disabled="consuming || !topic || tsRangeReversed"
+        data-testid="consume-run"
+        @click="runConsume"
+      >
         <Play aria-hidden="true" />{{ consuming ? t("messages.running") : t("messages.run") }}
       </button>
-      <button class="toolbar-button" type="button" @click="toggleFormOpen">{{ t("messages.uiShowFilters") }}</button>
     </div>
 
-    <template v-if="formOpen">
+    <!-- 条件抽屉：浮层盖在结果区上方，不挤压表格高度；点外部遮罩/Esc 收起。 -->
+    <div v-show="formOpen" class="consume-drawer">
+      <div class="consume-drawer__backdrop" @click="formOpen = false" />
+      <div class="consume-drawer__panel">
     <div class="consume-groups">
       <!-- 基础：常用项前置 -->
       <div class="filter-group">
@@ -749,10 +803,6 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         </button>
         <div v-if="openGroups.basic" class="filter-group-body">
           <div class="group-grid">
-            <label class="field field--wide">
-              <span>{{ t("messages.topic") }}</span>
-              <input :value="topic" type="text" class="mono" readonly />
-            </label>
             <label class="field">
               <span>{{ t("messages.groupId") }}</span>
               <input v-model="groupId" type="text" :placeholder="t('messages.groupIdPlaceholder')" :disabled="groupDisabled" spellcheck="false" />
@@ -1074,7 +1124,8 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         <Play aria-hidden="true" />{{ consuming ? t("messages.running") : t("messages.run") }}
       </button>
     </div>
-    </template>
+      </div><!-- /consume-drawer__panel -->
+    </div><!-- /consume-drawer -->
 
     <div v-if="formIssues.length > 0" class="kafka-form-errors">
       <p v-for="issue in formIssues" :key="issue" class="form-error">{{ issue }}</p>
@@ -1148,71 +1199,120 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       <div v-if="detail" class="drawer" ref="drawerEl" tabindex="-1" role="dialog" aria-modal="true">
         <header>
           <span class="mono">{{ detail.topic }} · {{ t("messages.colPartition") }} {{ detail.partition }} · {{ t("messages.colOffset") }} {{ detail.offset }}</span>
-          <button class="icon-button" :title="t('close')" @click="detail = null"><X /></button>
+          <span class="drawer-head-actions">
+            <button class="icon-button" :title="t('messages.copyJson')" data-testid="copy-json" @click="copyDetail('json')"><Copy /></button>
+            <button class="icon-button" :title="t('close')" @click="detail = null"><X /></button>
+          </span>
         </header>
         <div class="drawer-body">
           <dl class="kv-grid">
             <dt>{{ t("messages.colTimestamp") }}</dt>
             <dd :title="timestampIso(detail.timestamp)">{{ formatTimestamp(detail.timestamp, workbenchTimestampTz) }}</dd>
             <dt>{{ t("messages.colKey") }}</dt>
-            <dd>{{ detail.key ?? "—" }}</dd>
-            <dt>{{ t("messages.colHeaders") }}</dt>
-            <dd>{{ detail.headers && Object.keys(detail.headers).length > 0 ? JSON.stringify(detail.headers) : "—" }}</dd>
+            <dd class="kv-dd-inline">
+              <span class="kv-dd-text" :title="detail.key ?? undefined">{{ detail.key ?? "—" }}</span>
+              <button v-if="detail.key" class="icon-button icon-button--inline" type="button" :title="t('messages.copyKey')" data-testid="copy-key" @click="copyDetail('key')"><Copy /></button>
+            </dd>
             <dt v-if="detail.schemaSubject">{{ t("messages.colSchema") }}</dt>
             <dd v-if="detail.schemaSubject" class="mono">{{ detail.schemaSubject }} v{{ detail.schemaVersion ?? "?" }} (id {{ detail.schemaId ?? "—" }})</dd>
             <dt v-if="detail.decodeError">{{ t("messages.decodeError") }}</dt>
             <dd v-if="detail.decodeError" class="form-error">{{ detail.decodeError }}</dd>
           </dl>
-          <div class="kafka-form kafka-form--bare">
-            <label class="field">
-              <span>{{ t("messages.decode") }}</span>
-              <select v-model="viewDecode" @change="renderView">
-                <option value="none">none</option>
-                <option value="base64">base64</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>{{ t("messages.decompression") }}</span>
-              <select v-model="viewDecompression" @change="renderView">
-                <option value="none">none</option>
-                <option value="gzip">gzip</option>
-                <option value="lz4">lz4</option>
-                <option value="zstd">zstd</option>
-                <option value="snappy">snappy</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>{{ t("messages.format") }}</span>
-              <select v-model="viewFormat" @change="renderView">
-                <option value="raw">{{ t("messages.formatRaw") }}</option>
-                <option value="json">{{ t("messages.formatJson") }}</option>
-                <option value="hex">{{ t("messages.formatHex") }}</option>
-                <option value="bitset">{{ t("messages.formatBitset") }}</option>
-              </select>
-            </label>
-            <button class="toolbar-button" type="button" :title="t('messages.fullValue')" @click="showFullBase64 = !showFullBase64">
-              {{ showFullBase64 ? t("messages.formatRaw") : t("messages.fullValue") }}
+
+          <!-- Headers：可折叠区块；表格（key|value + 行复制，限高滚动）⇄ 格式化 JSON -->
+          <section class="detail-block">
+            <button class="detail-block__head detail-block__head--toggle" type="button" :aria-expanded="sectionsOpen.headers" @click="toggleSection('headers')">
+              <ChevronDown class="chev" :class="{ folded: !sectionsOpen.headers }" aria-hidden="true" />
+              <span class="detail-block__title">{{ t("messages.colHeaders") }} · {{ headersEntries.length }}</span>
             </button>
-            <button class="toolbar-button" type="button" :title="t('messages.downloadValue')" @click="downloadValue">
-              <Download aria-hidden="true" /><span>{{ t("messages.downloadValue") }}</span>
+            <div v-show="sectionsOpen.headers" class="detail-block__body">
+              <div class="detail-block__actions">
+                <template v-if="headersEntries.length > 0">
+                  <button class="seg-toggle" type="button" :class="{ 'is-active': headersView === 'table' }" @click="headersView = 'table'">{{ t("messages.headersViewTable") }}</button>
+                  <button class="seg-toggle" type="button" :class="{ 'is-active': headersView === 'json' }" @click="headersView = 'json'">{{ t("messages.headersViewJson") }}</button>
+                  <button class="icon-button" type="button" :title="t('messages.copyHeaders')" data-testid="copy-headers" @click="copyDetail('headers')"><Copy /></button>
+                </template>
+              </div>
+              <div v-if="headersView === 'table' && headersEntries.length > 0" class="kv-scroll">
+                <table class="kv-table">
+                  <thead>
+                    <tr>
+                      <th>{{ t("messages.colKey") }}</th>
+                      <th>Value</th>
+                      <th class="kv-table__action-col" aria-hidden="true"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="[headerKey, headerValue] in headersEntries" :key="headerKey">
+                      <td class="mono">{{ headerKey }}</td>
+                      <td class="kv-table__value" :title="headerValue">{{ headerValue }}</td>
+                      <td class="kv-table__action-col">
+                        <button class="icon-button icon-button--inline" type="button" :title="t('messages.copyHeaderValue')" @click="copyWithNotify(headerValue)"><Copy /></button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <pre v-else-if="headersView === 'json' && headersEntries.length > 0" class="value-view value-view--headers">{{ headersJsonText }}</pre>
+              <p v-else class="empty compact detail-headers-empty">{{ t("messages.headersEmpty") }}</p>
+            </div>
+          </section>
+
+          <!-- Value：可折叠区块；CodeEditor 只读高亮（json/xml）+ 解码管线 + 收敛后的操作 icon -->
+          <section class="detail-block">
+            <button class="detail-block__head detail-block__head--toggle" type="button" :aria-expanded="sectionsOpen.value" @click="toggleSection('value')">
+              <ChevronDown class="chev" :class="{ folded: !sectionsOpen.value }" aria-hidden="true" />
+              <span class="detail-block__title">{{ t("messages.colValue") }}<span v-if="viewBusy" class="detail-block__busy">…</span></span>
             </button>
-            <!-- F6-2 复制族：key/value/headers/整条 JSON 四按钮（clipboard API +
-                 execCommand 兜底在 lib/kafkaModel.copyWithNotify）。 -->
-            <button class="toolbar-button" type="button" :title="t('messages.copyKey')" data-testid="copy-key" @click="copyDetail('key')">
-              {{ t("messages.copyKey") }}
-            </button>
-            <button class="toolbar-button" type="button" :title="t('messages.copyValue')" data-testid="copy-value" @click="copyDetail('value')">
-              {{ t("messages.copyValue") }}
-            </button>
-            <button class="toolbar-button" type="button" :title="t('messages.copyHeaders')" data-testid="copy-headers" @click="copyDetail('headers')">
-              {{ t("messages.copyHeaders") }}
-            </button>
-            <button class="toolbar-button" type="button" :title="t('messages.copyJson')" data-testid="copy-json" @click="copyDetail('json')">
-              {{ t("messages.copyJson") }}
-            </button>
-          </div>
-          <pre v-if="showFullBase64" class="value-view">{{ detail.valueBase64 ?? detail.valueText ?? "" }}</pre>
-          <pre v-else class="value-view" :class="{ error: viewResult.error }">{{ viewResult.error || valuePreview.text }}</pre>
+            <div v-show="sectionsOpen.value" class="detail-block__body">
+              <div class="detail-block__actions">
+                <button class="seg-toggle" type="button" :class="{ 'is-active': showFullBase64 }" :title="t('messages.fullValue')" @click="showFullBase64 = !showFullBase64">
+                  {{ showFullBase64 ? t("messages.formatRaw") : t("messages.fullValue") }}
+                </button>
+                <button class="icon-button" type="button" :title="t('messages.downloadValue')" @click="downloadValue"><Download /></button>
+                <button class="icon-button" type="button" :title="t('messages.copyValue')" data-testid="copy-value" @click="copyDetail('value')"><Copy /></button>
+              </div>
+              <div class="kafka-form kafka-form--bare detail-view-form">
+                <label class="field">
+                  <span>{{ t("messages.decode") }}</span>
+                  <select v-model="viewDecode" @change="renderView">
+                    <option value="none">none</option>
+                    <option value="base64">base64</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>{{ t("messages.decompression") }}</span>
+                  <select v-model="viewDecompression" @change="renderView">
+                    <option value="none">none</option>
+                    <option value="gzip">gzip</option>
+                    <option value="lz4">lz4</option>
+                    <option value="zstd">zstd</option>
+                    <option value="snappy">snappy</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>{{ t("messages.format") }}</span>
+                  <select v-model="viewFormat" @change="renderView">
+                    <option value="raw">{{ t("messages.formatRaw") }}</option>
+                    <option value="json">{{ t("messages.formatJson") }}</option>
+                    <option value="xml">XML</option>
+                    <option value="hex">{{ t("messages.formatHex") }}</option>
+                    <option value="bitset">{{ t("messages.formatBitset") }}</option>
+                  </select>
+                </label>
+              </div>
+              <pre v-if="viewResult.error" class="value-view error">{{ viewResult.error }}</pre>
+              <pre v-else-if="showFullBase64" class="value-view">{{ detail.valueBase64 ?? detail.valueText ?? "" }}</pre>
+              <CodeEditor
+                v-else
+                :model-value="viewResult.text"
+                :language="viewFormat === 'json' || viewFormat === 'xml' ? viewFormat : 'text'"
+                disabled
+                min-height="140px"
+                max-height="320px"
+              />
+            </div>
+          </section>
         </div>
       </div>
     </teleport>

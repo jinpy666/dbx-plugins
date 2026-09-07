@@ -399,8 +399,6 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	consumeCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
 	groupID := trimSpace(params.GroupID)
 	decodeMethod, err := normalizeDecodeMethod(params.Decode)
@@ -448,11 +446,60 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	if err != nil {
 		return result, err
 	}
-	client, closeClient, err := s.consumeClient(params.ConnectionID, consumeOpts...)
-	if err != nil {
-		return result, err
+	// 消费 client 获取：池优先（consume_pool.go，消除冷启动握手/元数据开销）；
+	// 不适用（group/精确起点策略）、未命中或占用中 → per-request 新建。
+	// 池条目所有权移交池，closeClient 变 no-op，统一走 release。
+	reuseOK, resetAtStart := consumeReusePolicy(params.OffsetStrategy, groupID)
+	var signature string
+	var pooled *consumePoolEntry
+	var observed map[int32]struct{}
+	var client *kgo.Client
+	var closeClient func()
+	if reuseOK {
+		signature = consumeClientSignature(topic, params.OffsetStrategy, partitions, params.IsolationLevel)
+		if entry, reusable := s.consumePoolAcquire(params.ConnectionID, signature, resetAtStart); reusable {
+			if resetErr := resetConsumeClientForReuse(entry.client, topic, resetAtStart, entry.seenParts); resetErr != nil {
+				s.consumePoolRelease(entry, nil, false)
+			} else {
+				pooled = entry
+				client = entry.client
+				closeClient = func() {}
+				observed = map[int32]struct{}{}
+			}
+		}
 	}
-	defer closeClient()
+	if client == nil {
+		client, closeClient, err = s.consumeClient(params.ConnectionID, consumeOpts...)
+		if err != nil {
+			return result, err
+		}
+		if reuseOK {
+			pooled = s.consumePoolPut(params.ConnectionID, signature, client)
+			observed = map[int32]struct{}{}
+			closeClient = func() {}
+		}
+	}
+	healthy := true
+	defer func() {
+		if pooled != nil {
+			s.consumePoolRelease(pooled, observed, healthy)
+		} else if closeClient != nil {
+			closeClient()
+		}
+	}()
+
+	// 启动期预算与扫描窗口分离：冷启动的 TLS/SASL/metadata/ListOffsets 不吃
+	// 用户 timeoutMs（5s 窗口在跨境链路上连启动都跑不完）；Ping 等 metadata
+	// ready 后才开扫描窗口。
+	pingCtx, pingCancel := context.WithTimeout(ctx, consumeStartupBudget(timeout))
+	pingErr := client.Ping(pingCtx)
+	pingCancel()
+	if pingErr != nil {
+		healthy = false
+		return result, fmt.Errorf("kafka cluster not ready within %s: %w", consumeStartupBudget(timeout), pingErr)
+	}
+	consumeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	messages := make([]ConsumedMessage, 0, limit)
 	nextPartitionOffsets := map[int32]int64{}
@@ -468,6 +515,9 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 		for !iter.Done() {
 			record := iter.Next()
 			scanned++
+			if observed != nil {
+				observed[record.Partition] = struct{}{}
+			}
 			nextPartitionOffset(nextPartitionOffsets, record)
 			if !recordMatches(params, matcher, record) {
 				continue
@@ -519,6 +569,7 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 				timedOut = true
 				break
 			}
+			healthy = false
 			return result, err
 		}
 		if consumeCtx.Err() != nil {
@@ -531,6 +582,7 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 
 	if params.Commit {
 		if err := client.CommitUncommittedOffsets(consumeCtx); err != nil {
+			healthy = false
 			return result, err
 		}
 	}

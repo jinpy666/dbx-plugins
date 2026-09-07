@@ -74,7 +74,20 @@ function installBridge(routes: Record<string, unknown>) {
 function mountPanel(props: Record<string, unknown> = {}) {
   return mount(MessagesPanel, {
     props: { topic: "order-events", canWrite: true, ...props },
-    global: { stubs: { DbxAgGrid: DbxAgGridStub, teleport: true } },
+    global: {
+      stubs: {
+        DbxAgGrid: DbxAgGridStub,
+        teleport: true,
+        // CodeEditor（CodeMirror）在 happy-dom 下无法布局，stub 渲染只读文本。
+        CodeEditor: defineComponent({
+          name: "CodeEditorStub",
+          props: { modelValue: { type: String, default: "" }, language: { type: String, default: "text" } },
+          setup(props) {
+            return () => h("pre", { class: "code-editor-stub", "data-language": props.language }, props.modelValue);
+          },
+        }),
+      },
+    },
   });
 }
 
@@ -233,7 +246,7 @@ describe("MessagesPanel", () => {
     const remounted = mountPanel();
     await flushPromises();
     // 首次消费后表单已收起为摘要条（开合记忆持久化）——重挂载走摘要条的重跑按钮。
-    const rerun = remounted.find(".msg-summary-bar .mini-button");
+    const rerun = remounted.find('[data-testid="consume-run"]');
     expect(rerun.exists()).toBe(true);
     await rerun.trigger("click");
     await flushPromises();
@@ -290,5 +303,110 @@ describe("MessagesPanel", () => {
     expect(parsed.value).toBe('{"v":"body"}');
     // 通知走既有「已复制」文案。
     expect((wrapper.emitted("notify") ?? []).flat()).toContain(t("copied"));
+  });
+
+  // 详情体验 v2：headers 表格（行级复制）⇄ JSON 切换；value 走只读编辑器
+  //（json 高亮态随 format 选择），完整 base64 视图保留。
+  it("renders headers as a copyable table and switches to JSON view", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": {
+        messages: [
+          {
+            topic: "order-events",
+            partition: 0,
+            offset: 1,
+            timestamp: 1_700_000_000_000,
+            key: "k-1",
+            valueText: '{"v":"body"}',
+            headers: { trace: "t-9", env: "int" },
+          },
+        ],
+        scanned: 1,
+        matched: 1,
+        hasMore: false,
+      },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    await wrapper.find(".grid-stub-row").trigger("click");
+    await flushPromises();
+
+    // 表格视图（默认）：2 行 key|value + 行内复制按钮（复制该行值）。
+    const table = wrapper.find(".kv-table");
+    expect(table.exists()).toBe(true);
+    expect(table.findAll("tbody tr")).toHaveLength(2);
+    expect(table.text()).toContain("trace");
+    expect(table.text()).toContain("t-9");
+    const rowCopy = table.findAll("tbody tr .icon-button");
+    await rowCopy[0].trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("t-9");
+
+    // 切 JSON：格式化文本（键与值都在）。
+    await wrapper.find('.detail-block__actions .seg-toggle:nth-child(2)').trigger("click");
+    const jsonView = wrapper.find(".value-view--headers");
+    expect(jsonView.exists()).toBe(true);
+    expect(jsonView.text()).toContain('"trace": "t-9"');
+    expect(jsonView.text()).toContain('"env": "int"');
+
+    // 无 headers 消息：空态文案（有结果后表单收起为摘要条，用条内「重新消费」）。
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": {
+        messages: [{ topic: "order-events", partition: 0, offset: 2, timestamp: 1, key: "k-2", valueText: "x" }],
+        scanned: 1,
+        matched: 1,
+        hasMore: false,
+      },
+    });
+    await wrapper.find('[data-testid="consume-run"]').trigger("click");
+    await flushPromises();
+    await wrapper.find(".grid-stub-row").trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".detail-headers-empty").text()).toBe(t("messages.headersEmpty"));
+  });
+
+  it("shows the value in a read-only editor with JSON language and keeps raw base64 toggle", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": {
+        messages: [
+          {
+            topic: "order-events",
+            partition: 0,
+            offset: 1,
+            timestamp: 1,
+            key: "k-1",
+            valueText: '{"v":"body"}',
+            valueBase64: btoa('{"v":"body"}'),
+          },
+        ],
+        scanned: 1,
+        matched: 1,
+        hasMore: false,
+      },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    await wrapper.find(".grid-stub-row").trigger("click");
+    await flushPromises();
+
+    // looksJson → format=json：编辑器 language=json，内容是格式化后的文本。
+    const editor = wrapper.find(".code-editor-stub");
+    expect(editor.attributes("data-language")).toBe("json");
+    expect(editor.text()).toContain('"v"');
+
+    // fullValue（完整 base64）切换：编辑器让位给 base64 文本视图。
+    await wrapper.find('.detail-block__actions .seg-toggle').trigger("click");
+    const base64View = wrapper.find(".value-view:not(.value-view--headers)");
+    expect(base64View.exists()).toBe(true);
+    expect(base64View.text()).toBe(btoa('{"v":"body"}'));
   });
 });

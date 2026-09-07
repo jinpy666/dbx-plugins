@@ -656,3 +656,94 @@ client 接口抽象（超出本轮"不重构"约束，登记不实施）。
   primary 14% 底 + rgb(59,130,246) 字，空态几何中心与容器双向偏差 <2px；
   前端 typecheck + 219 单测全绿（MessagesPanel.spec 空态文案断言不受
   容器包裹影响）。纯样式/模板结构调整，协议与 sidecar 无涉。
+
+## 13. 消费启动提速（复用池 + 超时分层）与流式面板 AG Grid 化（2026-09-07）
+
+- **根因（TSS-MEP-INT 实测取证）**：kgo client 冷启动要完整走 TCP+TLS 握手
+  +SASL+metadata+ListOffsets，跨境 SASL_SSL 链路实测单次 5-11s；而一次性
+  消费前端默认 `timeoutMs=5000` 且该超时覆盖整个请求——启动没完成就被掐掉
+  （earliest 同样 0 条必现；`latest` 默认策略在无新流量的 topic 上再叠加
+  一层 0 条）。流式会话 `context.Background()` 长跑，启动开销只付一次，
+  故「流式能拉到、一次性拉不到」。
+- **修复（backend）**：
+  1. 消费 client 复用池 `consume_pool.go`：一次性消费按「连接+消费形状」
+     缓存 kgo client，复用前 drain（50ms，仅清内存缓冲）+ `SetOffsets`
+     重置回策略起点（-2/-1 哨兵值经 franz-go directConsumer.applySetOffsets
+     原样进 Offset.at，已核对源码）。复用面保守：非 group 且 strategy ∈
+     {空, default, earliest, latest}；group/精确起点策略、占用中、重置失败
+     均回退 per-request 新建。池上限 8 条，空闲 2min 惰性回收，断连/退出
+     清池。inUse 排他防并发争用。
+  2. 超时分层 `consumeMessages`：启动期预算 `max(2×窗口, 12s)` 内
+     `client.Ping` 等 metadata ready，用户 `timeoutMs` 只约束扫描窗口——
+     5s 窗口不再被启动吃掉。Ping 失败显式报错（原来 5s 静默空结果）。
+  3. TLS 会话缓存共享方案**评估后放弃**：共享 `ClientSessionCache` 在
+     中间盒/网关终结 TLS 的集群入口实测触发 broker 立即断连
+     （dial 后 closed，提示 TLS misconfigured），风险大于省 1 RTT，
+     已回滚并在 `buildTLSConfig` 注释留档。
+- **修复（frontend）**：`StreamPanel.vue` 消息列表从自绘 `v-for` 行迁移到
+  `DbxAgGrid`（与 MessagesPanel 同一套 `toMessageRows`/`messageColumns`/
+  `MINIMAL_MESSAGE_FIELDS` 列模型；quickFilter 防抖透传 grid；autoScroll
+  经 `goToLatest()` 跳末页；环形缓冲「更早/更新」分页保留；行点击无详情
+  抽屉故 `emit-row-click=false`）。清理 `stream-log/stream-row/stream-scroll`
+  死样式与七语死键 `stream.quickFilterNoMatch`（过滤无命中由 ag-grid
+  内建 noRowsToShow 七语空态接管）。
+- **验证（TSS-MEP-INT 直连 sidecar 实测）**：
+  - 修复前（0.1.17）：earliest+5s → 0 条必现（纯超时）；earliest+20s →
+    10 条，wall 5.3-10.7s，三次重复无复用收益。
+  - 修复后：earliest+5s cold → 34-47 条（启动不吃窗口）；hot → 44-100 条，
+    wall ≈5s（窗口语义，凑满 limit 提前返回）；本地低 RTT 集群复用路径
+    0.24s（drain 200ms 版）→ 0.07s（50ms 版）。
+  - `scripts/test.sh` all green：前端 typecheck + 219 单测（StreamPanel.spec
+    改 mock DbxAgGrid 桩断言落表内容/quickFilter 透传/分页 clamp）+
+    go vet/test（新增 consume_pool 策略表/签名/池状态机 7 用例）+ 打包
+    io.dbx.kafka-0.1.19 + smoke `total=15 PASS=11 FAIL=0 SKIP=4`（设计内）。
+- **遗留**：① 消费空结果仍无法区分「无数据」与「窗口不足」（ConsumeResult
+  未透出 timedOut/启动耗时，需协议增字段，另行立项）；② 前端默认
+  `offsetStrategy=latest` 未改（用户未拍板；浏览历史消息场景建议 earliest）；
+  ③ 流式面板无详情抽屉（行点击不弹 JSON 详情，与消息面板不对称）。
+
+## 14. 消息面板条件抽屉化 + topic 下拉（2026-09-07）
+
+- **反馈（用户）**：① 消费条件占满面板上部，太占空间，希望做成抽屉样式；
+  ② 条件区 topic 只读不支持下拉，左侧树占地方，不如下拉框实用。
+- **改造（frontend）**：
+  1. 消息面板顶部改为**单行消费条**（consume-bar，常驻 ~40px）：topic 下拉
+     （props.topics 与左侧树同源 App.topics，emit selectTopic 走 App.selectTopic
+     双向联动）+「条件」开关（SlidersHorizontal icon，活跃过滤条件数 badge）
+     + 摘要 chips（策略/条数/消费组/解码）+ 主消费按钮；原收起态摘要条取消。
+  2. 条件全量收进 **consume-drawer 浮层**（absolute 面板内，从消费条之下展开
+     max-height 72%，backdrop 点击收起）：基础（去掉 readonly topic 字段）/
+     定位/时间与范围/过滤/解码五分组 + 预设 + 收起 + 消费原样搬入；
+     `v-show` 保 DOM（消费表单既有单测无需先开抽屉）。
+  3. 开合语义调整：`dbx.kafka.ui.msgFormOpen` 记忆保留，默认收起（原默认
+     展开）；消费成功后自动收起抽屉（原"有结果后收起为摘要条"逻辑取消）。
+- **验证**：mock 页浏览器实测——消费条单行、抽屉展开不挤压表格、下拉选择
+  user-signup 后侧栏高亮与头部 badge 同步切换、消费成功抽屉自动收起且结果
+  落地（已扫描 3 · 命中 3）；typecheck + 221 单测全绿（摘要条重消费按钮
+  定位更新为 consume-bar 的 data-testid=consume-run）；smoke all green
+  （PASS=11 FAIL=0 SKIP=4）。纯前端改动，协议与 sidecar 无涉。
+- **说明**：左侧 topic 树为全部面板共享的 App 级布局，本次未动；消息面板
+  已有下拉 + 侧栏自带折叠按钮，若要全局以下拉取代树需另行立项。
+
+## 15. 详情抽屉二轮：XML 高亮/格式化 + 折叠区块 + headers 限高（2026-09-07）
+
+- **反馈（用户）**：① value 缺 XML 等格式的高亮配色与格式化；② Headers/Value
+  应为可折叠区块；③ headers 多时高度失控，应限高滚动。
+- **改造（frontend）**：
+  1. **XML 支持**：`ValueFormat` 增 `xml`；`prettyXml`（kafkaModel，词法级
+     缩进，不做 DOM 解析）——含 DOCTYPE/ENTITY 的载荷**原样返回不重排**
+     （安全红线：不解析不展开不可信实体），良构性词法校验（标签栈匹配）
+     不平衡即放弃；`<a>text</a>` 叶子同行、自闭合/注释/CDATA/PI 保序。
+     自动识别：`looksLikeXml`（`<` 起始）优先于 JSON，打开详情即选对格式。
+     CodeEditor 增 `xml` 语言（新增依赖 @codemirror/lang-xml 6.1.0，
+     HighlightStyle 走 --cm-* 变量对齐明暗两套）。mock codec-lab 增 XML
+     明文样本（详情走查 fixture 先例）。
+  2. **折叠区块**：Headers/Value 标题行整行可点（ChevronDown 旋转 + aria-
+     expanded），body v-show；打开详情默认全展开。
+  3. **headers 限高**：表格包 `.kv-scroll`（max-height 160px 内部滚动，
+     表头 sticky）；JSON 视图同步 220px 上限。
+- **验证**：mock 实测——XML 消息自动识别 format=XML、pretty 缩进（11 行
+  结构化输出）+ 标签/属性高亮、折叠头 chevron 左置、Headers 收起 body
+  隐藏；`prettyXml` 单测 4 例（良构缩进/不良构原样/DOCTYPE+ENTITY 红线/
+  实体保留）；typecheck + 225 单测全绿；smoke all green（PASS=11 FAIL=0
+  SKIP=4）；打包 io.dbx.kafka-0.1.20。纯前端改动，协议与 sidecar 无涉。

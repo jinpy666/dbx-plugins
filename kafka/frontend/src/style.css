@@ -424,6 +424,47 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .drawer header { display: flex; min-height: 34px; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 10px; font-size: 12px; font-weight: 600; }
 .drawer-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; overflow: auto; padding: 10px; }
 .drawer .kv-grid dd { white-space: pre-wrap; }
+/* 详情抽屉 v2：区块化（Headers 表格/JSON 切换 + Value 编辑器），操作收敛为
+   区块标题行 icon（行内复制走 icon-button--inline），替代原先散落的按钮排。 */
+.drawer-head-actions { display: inline-flex; align-items: center; gap: 2px; }
+.kv-dd-inline { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.kv-dd-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-button--inline { flex: 0 0 auto; width: 20px; height: 20px; color: var(--muted-foreground); }
+.icon-button--inline:hover { color: var(--primary); }
+.detail-block { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+/* 可折叠区块头（ChevronDown + 标题整行可点；chev/folded 复用 filter-group 既有样式） */
+.detail-block__head { display: flex; min-height: 24px; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; padding: 0; cursor: default; }
+.detail-block__head--toggle { cursor: pointer; color: inherit; justify-content: flex-start; gap: 6px; }
+.detail-block__head--toggle:hover .detail-block__title { color: var(--foreground); }
+.detail-block__head--toggle .chev { width: 14px; height: 14px; transition: transform 0.15s ease; }
+.detail-block__head--toggle .chev.folded { transform: rotate(-90deg); }
+.detail-block__title { font-size: 11px; font-weight: 600; color: var(--muted-foreground); }
+.detail-block__busy { color: var(--primary); }
+.detail-block__actions { display: inline-flex; align-items: center; gap: 4px; }
+.detail-block__body { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.detail-block__body .detail-block__actions { justify-content: flex-end; }
+.detail-block .icon-button { color: var(--muted-foreground); }
+.detail-block .icon-button:hover { color: var(--primary); }
+.detail-view-form { padding: 0; }
+/* 表格/JSON 二态切换（segmented toggle，选中态轻底 + 主色）。 */
+.seg-toggle { border: 1px solid var(--border); background: transparent; border-radius: 4px; padding: 2px 9px; font-size: 10.5px; color: var(--muted-foreground); cursor: pointer; }
+.seg-toggle:hover { color: var(--foreground); }
+.seg-toggle.is-active { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); }
+/* headers 表格：键列定宽、值列截断 + hover 展开（title 全量），行内复制；
+   容器限高 160px 内部滚动（header 多时不撑长抽屉）。 */
+.kv-scroll { min-height: 0; max-height: 160px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.kv-scroll .kv-table { border: 0; border-radius: 0; }
+.kv-table { width: 100%; border: 1px solid var(--border); border-radius: 6px; border-collapse: separate; border-spacing: 0; overflow: hidden; font-size: 11px; table-layout: fixed; }
+.kv-table th, .kv-table td { border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); padding: 4px 8px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-table th { position: sticky; top: 0; z-index: 1; background: var(--muted); color: var(--muted-foreground); font-size: 10px; font-weight: 600; }
+.kv-table tr:last-child td { border-bottom: none; }
+.kv-table tbody tr:hover td { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+.kv-table th:first-child, .kv-table td:first-child { width: 38%; font-family: var(--mono-font-family); }
+.kv-table td.kv-table__value { font-family: var(--mono-font-family); }
+.kv-table .kv-table__action-col { width: 32px; }
+.value-view--headers { flex: 0 0 auto; max-height: 220px; }
+.detail-headers-empty { padding: 6px 0; }
+.drawer .dbx-code-editor { flex: 0 0 auto; }
 .value-view { min-height: 0; flex: 1; border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow: auto; background: var(--background); font-family: var(--mono-font-family); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .value-view.error { color: var(--destructive); }
 .drawer-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -446,12 +487,10 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .badge-ok { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); color: var(--success); }
 .badge-internal { background: color-mix(in srgb, var(--muted-foreground) 20%, transparent); }
 
-/* 流式面板 */
-.stream-log { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+/* 流式面板（消息列表已接 DbxAgGrid，此处仅剩状态行） */
+.stream-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+.stream-panel .grid-box--fill { min-height: 220px; }
 .stream-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 4px 8px; color: var(--muted-foreground); font-size: 11px; }
-.stream-scroll { min-height: 0; flex: 1; overflow: auto; }
-.stream-row { display: grid; grid-template-columns: 44px 90px 120px minmax(90px, 1fr) minmax(140px, 2fr); gap: 6px; min-height: 24px; align-items: center; border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); padding: 0 8px; font-size: 11px; }
-.stream-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 通用小工具 */
 .inline-actions { display: inline-flex; align-items: center; gap: 4px; }
@@ -571,8 +610,29 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 /* P1-1：消息面板首屏平衡——面板自身成为纵向滚动容器（表单组区随内容自然展开，
    结果区保底可视高度），消费成功后组件 scrollIntoView 到结果区统计行；
    空态无结果区时表单仍为主内容（不滚动）。 */
-.messages-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+.messages-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; position: relative; }
 .messages-panel .grid-box--fill { min-height: 220px; }
+
+/* 单行消费条（条件抽屉化改造）：topic 下拉 + 条件开关 + 摘要 chips + 消费，
+   常驻一行；条件全量收进下方浮层抽屉，表格吃满剩余高度。 */
+.consume-bar { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 6px 8px; }
+.consume-bar__topic { display: flex; min-width: 0; flex: 0 1 300px; align-items: center; gap: 6px; }
+.consume-bar__label { flex: 0 0 auto; font-size: 10px; color: var(--muted-foreground); }
+.consume-bar__topic select { min-width: 0; flex: 1; height: 26px; }
+.consume-bar__filters { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; background: transparent; color: var(--muted-foreground); font-size: 11px; cursor: pointer; }
+.consume-bar__filters:hover { color: var(--foreground); }
+.consume-bar__filters.is-active { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); }
+.consume-bar__summary { display: inline-flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 6px; overflow: hidden; }
+.consume-bar__summary .msg-chip { flex: 0 0 auto; }
+.consume-bar__spacer { flex: 1 1 0; }
+.consume-bar .primary-button.compact { flex: 0 0 auto; }
+
+/* 条件抽屉：absolute 浮层（面板内），面板有滚动容器时随内容顶部对齐；
+   backdrop 盖住面板其余区域，点击即收起。 */
+.consume-drawer { position: absolute; inset: 0; z-index: 30; }
+.consume-drawer__backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--background) 35%, transparent); border: 0; cursor: default; }
+/* panel 从消费条之下展开（约一行高），消费条常驻可见（下拉/条件开关/消费）。 */
+.consume-drawer__panel { position: absolute; top: 40px; right: 0; left: 0; max-height: calc(100% - 40px); overflow: auto; border-bottom: 1px solid var(--border); background: var(--popover); box-shadow: 0 14px 32px rgb(0 0 0 / 26%); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
 /* 有结果时表单组区上限高度（内部自滚），把首屏让给结果区：meta + 表格稳定可见。 */
 .messages-panel.has-result .consume-groups { max-height: 46%; overflow-y: auto; }
 

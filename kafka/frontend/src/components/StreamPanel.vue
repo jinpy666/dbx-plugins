@@ -2,11 +2,15 @@
 // 流式消费面板：start/stop/pause/resume + `kafka/stream/messages` 事件实时追加
 // + `kafka/stream/error` 事件 + 环形缓冲历史分页（kafka/stream/messages invoke）。
 // 前端展示上限 MAX_ROWS（超出丢最旧并计数 droppedRows 提示，防 OOM）；
-// 自动滚动在用户上滚时暂停，回到底部恢复。
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+// 消息列表走 DbxAgGrid（与 MessagesPanel 同一套列模型/quickFilter/分页，
+// 虚拟滚动抗高频追加），autoScroll 勾选时每批事件落表后跳到末页最新行。
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import type { ColDef } from "ag-grid-community";
 import { Pause, Play, Square } from "@lucide/vue";
+import DbxAgGrid from "./DbxAgGrid.vue";
 import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaFormat, type SchemaSubject, type StreamStatus } from "../lib/api";
-import { appendStreamRows, debounce, filterMessagesByKeyword, formatTimestamp, previewText } from "../lib/kafkaModel";
+import { appendStreamRows, debounce } from "../lib/kafkaModel";
+import { MINIMAL_MESSAGE_FIELDS, messageColumns, toMessageRows, workbenchTimestampTz, type MessageRow } from "../lib/kafkaColumns";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
@@ -30,13 +34,29 @@ const totalScanned = ref(0);
 const totalMatched = ref(0);
 const bufferSize = ref(0);
 const droppedRows = ref(0);
+// rows 是逻辑数据源（KafkaMessage，供 appendStreamRows/分页裁剪）；
+// messageRows 是表格展示行（MessageRow，时区格式化一次成型）。
 const rows = ref<KafkaMessage[]>([]);
+const messageRows = shallowRef<MessageRow[]>([]);
+const messageCols = computed(() => messageColumns() as ColDef<MessageRow>[]);
 const starting = ref(false);
 const autoScroll = ref(true);
 const filterText = ref("");
 const matchMode = ref<MatchMode>("contains");
 const limit = ref("100");
-const scrollBox = ref<HTMLElement>();
+// 消息表实例：autoScroll 落表跳末页（经 DbxAgGrid.goToLatest，分页模式由 gridApi 处理）。
+const messagesGrid = ref<InstanceType<typeof DbxAgGrid> | null>(null);
+
+function goToLatest() {
+  messagesGrid.value?.goToLatest();
+}
+
+/** rows → 展示行重建（事件落地/历史分页/时区切换共用）：引用替换一次提交。 */
+function rebuildMessageRows() {
+  messageRows.value = toMessageRows(rows.value);
+}
+
+watch(workbenchTimestampTz, () => rebuildMessageRows());
 
 // schema mount（Phase 2：流式消费同样支持 SR 解码挂载，version 空 = latest）
 const schemaEnabled = ref(false);
@@ -105,6 +125,7 @@ async function start() {
     });
     sessionId.value = response.sessionId;
     rows.value = [];
+    rebuildMessageRows();
     droppedRows.value = 0;
     historyOffset.value = 0;
     totalScanned.value = 0;
@@ -177,7 +198,8 @@ function pushEvent(event: KafkaStreamMessagesEvent | KafkaStreamErrorEvent) {
     const appended = appendStreamRows(rows.value, event.messages, MAX_ROWS, droppedRows.value);
     rows.value = appended.rows;
     droppedRows.value = appended.dropped;
-    if (autoScroll.value) void scrollToBottom();
+    rebuildMessageRows();
+    if (autoScroll.value) goToLatest();
   }
 }
 
@@ -186,25 +208,6 @@ const stateLabel = computed(() => {
   if (!sessionActive.value) return t("stream.stateIdle");
   return paused.value ? t("stream.statePaused") : t("stream.stateRunning");
 });
-
-// -- scroll -----------------------------------------------------------------------
-
-function onScroll() {
-  const box = scrollBox.value;
-  if (!box) return;
-  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
-  if (!atBottom && autoScroll.value) autoScroll.value = false;
-}
-
-watch(autoScroll, (enabled) => {
-  if (enabled) void scrollToBottom();
-});
-
-async function scrollToBottom() {
-  await nextTick();
-  const box = scrollBox.value;
-  if (box) box.scrollTop = box.scrollHeight;
-}
 
 // -- history paging（环形缓冲分页；historyOffset 为当前展示窗口起点）--------------
 
@@ -228,6 +231,7 @@ async function pageHistory(direction: number) {
     if (Array.isArray(response.messages)) {
       rows.value = response.messages.slice(-MAX_ROWS);
       droppedRows.value = Math.max(0, bufferSize.value - historyOffset.value - rows.value.length);
+      rebuildMessageRows();
     }
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
@@ -246,15 +250,14 @@ onBeforeUnmount(() => {
   applyQuickFilter.cancel();
 });
 
-// -- 即时搜索（F6-1）：流面板是自绘行而非 ag-grid，语义对齐 Messages 表的
-// quickFilter——输入防抖 150ms，只过滤已加载（缓冲内）行，不触发任何请求。
+// -- 即时搜索（F6-1）：语义对齐 Messages 表的 quickFilter——输入防抖 150ms
+// 喂给 DbxAgGrid.quickFilterText（只过滤已加载/缓冲内行，不触发任何请求；
+// 过滤无命中由 ag-grid 内建空态展示，随七语 localeText）。
 const quickFilterInput = ref("");
 const quickFilter = ref("");
 const applyQuickFilter = debounce((value: string) => {
   quickFilter.value = value;
 }, 150);
-
-const visibleRows = computed(() => filterMessagesByKeyword(rows.value, quickFilter.value));
 
 function positiveInt(value: unknown, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
@@ -265,7 +268,7 @@ defineExpose({ pushEvent });
 </script>
 
 <template>
-  <section class="section-block">
+  <section class="section-block stream-panel">
     <div class="kafka-form">
       <label class="field" style="flex: 1 1 160px">
         <span>{{ t("messages.topic") }}</span>
@@ -362,25 +365,18 @@ defineExpose({ pushEvent });
       <button class="qb-add stream-pager" type="button" :disabled="!sessionActive" :title="t('stream.loadNewer')" @click="loadNewer">{{ t("stream.loadNewer") }}</button>
     </div>
 
-    <div class="stream-log">
-      <div class="stream-row" style="color: var(--muted-foreground); font-size: 10px">
-        <span>P</span>
-        <span>{{ t("messages.colOffset") }}</span>
-        <span>{{ t("messages.colTimestamp") }}</span>
-        <span>{{ t("messages.colKey") }}</span>
-        <span>{{ t("messages.colValue") }}</span>
-      </div>
-      <div ref="scrollBox" class="stream-scroll" @scroll="onScroll">
-        <p v-if="rows.length === 0" class="empty compact">{{ t("stream.noMessages") }}</p>
-        <p v-else-if="visibleRows.length === 0" class="empty compact">{{ t("stream.quickFilterNoMatch") }}</p>
-        <div v-for="message in visibleRows" :key="`${message.partition}:${message.offset}`" class="stream-row">
-          <span class="mono-s">{{ message.partition }}</span>
-          <span class="mono-s">{{ message.offset }}</span>
-          <span class="mono-s">{{ formatTimestamp(message.timestamp) }}</span>
-          <span class="mono-s" :title="message.key">{{ previewText(message.key, 24) }}</span>
-          <span :title="message.valueText">{{ previewText(message.valueText, 140) }}</span>
-        </div>
-      </div>
+    <div class="grid-box grid-box--fill">
+      <p v-if="rows.length === 0" class="empty compact">{{ t("stream.noMessages") }}</p>
+      <DbxAgGrid
+        v-else
+        ref="messagesGrid"
+        table-key="stream-messages"
+        :row-data="messageRows"
+        :column-defs="messageCols"
+        :compact-fields="MINIMAL_MESSAGE_FIELDS"
+        :quick-filter="quickFilter"
+        :emit-row-click="false"
+      />
     </div>
   </section>
 </template>

@@ -32,6 +32,11 @@ type Service struct {
 	mu    sync.Mutex
 	conns map[string]*connEntry
 
+	// 消费 client 复用池（consume_pool.go）：一次性消费按「连接+消费形状」
+	// 缓存 kgo client，复用前重置起点；断连/退出时随连接一起关闭。
+	consumePoolMu sync.Mutex
+	consumePool   map[string]*consumePoolEntry
+
 	// Audit 是写操作审计回调（§5.4）：由 main 注入（audit.jsonl 落盘 +
 	// kafka/audit 事件）。kafkaconn 不直接依赖 store/SDK。nil 时静默跳过。
 	Audit func(rec AuditRecord)
@@ -47,8 +52,9 @@ type Service struct {
 // NewService 创建空连接表。
 func NewService() *Service {
 	return &Service{
-		conns:   map[string]*connEntry{},
-		Streams: NewStreamRegistry(),
+		conns:       map[string]*connEntry{},
+		consumePool: map[string]*consumePoolEntry{},
+		Streams:     NewStreamRegistry(),
 	}
 }
 
@@ -139,6 +145,7 @@ func (s *Service) Disconnect(connectionID string) {
 		return
 	}
 	s.Streams.StopAllForConnection(connectionID)
+	s.consumePoolCloseFor(connectionID)
 
 	s.mu.Lock()
 	entry := s.conns[connectionID]
@@ -155,6 +162,7 @@ func (s *Service) Disconnect(connectionID string) {
 // CloseAll 在进程退出前释放全部连接与流式会话（Serve() 返回后调用，M0 §3.2）。
 func (s *Service) CloseAll() {
 	s.Streams.StopAll()
+	s.consumePoolCloseAll()
 
 	s.mu.Lock()
 	entries := make([]*connEntry, 0, len(s.conns))

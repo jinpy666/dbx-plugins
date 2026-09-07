@@ -179,6 +179,10 @@ func (e *connEntry) buildClientOptsWithSeeds(seeds []string, extraOpts ...kgo.Op
 
 // buildTLSConfig 由 profile + secret 构建 TLS 配置（纯函数，单测覆盖）。
 // 仅在安全协议含 SSL 时调用。
+// 注：不共享 ClientSessionCache 做 TLS 会话恢复——实测部分中间盒/网关环境
+// （如内网代理终结 TLS 的集群入口）对 session 重放直接断连
+// （"broker closed the connection immediately after a dial"），风险大于
+// 冷启动省 1 RTT 的收益；冷启动提速由消费 client 复用池承担。
 func buildTLSConfig(profile Profile, secrets connSecrets) (*tls.Config, error) {
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS12,

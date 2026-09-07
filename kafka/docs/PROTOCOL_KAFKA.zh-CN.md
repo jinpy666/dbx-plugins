@@ -477,7 +477,7 @@ AWS Glue schema management is available"；双配置歧义/未知 registry →
 | `partitions` | int[]? | — | 指定分区（有值时禁 `groupId`） |
 | `partitionOffsets` | map<partition,int>? | — | strategy=offset 时**必填** |
 | `limit` | int | 100 | 返回条数上限 |
-| `timeoutMs` | int | 5000 | 单次 fetch 等待 |
+| `timeoutMs` | int | 5000 | 扫描窗口（客户端启动/metadata 就绪另有独立预算 max(2×窗口, 12s)，不计入本值） |
 | `maxScanRecords` | int | max(1000, limit×10) | 扫描上限（过滤不过 early-stop） |
 | `isolationLevel` | enum | `read_uncommitted` | `read_uncommitted` / `read_committed` |
 | `commit` | bool | false | true 时**禁一切过滤且必须 groupId**（否则 → `-32602`）；read_only 下拒绝 → `-32000` |

@@ -1,15 +1,31 @@
 // @vitest-environment happy-dom
 // StreamPanel 组件测试：start/stop 调桥 / 暂停-恢复徽标切换 / stream messages
 // 事件按 sessionId 追加（他 session 丢弃）/ stream error 事件友好归一 /
-// quickFilter 防抖过滤已加载行（不发请求）/ 环形缓冲 Older/Newer 分页按钮
+// quickFilter 防抖透传 DbxAgGrid（不发请求）/ 环形缓冲 Older/Newer 分页按钮
 // 禁用态与 offset clamp / 无 topic 时 Start 禁用。
-// （流纯函数 appendStreamRows/filterMessagesByKeyword 已在 kafkaModel.spec，不重复。）
+// （流纯函数 appendStreamRows 已在 kafkaModel.spec，不重复。）
+// DbxAgGrid mock 为桩组件：渲染行 valueText 便于断言落表内容，goToLatest 为
+// 空实现（autoScroll 落表调用），quickFilter 以 data 属性透出供断言。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import StreamPanel from "./StreamPanel.vue";
 import { setKafkaConnectionId, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent } from "../lib/api";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
+
+vi.mock("./DbxAgGrid.vue", () => ({
+  default: {
+    name: "DbxAgGridStub",
+    props: ["rowData", "columnDefs", "tableKey", "compactFields", "quickFilter", "emitRowClick", "rowSelection"],
+    emits: ["rowClick", "selectionChanged", "pageSizeChanged"],
+    methods: {
+      goToLatest() {},
+    },
+    template: `<div class="dbx-grid-stub" :data-filter="quickFilter ?? ''">
+      <span v-for="row in rowData" :key="row.id" class="stub-row">{{ row.valueText }}</span>
+    </div>`,
+  },
+}));
 
 const invokeMock = vi.fn();
 
@@ -56,7 +72,7 @@ async function startSession(wrapper: VueWrapper<InstanceType<typeof StreamPanel>
   await flushPromises();
 }
 
-const dataRows = (wrapper: VueWrapper<InstanceType<typeof StreamPanel>>) => wrapper.findAll(".stream-scroll .stream-row");
+const stubRows = (wrapper: VueWrapper<InstanceType<typeof StreamPanel>>) => wrapper.findAll(".dbx-grid-stub .stub-row");
 
 beforeEach(() => {
   localStorage.clear();
@@ -159,13 +175,13 @@ describe("StreamPanel", () => {
       bufferSize: 2,
     });
     await flushPromises();
-    expect(dataRows(wrapper)).toHaveLength(2);
-    expect(dataRows(wrapper)[0].text()).toContain('{"tick":1}');
+    expect(stubRows(wrapper)).toHaveLength(2);
+    expect(stubRows(wrapper)[0].text()).toContain('{"tick":1}');
     expect(wrapper.text()).toContain(t("stream.buffer", { count: 2 }));
     // 他 session 的事件丢弃，计数不增长
     pushEvent(wrapper, { sessionId: "stream-other", messages: [message(3, "x")], totalScanned: 3, totalMatched: 3, bufferSize: 3 });
     await flushPromises();
-    expect(dataRows(wrapper)).toHaveLength(2);
+    expect(stubRows(wrapper)).toHaveLength(2);
     // drop 计数徽标（MAX_ROWS=1000 太大不易触发；直接锁定 dropped 徽标渲染条件不在此重复，
     // 由 kafkaModel.appendStreamRows 单测覆盖）
   });
@@ -189,7 +205,7 @@ describe("StreamPanel", () => {
     ]);
   });
 
-  it("filters loaded rows with the debounced quick filter without new requests", async () => {
+  it("passes the debounced quick filter to the grid without new requests", async () => {
     vi.useFakeTimers();
     installBridge({ "kafka/stream/start": { sessionId: "stream-1" } });
     const wrapper = mountPanel();
@@ -203,20 +219,20 @@ describe("StreamPanel", () => {
       bufferSize: 2,
     });
     await flushPromises();
-    expect(dataRows(wrapper)).toHaveLength(2);
+    expect(stubRows(wrapper)).toHaveLength(2);
     const filter = wrapper.find('[data-testid="stream-quick-filter"]');
     expect(filter.attributes("placeholder")).toBe(t("messages.quickFilterPlaceholder"));
+    const gridFilter = () => wrapper.find(".dbx-grid-stub").attributes("data-filter");
     await filter.setValue("k-2");
-    // 防抖窗口未到：尚未过滤
+    // 防抖窗口未到：grid 尚未收到过滤词
     await vi.advanceTimersByTimeAsync(100);
-    expect(dataRows(wrapper)).toHaveLength(2);
+    expect(gridFilter()).toBe("");
     await vi.advanceTimersByTimeAsync(60);
-    expect(dataRows(wrapper)).toHaveLength(1);
-    expect(dataRows(wrapper)[0].text()).toContain('{"order":"B-2"}');
-    // 清空恢复全部行；quickFilter 只过滤已加载行，不发任何请求
+    expect(gridFilter()).toBe("k-2");
+    // 清空恢复透传空词；quickFilter 只透传给 grid，不发任何请求
     await wrapper.find('[data-testid="stream-quick-filter"]').setValue("");
     await vi.advanceTimersByTimeAsync(200);
-    expect(dataRows(wrapper)).toHaveLength(2);
+    expect(gridFilter()).toBe("");
     expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/stream/start")).toHaveLength(1);
     expect(invokeMock.mock.calls.filter(([method]) => method.startsWith("kafka/stream/messages"))).toHaveLength(0);
   });
@@ -241,7 +257,7 @@ describe("StreamPanel", () => {
     await flushPromises();
     let pageCall = invokeMock.mock.calls.filter(([method]) => method === "kafka/stream/messages").at(-1);
     expect(pageCall?.[1]).toMatchObject({ sessionId: "stream-1", offset: 0, limit: 100 });
-    expect(dataRows(wrapper)[0].text()).toContain("page@0");
+    expect(stubRows(wrapper)[0].text()).toContain("page@0");
     // Newer ×2：offset 100 → clamp 到 150（250 - pageSize 100）
     await pagers()[1].trigger("click");
     await flushPromises();

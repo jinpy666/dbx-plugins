@@ -17,6 +17,7 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 echo "==> frontend typecheck + tests + build"
+node ../shared/connection-forms/verify.mjs kafka
 [ -d frontend/node_modules ] || pnpm --dir frontend install
 pnpm --dir frontend typecheck
 pnpm --dir frontend test

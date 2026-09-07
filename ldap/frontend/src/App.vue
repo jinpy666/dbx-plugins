@@ -10,6 +10,7 @@ import { setWorkbenchLocale, t, workbenchLocale } from "./lib/i18n";
 import { getLdapConnectionId, ldapApi, setLdapConnectionId, type LdapEntry } from "./lib/api";
 import { inferBaseDnFromProfile, pickBaseDnFromRootDse } from "./lib/baseDn";
 import { friendlyLdapError } from "./lib/ldapErrors";
+import { writeClipboardText } from "./lib/clipboard";
 import { serializeEntriesToCsv, serializeEntriesToJson, serializeEntriesToLdifText } from "./lib/ldapExporter";
 import DnTree from "./components/DnTree.vue";
 import SearchForm, { type SearchFormModel } from "./components/SearchForm.vue";
@@ -245,10 +246,10 @@ function positiveInt(value: string): number | undefined {
 }
 
 function searchHere(dn: string) {
-  // 约束：树根（baseDn）固定为连接 Base DN，「在此搜索」只把搜索面板的
-  // base 指到该节点。此前这里直接改 baseDn.value，DnTree watch 到变化会
-  // 整树重根，原始根丢失且无还原途径（tiny-rdm 语义：树常驻、搜索联动）。
-  selectEntry(dn);
+  // 右键「搜索此子树」直达：立即以该节点为 Base 执行子树搜索并在右侧结果表
+  // 展示（此前只把搜索面板 base 指过去、不执行）。树根（baseDn）仍固定为
+  // 连接 Base DN，树不重根（tiny-rdm 语义：树常驻、搜索联动）。
+  searchRef.value?.runSubtreeAt(dn);
 }
 
 function selectEntry(dn: string) {
@@ -424,35 +425,8 @@ async function showRootDse() {
 }
 
 async function copyDn(dn: string) {
-  // 桥缺失或写入失败要如实反馈（此前 catch 也提示"已复制"）；execCommand
-  // 兜底覆盖 Host API 1.0 / mock 等无剪贴板桥的环境。
-  showNotice((await writeClipboard(dn)) ? t("copied") : t("copyFailed"));
-}
-
-async function writeClipboard(text: string): Promise<boolean> {
-  const bridge = window.dbxPlugin?.clipboard?.writeText;
-  if (typeof bridge === "function") {
-    try {
-      await bridge(text);
-      return true;
-    } catch {
-      // 宿主桥写入失败 → 走 execCommand 兜底
-    }
-  }
-  try {
-    const helper = document.createElement("textarea");
-    helper.value = text;
-    helper.setAttribute("readonly", "");
-    helper.style.position = "fixed";
-    helper.style.opacity = "0";
-    document.body.appendChild(helper);
-    helper.select();
-    const ok = document.execCommand("copy");
-    helper.remove();
-    return ok;
-  } catch {
-    return false;
-  }
+  // 桥缺失或写入失败要如实反馈（此前 catch 也提示"已复制"）。
+  showNotice((await writeClipboardText(dn)) ? t("copied") : t("copyFailed"));
 }
 
 function handleEvent(event: { method: string; params: Record<string, unknown> }) {

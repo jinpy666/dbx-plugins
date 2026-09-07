@@ -60,3 +60,46 @@ describe("TreeBranch child-count badge", () => {
     expect(wrapper.emitted("loadMore")).toBeUndefined();
   });
 });
+
+describe("TreeBranch row double-click", () => {
+  it("toggles the node on row double-click instead of opening the entry", async () => {
+    const wrapper = mountBranch(makeNode());
+    await wrapper.find(".tree-node").trigger("dblclick");
+    expect(wrapper.emitted("toggle")?.[0]).toEqual([wrapper.props("node")]);
+    expect(wrapper.emitted("view")).toBeUndefined();
+  });
+
+  it("does not toggle while disabled", async () => {
+    const wrapper = mountBranch(makeNode(), true);
+    await wrapper.find(".tree-node").trigger("dblclick");
+    expect(wrapper.emitted("toggle")).toBeUndefined();
+  });
+});
+
+describe("TreeBranch kind icon", () => {
+  it("renders a kind icon keyed by the first RDN attribute type", () => {
+    const wrapper = mountBranch(makeNode({ dn: "cn=alice,ou=people,dc=demo,dc=dbx" }));
+    expect(wrapper.find(".tree-kind-icon").exists()).toBe(true);
+  });
+
+  it("renders the root icon when the node dn equals the base DN", () => {
+    const wrapper = mount(TreeBranch, {
+      props: { node: makeNode({ dn: "dc=demo,dc=dbx", label: "demo" }), depth: 0, selectedDn: "", baseDn: "dc=demo,dc=dbx" },
+    });
+    expect(wrapper.find(".tree-kind-icon").exists()).toBe(true);
+  });
+
+  it("colors each kind distinctly (root violet / dc cyan / ou amber / person blue / other gray)", () => {
+    const kindClass = (dn: string, baseDn = "") =>
+      mount(TreeBranch, { props: { node: makeNode({ dn }), depth: 0, selectedDn: "", baseDn } })
+        .find(".tree-kind-icon")
+        .classes();
+    expect(kindClass("dc=demo,dc=dbx", "dc=demo,dc=dbx")).toContain("icon-violet");
+    expect(kindClass("dc=demo,dc=dbx")).toContain("icon-cyan");
+    expect(kindClass("ou=people,dc=demo,dc=dbx")).toContain("icon-amber");
+    expect(kindClass("cn=alice,ou=people,dc=demo,dc=dbx")).toContain("icon-blue");
+    expect(kindClass("uid=bob,ou=people,dc=demo,dc=dbx")).toContain("icon-blue");
+    expect(kindClass("o=acme,dc=demo,dc=dbx")).toContain("icon-emerald");
+    expect(kindClass("c=CN,o=acme")).toContain("icon-neutral");
+  });
+});

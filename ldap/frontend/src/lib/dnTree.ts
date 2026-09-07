@@ -1,5 +1,7 @@
 // Shared DN-tree node model (plain data so both DnTree.vue and TreeBranch.vue
 // can import the type without a circular SFC reference).
+import { splitFirstDnRdn } from "./dn";
+
 export interface DnTreeNode {
   dn: string;
   label: string;
@@ -11,6 +13,25 @@ export interface DnTreeNode {
   childCount?: number;
   /** 本轮懒加载被 sizeLimit 截断（还有未加载的子条目），徽标不得背书精确总数。 */
   truncated?: boolean;
+}
+
+/** 树节点图标种类：root 按 baseDn 命中判定，其余按首个 RDN 属性类型区分。 */
+export type DnNodeKind = "root" | "dc" | "ou" | "cn" | "uid" | "o" | "other";
+
+/**
+ * 节点种类判定（图标选择用）：`baseDn` 命中即 root；否则取首个 RDN 的属性
+ * 类型（多值 RDN 取第一段），识别 dc/ou/cn/uid/o，未识别回落 other。
+ * 只看 DN 本身、不依赖 objectClass——树懒加载只取 dn 列，判定必须零请求。
+ */
+export function dnNodeKind(dn: string, baseDn = ""): DnNodeKind {
+  const normalized = dn.trim().toLowerCase();
+  if (baseDn && normalized && normalized === baseDn.trim().toLowerCase()) return "root";
+  const rdn = splitFirstDnRdn(dn).rdn;
+  const separatorIndex = rdn.indexOf("=");
+  if (separatorIndex <= 0) return "other";
+  const type = rdn.slice(0, separatorIndex).trim().toLowerCase();
+  if (type === "dc" || type === "ou" || type === "cn" || type === "uid" || type === "o") return type;
+  return "other";
 }
 
 /**
@@ -77,4 +98,15 @@ export function nextTreeFocusIndex(count: number, currentIndex: number, key: str
   if (count <= 0 || (key !== "ArrowDown" && key !== "ArrowUp")) return -1;
   if (currentIndex < 0 || currentIndex >= count) return key === "ArrowDown" ? 0 : count - 1;
   return Math.min(Math.max(currentIndex + (key === "ArrowDown" ? 1 : -1), 0), count - 1);
+}
+
+/**
+ * 树过滤结果的字母排序比较器：按 RDN 标签排序（大小写不敏感、数字感知，
+ * "user2" 排在 "user10" 前），同标签按全 DN 稳定收尾。服务器返回序本身无
+ * 保障（OpenLDAP/AD 都不承诺顺序），字母序是可预期的浏览序。
+ */
+export function compareDnByLabel(left: string, right: string): number {
+  const byLabel = splitFirstDnRdn(left)
+    .rdn.localeCompare(splitFirstDnRdn(right).rdn, undefined, { sensitivity: "base", numeric: true });
+  return byLabel !== 0 ? byLabel : left.localeCompare(right, undefined, { numeric: true });
 }

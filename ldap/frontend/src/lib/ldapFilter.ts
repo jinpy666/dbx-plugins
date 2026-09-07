@@ -503,14 +503,45 @@ export const reviveBuilderNode = (value: unknown): BuilderNode | null => {
 };
 
 /**
+ * 树过滤覆盖的命名属性（纯标准 schema：core/cosine/inetorgperson，
+ * OpenLDAP/AD 都接受；真机已验证 dc/ou/cn/uid/o 等均可用于过滤器）。
+ * objectClass 只在前缀语法里可用（普通关键字 OR 上它会让 "person" 这类
+ * 词命中全量条目，语义过于发散）。
+ */
+export const TREE_FILTER_ATTRIBUTES = ['cn', 'ou', 'dc', 'uid', 'o', 'sn', 'givenName', 'name', 'displayName', 'mail', 'sAMAccountName'] as const;
+
+/**
+ * 树过滤前缀语法：`ou=peo` / `cn: ali` 把匹配限定到单个属性（值含子串匹配）；
+ * `ou=`（空值）= 存在性过滤（列出全部 OU）；`objectClass=person` 走精确等值。
+ * 属性名大小写不敏感；前缀属性名不在白名单时返回 null（整串按普通关键字处理）。
+ */
+export const parseTreeKeywordPrefix = (keyword: string): { attribute: string; value: string } | null => {
+    const match = String(keyword ?? '').trim().match(/^([A-Za-z][A-Za-z0-9-]*)\s*[=:]\s*(.*)$/);
+    if (!match) return null;
+    const attribute = match[1].toLowerCase();
+    if (attribute !== 'objectclass' && !(TREE_FILTER_ATTRIBUTES as readonly string[]).includes(attribute)) return null;
+    return { attribute, value: match[2].trim() };
+};
+
+/**
  * Build the DN-tree keyword filter used for remote subtree filtering
- * (tiny-rdm LdapConsolePage `buildTreeKeywordFilter` semantics): OR of
- * substring matches over the common naming attributes.
+ * (tiny-rdm LdapConsolePage `buildTreeKeywordFilter` semantics, extended):
+ * - `attr=value` / `attr:value` 前缀 → 单属性限定（含 objectClass 等值、
+ *   空值存在性）；属性名未识别则整串回落普通关键字。
+ * - 普通关键字 → 命名属性集（含 dc/o/sn，补齐 tiny-rdm 原版缺口）的 OR
+ *   子串匹配。
  */
 export const buildTreeKeywordFilter = (keyword: string): string => {
-    const filters = ['cn', 'ou', 'uid', 'name', 'displayName', 'mail', 'sAMAccountName']
-        .map((attribute) => buildSubstringFilter(attribute, keyword, 'contains'))
-        .filter(Boolean);
+    const text = String(keyword ?? '').trim();
+    const prefixed = parseTreeKeywordPrefix(text);
+    if (prefixed) {
+        if (prefixed.attribute === 'objectclass') {
+            return prefixed.value ? buildEqualityFilter('objectClass', prefixed.value) : '(objectClass=*)';
+        }
+        if (prefixed.value === '') return buildPresenceFilter(prefixed.attribute);
+        return buildSubstringFilter(prefixed.attribute, prefixed.value, 'contains') || '(objectClass=*)';
+    }
+    const filters = TREE_FILTER_ATTRIBUTES.map((attribute) => buildSubstringFilter(attribute, text, 'contains')).filter(Boolean);
     return combineFilters(filters, 'or') || '(objectClass=*)';
 };
 

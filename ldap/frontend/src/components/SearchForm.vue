@@ -138,7 +138,19 @@ function applyBaseDn(next: string, highlight = true) {
 
 onBeforeUnmount(() => window.clearTimeout(baseDnHighlightTimer));
 
-defineExpose({ applyBaseDn });
+defineExpose({ applyBaseDn, runSubtreeAt });
+
+// 树右键「搜索此子树」直达（此前只改 Base 不执行，用户预期是马上出结果集）：
+// Base 指到该节点、范围强制切到子树并立即运行。过滤器沿用表单当前配置；
+// 构建器存在半填/未填子句（表单本身不可运行）时回退匹配全部
+// (objectClass=*)——右键动作是浏览意图，必须保证出结果集而不是静默失败。
+function runSubtreeAt(dn: string) {
+  if (props.disabled) return;
+  applyBaseDn(dn);
+  draft.value.scope = "sub";
+  const model = toModel();
+  emit("run", filterValid.value ? model : { ...model, filter: "(objectClass=*)" });
+}
 
 function parseAttributes(): string[] | undefined {
   const list = draft.value.attributes

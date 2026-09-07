@@ -522,3 +522,101 @@ ssh/files 两插件 `.modal-backdrop` 为同款低不透明度遮罩，如需统
 
 pnpm typecheck 干净；vitest 全量 **190/190**（14 文件）；`pnpm build` 通过
 （ui/index.html 重新生成）；`node scripts/ui_test.mjs` 7/7。sidecar 未改动。
+
+## 21. 2026-09-07 追加：树面板体验三改（拖宽 / 节点图标 / 双击展开）+ 详情复制按钮
+
+用户反馈的三项树交互问题 + 详情复制诉求，纯前端改动（sidecar 未动）。
+
+### 21.1 改动
+
+- **树宽拖拽**（对齐 kafka `TopicTree` 同族形态）：`DnTree.vue` 右缘新增
+  `.tree-resizer`（pointer capture 拖拽，移出面板不丢；双击重置默认宽），
+  200–480px 夹取，localStorage `dbx.ldap.ui.treeWidth` 记忆（webview 禁存储
+  静默降级内存态）；`style.css` `.tree-pane` 由 `30%/min220/max45%` 改为
+  `--tree-pane-width` 变量注入，窄屏 column 布局沿用既有 100% 覆盖。
+- **节点种类图标**：`lib/dnTree.ts` 新增 `dnNodeKind()`（root 按 baseDn 大小写
+  不敏感命中；其余取首个 RDN 属性类型识别 dc/ou/cn/uid/o，未识别回落 other；
+  只看 DN、零请求）。新组件 `TreeNodeIcon.vue` 映射 lucide 图标
+  （root=Database、dc=Globe、ou=Folder/FolderOpen（随展开态）、cn/uid=User、
+  o=Building2、other=Tag），树行与过滤结果行共用，纯装饰 aria-hidden。
+- **双击语义**：`TreeBranch.vue` 行 `@dblclick` 由 emit view 改为 toggle
+  （双击=展开/折叠）；条目详情入口保留在右键菜单「查看/编辑」，过滤结果行
+  双击仍开详情（扁平列表无子可展）。`DnTree` 树区不再中转 TreeBranch 的 view。
+- **详情复制按钮**：抽 `lib/clipboard.ts` `writeClipboardText`（宿主桥优先、
+  execCommand 兜底，App.vue 同步复用）；`EntryEditorDialog.vue` 三处入口——
+  DN 行、属性行操作列（复制值，空值禁用；移除按钮并排入 `.attr-actions`）、
+  LDIF 模式工具行（复制整段 LDIF，`.mode-switch-row`）。复制为只读动作，
+  不受 editable 门禁限制；结果经既有 notify 通道如实反馈（已复制/复制失败）。
+- **i18n**：七语新增 `editor.copyValue` / `editor.copyLdif`；DN 行复制复用
+  既有 `copyDn` 键。
+
+### 21.2 验证
+
+| 层 | 内容 | 结果 |
+| --- | --- | --- |
+| 纯函数 | `dnTree.spec.ts` 新增 dnNodeKind describe（root 命中/RDN 类型/回落 3 用例） | dnTree 17/17 |
+| 组件 | `TreeBranch.spec.ts` 新增双击 toggle（含 disabled 不触发）与种类图标 2 describe；`EntryEditorDialog.spec.ts` 新增复制三入口 + 失败如实反馈用例，并修正 2 处受复制按钮影响的旧断言（只读态按钮遍历、删行按钮选择器） | TreeBranch 8/8、EntryEditorDialog 23/23 |
+| 全量 | `scripts/test.sh`：typecheck + vitest 389/389 + build + ui_test 7/7 + go vet/test | 全绿 |
+| 打包 | `dbx-plugin package` 因既有 go.work（1.22）与 backend go.mod（1.24）版本不匹配失败——与本改动无关的既有环境问题，UI 产物已由 frontend build 正常写入 `ui/` | 既有问题 |
+| smoke | 无 OpenLDAP 容器，15/15 SKIP（设计内） | SKIP |
+
+## 22. 2026-09-07 追加：节点图标配色强化 + 右键「搜索此子树」立即执行
+
+§21 的两项跟进（用户反馈）：图标要一眼可辨；右键子树搜索要马上出结果集。
+
+### 22.1 改动
+
+- **逐类配色**：`TreeNodeIcon.vue` 在图形区分（§21）之上加专属颜色，复用
+  style.css 既有 `icon-*` 体系（含暗色变体，零新增色类）：root=紫
+  （与工具栏 Schema 图标同色）、dc=青、ou=琥珀、cn/uid=蓝、o=翠绿
+  （emerald）、other=灰。`.tree-kind-icon` 不再设 color（同优先级后定义会
+  覆盖 icon-* 类），并取消选中态清色——颜色本身是识别手段，选中/hover 不变。
+- **右键子树搜索直达**：`SearchForm.vue` 新增暴露方法 `runSubtreeAt(dn)`——
+  Base 指到该节点、范围强制切回子树并立即 emit run；表单已配置的过滤器照常
+  沿用，构建器存在半填/未填子句（表单本身不可运行）时回退匹配全部
+  `(objectClass=*)`（右键是浏览意图，必须出结果集而非静默失败）。
+  `App.vue` 的 `searchHere` 由「只改 Base 不执行」（转发 selectEntry）改为
+  调用该方法；树根仍固定为连接 Base DN，不重根。
+- **菜单文案**：`tree.searchHere` 七语由「在此搜索/Search here」改为
+  「搜索此子树/Search this subtree」等，行为与命名对齐。
+
+### 22.2 验证
+
+| 层 | 内容 | 结果 |
+| --- | --- | --- |
+| 组件 | `SearchForm.spec.ts` 新增 runSubtreeAt 两用例（新表单回退匹配全部 + 已配置过滤器沿用且强制 sub）；`TreeBranch.spec.ts` 新增逐类配色断言（7 类色） | SearchForm 11/11、TreeBranch 9/9 |
+| 全量 | `scripts/test.sh`：typecheck + vitest 392/392 + build + ui_test 7/7 + go vet/test | 全绿 |
+| 打包/smoke | 同 §21：dbx-plugin package 因既有 go.work 版本不匹配失败（与本改动无关）；smoke 无容器 15/15 SKIP | 既有问题 / 设计内 |
+
+## 23. 2026-09-07 追加：树过滤检索强化（属性面扩充 + 前缀限定 + 字母排序 + 截断提示）
+
+用户反馈：树过滤要能检索 dc/ou/cn 等属性、支持关键字，结果加字母排序。
+
+### 23.1 改动
+
+- **属性面扩充**（`lib/ldapFilter.ts`）：`buildTreeKeywordFilter` 命名属性集
+  从 7 个扩到 11 个（新增 dc/o/sn/givenName，补齐 tiny-rdm 原版缺 dc 的
+  缺口），抽出常量 `TREE_FILTER_ATTRIBUTES`。属性名全部来自标准 schema
+  （core/cosine/inetorgperson），OpenLDAP/AD 都接受。
+- **前缀限定语法**：新增 `parseTreeKeywordPrefix`——`ou=peo` / `cn: ali`
+  把匹配限定到单属性（子串），`ou=`（空值）= 存在性过滤（一键列出全部
+  OU/DC/CN），`objectClass=person` 走精确等值；前缀属性名不在白名单时整串
+  回落普通关键字。占位符提示语法（七语）。
+- **结果字母排序**：新增 `compareDnByLabel`（RDN 标签序：大小写不敏感、
+  数字感知 user2 < user10，同标签按全 DN 稳定收尾），`DnTree.vue` 过滤
+  结果经 `sortedFilterResults` 排序后进虚拟列表（服务器返回序无保障）。
+- **截断可见化**：命中数达到单次抓取上限（100，提为常量 TREE_FILTER_LIMIT）
+  时列表尾显示「仅显示前 100 条匹配」提示（七语新增 tree.filterTruncated），
+  不再静默截断。
+- 真机勘误：OpenLDAP 上 `dn=` 在过滤器里被接受但**永远零命中**（dn 不可
+  过滤），过滤属性集不含 dn 是正确取舍；sAMAccountName 等未定义属性在
+  OpenLDAP 过滤器中只产生空匹配、不会报错，可安全保留在 OR 集。
+
+### 23.2 验证
+
+| 层 | 内容 | 结果 |
+| --- | --- | --- |
+| 纯函数 | `ldapFilter.spec` 树过滤 describe 重写 + parseTreeKeywordPrefix 2 组（属性面/转义/前缀/存在性/objectClass 等值/未知前缀回落）；`dnTree.spec` 新增 compareDnByLabel 3 用例（大小写/数字感知/平局稳定） | ldapFilter 84/84、dnTree 20/20 |
+| 真机 | dbx-ldap-test 容器（:1389）ldapsearch 实测 v2 过滤串：关键字 "exa" 命中 dc 根 + mail @example.org 的 2 个 uid；"bob" 命中 1；`ou=`/`uid=` 存在性列出全部；`dc=exa` 命中根；`objectClass=inetOrgPerson` 等值 4 条 | 全部符合预期 |
+| 全量 | `scripts/test.sh`：typecheck + vitest 401/401 + build + ui_test 7/7 + go vet/test | 全绿 |
+| 打包/smoke | 同前：package 因既有 go.work 版本不匹配失败；smoke 默认探 :389 而容器映射 :1389（`LDAP_TEST_*` 可覆盖）15/15 SKIP | 既有问题 / 设计内 |

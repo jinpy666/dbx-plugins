@@ -112,8 +112,12 @@ describe("EntryEditorDialog", () => {
     for (const textarea of wrapper.findAll(".attr-editor textarea")) {
       expect(textarea.attributes("disabled")).toBeDefined();
     }
-    for (const button of wrapper.findAll(".attr-editor button")) {
+    // 移除按钮随 editable 禁用；复制按钮是只读动作，只读态保持可用。
+    for (const button of wrapper.findAll(".attr-editor .attr-actions button[title='移除属性']")) {
       expect(button.attributes("disabled")).toBeDefined();
+    }
+    for (const button of wrapper.findAll(".attr-editor .attr-actions button[title='复制值']")) {
+      expect(button.attributes("disabled")).toBeUndefined();
     }
     expect(wrapper.find(".toolbar-button").attributes("disabled")).toBeDefined();
     expect(wrapper.find("footer .primary-button").exists()).toBe(false);
@@ -127,9 +131,47 @@ describe("EntryEditorDialog", () => {
     await newRow.find("input").setValue("mail");
     await newRow.find("textarea").setValue("alice@demo");
     expect((newRow.find("input").element as HTMLInputElement).value).toBe("mail");
-    await attrRows(wrapper)[0].find("button").trigger("click");
+    await attrRows(wrapper)[0].find("button[title='移除属性']").trigger("click");
     expect(attrRows(wrapper)).toHaveLength(3);
     expect((attrRows(wrapper)[0].find("input").element as HTMLInputElement).value).toBe("description");
+  });
+
+  it("copies the DN / attribute value / LDIF via the copy buttons and reports honestly", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    (window as unknown as { dbxPlugin?: unknown }).dbxPlugin = { clipboard: { writeText } };
+    document.execCommand = () => false;
+    try {
+      const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+      // DN 行复制
+      await wrapper.find(".entry-dn-row .icon-button").trigger("click");
+      await flushPromises();
+      expect(writeText).toHaveBeenLastCalledWith("cn=alice,dc=demo,dc=dbx");
+      expect(wrapper.emitted("notify")?.at(-1)).toEqual(["已复制"]);
+      // 属性行复制（rows 按属性名字典序：cn / description / objectClass），
+      // 多行值整段复制；空值行禁用复制。
+      const copyButtons = wrapper.findAll(".attr-actions button[title='复制值']");
+      expect(copyButtons).toHaveLength(3);
+      await copyButtons[0].trigger("click");
+      await flushPromises();
+      expect(writeText).toHaveBeenLastCalledWith("alice");
+      await copyButtons[1].trigger("click");
+      await flushPromises();
+      expect(writeText).toHaveBeenLastCalledWith("line1\nline2");
+      // LDIF 模式复制当前 LDIF 文本
+      await wrapper.findAll(".mode-switch button")[1].trigger("click");
+      const ldifCopy = wrapper.find(".mode-switch-row .icon-button");
+      expect(ldifCopy.exists()).toBe(true);
+      await ldifCopy.trigger("click");
+      await flushPromises();
+      expect(writeText).toHaveBeenLastCalledWith((wrapper.find(".ldif-editor").element as HTMLTextAreaElement).value);
+      // 桥写入失败要如实反馈"复制失败"（不假装成功）
+      writeText.mockRejectedValue(new Error("boom"));
+      await wrapper.find(".entry-dn-row .icon-button").trigger("click");
+      await flushPromises();
+      expect(wrapper.emitted("notify")?.at(-1)).toEqual(["复制失败"]);
+    } finally {
+      delete (window as unknown as { dbxPlugin?: unknown }).dbxPlugin;
+    }
   });
 
   it("saves an edited row as a replace change, flags dirty and emits saved", async () => {

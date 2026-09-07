@@ -10,9 +10,10 @@ import { friendlyLdapError } from "../lib/ldapErrors";
 import { splitFirstDnRdn } from "../lib/dn";
 import { nextFocusIndex } from "../lib/modal";
 import { t } from "../lib/i18n";
-import { flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "../lib/dnTree";
+import { compareDnByLabel, flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "../lib/dnTree";
 import VirtualList from "./VirtualList.vue";
 import TreeBranch from "./TreeBranch.vue";
+import TreeNodeIcon from "./TreeNodeIcon.vue";
 
 const props = defineProps<{
   baseDn: string;
@@ -45,10 +46,78 @@ let filterSequence = 0;
 let filterTimer = 0;
 
 const TREE_ATTRIBUTES = ["dn", "name", "cn", "ou", "objectClass"];
-const FILTER_ATTRIBUTES = ["dn", "name", "cn", "ou", "uid", "displayName", "mail", "objectClass"];
+// 请求列（只用于展示/补全，服务器对未知属性名回缺席名不报错）：树过滤命中
+// 面已扩到 dc/o/sn/givenName（与 buildTreeKeywordFilter 的属性集对齐）。
+const FILTER_ATTRIBUTES = ["dn", "name", "cn", "ou", "dc", "uid", "o", "sn", "givenName", "displayName", "mail", "objectClass"];
+// 关键字远程过滤的单次抓取上限：达到即视为"可能有更多"，给可见截断提示。
+const TREE_FILTER_LIMIT = 100;
+
+// 过滤结果按 RDN 标签字母排序（服务器返回序无保障；字母序可预期、可扫描）。
+const sortedFilterResults = computed(() => [...filterResults.value].sort((left, right) => compareDnByLabel(left.dn, right.dn)));
 
 // 虚拟滚动固定行高（与 .tree-vlist CSS 保持一致）；零依赖实现见 VirtualList.vue。
 const TREE_ROW_HEIGHT = 28;
+
+// -- 侧栏宽度（右缘 resizer 拖拽，localStorage 记忆，双击重置默认宽）----------
+// 宿主 webview 禁存储时静默降级为仅内存态。数值口径与 kafka TopicTree 同族。
+
+const TREE_WIDTH_KEY = "dbx.ldap.ui.treeWidth";
+const TREE_WIDTH_DEFAULT = 280;
+const TREE_WIDTH_MIN = 200;
+const TREE_WIDTH_MAX = 480;
+
+function readStoredWidth(): number {
+  try {
+    const parsed = Number.parseInt(localStorage.getItem(TREE_WIDTH_KEY) ?? "", 10);
+    return Number.isFinite(parsed) ? Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, parsed)) : TREE_WIDTH_DEFAULT;
+  } catch {
+    return TREE_WIDTH_DEFAULT;
+  }
+}
+
+function persistWidth(value: number) {
+  try {
+    localStorage.setItem(TREE_WIDTH_KEY, String(value));
+  } catch {
+    /* 存储不可用（隐私模式等）：仅内存态 */
+  }
+}
+
+const paneWidth = ref(readStoredWidth());
+
+function clampWidth(value: number): number {
+  return Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, Math.round(value)));
+}
+
+// resizer：pointer capture 拖拽（移出面板也不丢），双击重置默认宽。
+const resizing = ref(false);
+let dragStartX = 0;
+let dragStartWidth = 0;
+
+function onResizeStart(event: PointerEvent) {
+  event.preventDefault();
+  dragStartX = event.clientX;
+  dragStartWidth = paneWidth.value;
+  resizing.value = true;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+}
+
+function onResizeMove(event: PointerEvent) {
+  if (!resizing.value) return;
+  paneWidth.value = clampWidth(dragStartWidth + event.clientX - dragStartX);
+}
+
+function onResizeEnd(event: PointerEvent) {
+  if (!resizing.value) return;
+  resizing.value = false;
+  (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+  persistWidth(paneWidth.value);
+}
+
+function onResizeReset() {
+  paneWidth.value = TREE_WIDTH_DEFAULT;
+  persistWidth(TREE_WIDTH_DEFAULT);
+}
 
 const hasBaseDn = computed(() => props.baseDn.trim() !== "");
 const hasFilter = computed(() => filterKeyword.value.trim() !== "");
@@ -233,8 +302,8 @@ async function runFilter() {
       filter: buildTreeKeywordFilter(keyword),
       scope: "sub",
       attributes: FILTER_ATTRIBUTES,
-      sizeLimit: 100,
-      pageSize: 100,
+      sizeLimit: TREE_FILTER_LIMIT,
+      pageSize: TREE_FILTER_LIMIT,
       derefAliases: "never",
     });
     if (seq !== filterSequence) return;
@@ -377,7 +446,7 @@ onBeforeUnmount(onMountedCleanup);
 </script>
 
 <template>
-  <section class="tree-pane">
+  <section class="tree-pane" :class="{ 'is-resizing': resizing }" :style="{ '--tree-pane-width': `${paneWidth}px` }">
     <header class="panel-header">
       <span class="panel-title"><Search class="icon-neutral" aria-hidden="true" />{{ t("tree.title") }}</span>
       <span class="actions">
@@ -406,15 +475,24 @@ onBeforeUnmount(onMountedCleanup);
         <div v-if="filterLoading" class="tree-state">{{ t("tree.loading") }}</div>
         <div v-else-if="filterError" class="tree-error" :title="filterErrorRaw || filterError">{{ filterError }}</div>
         <div v-else-if="filterResults.length === 0" class="tree-state">{{ t("tree.filterNoMatch", { keyword: filterKeyword.trim() }) }}</div>
-        <VirtualList v-else :items="filterResults" :row-height="TREE_ROW_HEIGHT" :reset-key="filterKeyword" class="tree-vlist">
-          <template #default="{ item }">
-            <button class="tree-node" :title="item.dn" @click.stop="selectNode(makeNode(item.dn))" @dblclick.stop="emit('view', item.dn)" @contextmenu.prevent.stop="openContextMenu($event, item.dn)">
-              <span class="tree-row" :class="{ selected: selectedDn === item.dn }">
-                <span class="tree-label"><span class="tree-name">{{ nodeLabel(item.dn) }}</span></span>
-              </span>
-            </button>
-          </template>
-        </VirtualList>
+        <template v-else>
+          <VirtualList :items="sortedFilterResults" :row-height="TREE_ROW_HEIGHT" :reset-key="filterKeyword" class="tree-vlist">
+            <template #default="{ item }">
+              <button class="tree-node" :title="item.dn" @click.stop="selectNode(makeNode(item.dn))" @dblclick.stop="emit('view', item.dn)" @contextmenu.prevent.stop="openContextMenu($event, item.dn)">
+                <span class="tree-row" :class="{ selected: selectedDn === item.dn }">
+                  <span class="tree-label">
+                    <TreeNodeIcon :dn="item.dn" />
+                    <span class="tree-name">{{ nodeLabel(item.dn) }}</span>
+                  </span>
+                </span>
+              </button>
+            </template>
+          </VirtualList>
+          <!-- 命中数达到单次抓取上限：可能有更多，可见化提示而不是静默截断 -->
+          <div v-if="filterResults.length >= TREE_FILTER_LIMIT" class="tree-more-hint">
+            {{ t("tree.filterTruncated", { limit: TREE_FILTER_LIMIT }) }}
+          </div>
+        </template>
       </template>
       <template v-else>
         <div v-if="loadingRoot" class="tree-state">{{ t("tree.loading") }}</div>
@@ -434,10 +512,10 @@ onBeforeUnmount(onMountedCleanup);
                 :node="item.node"
                 :depth="item.depth"
                 :selected-dn="selectedDn"
+                :base-dn="props.baseDn"
                 :disabled="disabled"
                 @toggle="toggleNode"
                 @select="selectNode"
-                @view="(dn: string) => emit('view', dn)"
                 @menu="openContextMenu"
                 @load-more="loadMore"
               />
@@ -467,5 +545,17 @@ onBeforeUnmount(onMountedCleanup);
         <button role="menuitem" @click="menuAction('copy')">{{ t("copyDn") }}</button>
       </div>
     </Teleport>
+    <!-- 右缘拖宽把手：pointer capture 拖拽调宽，双击重置默认宽 -->
+    <div
+      class="tree-resizer"
+      :class="{ active: resizing }"
+      role="separator"
+      aria-orientation="vertical"
+      @pointerdown="onResizeStart"
+      @pointermove="onResizeMove"
+      @pointerup="onResizeEnd"
+      @pointercancel="onResizeEnd"
+      @dblclick="onResizeReset"
+    />
   </section>
 </template>

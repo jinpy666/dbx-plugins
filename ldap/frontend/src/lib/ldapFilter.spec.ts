@@ -20,6 +20,7 @@ import {
   isValidLDAPAttributeDescription,
   parseClauseItem,
   parseFilterStructure,
+  parseTreeKeywordPrefix,
   reviveBuilderNode,
   toBuilderRoot,
   unescapeLdapFilterValue,
@@ -166,11 +167,14 @@ describe("validateLDAPFilter", () => {
 });
 
 describe("buildTreeKeywordFilter", () => {
-  it("ORs substring matches over naming attributes", () => {
+  it("ORs substring matches over naming attributes (incl. dc / o / sn)", () => {
     const filter = buildTreeKeywordFilter("jdoe");
     expect(filter.startsWith("(|")).toBe(true);
     expect(filter).toContain("(cn=*jdoe*)");
     expect(filter).toContain("(uid=*jdoe*)");
+    expect(filter).toContain("(dc=*jdoe*)");
+    expect(filter).toContain("(o=*jdoe*)");
+    expect(filter).toContain("(sn=*jdoe*)");
     expect(filter).toContain("(sAMAccountName=*jdoe*)");
   });
 
@@ -180,6 +184,46 @@ describe("buildTreeKeywordFilter", () => {
 
   it("falls back to presence when empty", () => {
     expect(buildTreeKeywordFilter("")).toBe("(objectClass=*)");
+  });
+
+  it("restricts the match to one attribute via the attr=value / attr:value prefix", () => {
+    expect(buildTreeKeywordFilter("ou=peo")).toBe("(ou=*peo*)");
+    expect(buildTreeKeywordFilter("cn: ali")).toBe("(cn=*ali*)");
+    expect(buildTreeKeywordFilter("DC=exa")).toBe("(dc=*exa*)");
+    // 前缀值同样走 RFC 4515 转义
+    expect(buildTreeKeywordFilter("ou=a*b")).toBe("(ou=*a\\2ab*)");
+  });
+
+  it("treats an empty prefix value as a presence filter (list all OUs)", () => {
+    expect(buildTreeKeywordFilter("ou=")).toBe("(ou=*)");
+    expect(buildTreeKeywordFilter("dc: ")).toBe("(dc=*)");
+  });
+
+  it("matches objectClass by exact equality through the prefix", () => {
+    expect(buildTreeKeywordFilter("objectClass=person")).toBe("(objectClass=person)");
+    expect(buildTreeKeywordFilter("objectclass=")).toBe("(objectClass=*)");
+  });
+
+  it("falls back to plain keyword mode when the prefix names an unknown attribute", () => {
+    const filter = buildTreeKeywordFilter("foo=bar");
+    expect(filter.startsWith("(|")).toBe(true);
+    expect(filter).toContain("(cn=*foo=bar*)");
+  });
+});
+
+describe("parseTreeKeywordPrefix", () => {
+  it("parses case-insensitive attribute names and both separators", () => {
+    expect(parseTreeKeywordPrefix("OU=People")).toEqual({ attribute: "ou", value: "People" });
+    expect(parseTreeKeywordPrefix("cn:ali")).toEqual({ attribute: "cn", value: "ali" });
+    expect(parseTreeKeywordPrefix("  uid = bob  ")).toEqual({ attribute: "uid", value: "bob" });
+  });
+
+  it("returns null for plain keywords, unknown attributes or malformed input", () => {
+    expect(parseTreeKeywordPrefix("people")).toBeNull();
+    expect(parseTreeKeywordPrefix("(cn=ali)")).toBeNull();
+    expect(parseTreeKeywordPrefix("mail")).toBeNull();
+    expect(parseTreeKeywordPrefix("foo=bar")).toBeNull();
+    expect(parseTreeKeywordPrefix("")).toBeNull();
   });
 });
 

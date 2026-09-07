@@ -138,8 +138,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .divider { position: relative; z-index: 4; width: 1px; flex: 0 0 1px; background: var(--border); cursor: col-resize; }
 .divider:hover { background: color-mix(in srgb, var(--foreground) 38%, var(--border)); }
 
-/* Left: DN tree pane */
-.tree-pane { position: relative; display: flex; height: 100%; width: 30%; min-width: 220px; max-width: 45%; flex: 0 0 auto; flex-direction: column; background: var(--background); }
+/* Left: DN tree pane（宽度由 DnTree 经 --tree-pane-width 注入，200–480px，
+   右缘 .tree-resizer 拖拽调宽、双击重置，localStorage 记忆） */
+.tree-pane { position: relative; display: flex; height: 100%; width: var(--tree-pane-width, 280px); min-width: 200px; max-width: 480px; flex: 0 0 auto; flex-direction: column; background: var(--background); }
+.tree-pane.is-resizing { cursor: col-resize; user-select: none; }
+.tree-resizer { position: absolute; top: 0; right: -2px; z-index: 6; width: 4px; height: 100%; cursor: col-resize; touch-action: none; }
+.tree-resizer:hover, .tree-resizer.active { background: color-mix(in srgb, var(--primary) 45%, transparent); }
 .panel-header { height: 34px; min-height: 34px; justify-content: space-between; gap: 6px; border-bottom: 1px solid var(--border); padding: 0 8px; font-size: 12px; font-weight: 600; }
 .panel-header .panel-title { display: flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .panel-header svg { width: 14px; height: 14px; flex: 0 0 14px; }
@@ -163,12 +167,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tree-twist:hover { background: color-mix(in srgb, var(--muted-foreground) 25%, transparent); }
 .tree-twist svg { width: 12px; height: 12px; }
 .tree-label { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; }
+/* 颜色由 TreeNodeIcon 的 icon-* 逐类配色类控制（此处不设 color 以免同优先级覆盖），
+   选中态也不清色——颜色本身是识别手段。 */
+.tree-kind-icon { width: 13px; height: 13px; flex: 0 0 13px; }
 .tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-badge { flex: 0 0 auto; border-radius: 999px; padding: 0 6px; background: color-mix(in srgb, var(--muted-foreground) 22%, transparent); color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
 /* 截断徽标即"加载更多"入口（P1-2）：可点击、主色提示，与普通计数徽标区分。 */
 .tree-badge--truncated { border: 0; cursor: pointer; background: color-mix(in srgb, var(--primary) 20%, transparent); color: var(--foreground); }
 .tree-badge--truncated:hover { background: color-mix(in srgb, var(--primary) 38%, transparent); }
 .tree-state { display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted-foreground); font-size: 12px; }
+/* 过滤命中达单次上限的截断提示（列表尾部） */
+.tree-more-hint { padding: 6px 10px; color: var(--muted-foreground); font-size: 11px; }
 
 /* Zero-dependency virtual scroller (VirtualList.vue): fixed row height,
    absolutely positioned rows inside a spacer-sized inner box. Nesting depth
@@ -308,6 +317,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .destructive-copy p { margin: 5px 0 0; line-height: 1.5; }
 .destructive-icon { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border-radius: 999px; background: color-mix(in srgb, var(--destructive) 12%, transparent); color: var(--destructive); }
 .destructive-icon svg { width: 16px; height: 16px; }
+.entry-dn-row { display: flex; align-items: center; gap: 4px; }
+.entry-dn-row .entry-dn { min-width: 0; flex: 1; margin: 0; }
 .entry-dn { overflow-wrap: anywhere; font-family: var(--mono-font-family); font-size: 11px; color: var(--muted-foreground); }
 
 .form-error { margin: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
@@ -330,6 +341,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .mode-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .mode-switch button { border: 0; background: transparent; min-height: 24px; padding: 2px 10px; cursor: pointer; font-size: 11px; }
 .mode-switch button.is-active { background: var(--accent); color: var(--accent-foreground); }
+/* LDIF 复制按钮与模式切换同排（切换到 LDIF 模式时出现） */
+.mode-switch-row { display: flex; align-items: center; gap: 6px; }
+/* 属性行操作列：复制 + 删除并排 */
+.attr-actions { display: flex; gap: 2px; }
+.attr-actions button svg { width: 14px; height: 14px; }
 .ldif-editor { min-height: 0; flex: 1; border: 1px solid var(--border); border-radius: 4px; padding: 8px; outline: none; background: var(--background); color: var(--foreground); font-family: var(--mono-font-family); font-size: 12px; resize: none; }
 
 /* Side panels (schema / connections) */

@@ -8,22 +8,23 @@ import { computed } from "vue";
 import { ChevronDown, ChevronRight, Loader2 } from "@lucide/vue";
 import { t } from "../lib/i18n";
 import { childBadgeText, type DnTreeNode } from "../lib/dnTree";
+import TreeNodeIcon from "./TreeNodeIcon.vue";
 
 const props = withDefaults(
   defineProps<{
     node: DnTreeNode;
     depth: number;
     selectedDn: string;
+    baseDn?: string;
     disabled?: boolean;
   }>(),
-  { depth: 0 },
+  { baseDn: "", depth: 0 },
 );
 
 const emit = defineEmits<{
   (e: "toggle", node: DnTreeNode): void;
   (e: "select", node: DnTreeNode): void;
   (e: "menu", event: MouseEvent, dn: string): void;
-  (e: "view", dn: string): void;
   (e: "loadMore", node: DnTreeNode): void;
 }>();
 
@@ -35,12 +36,6 @@ function onToggle(event: MouseEvent | KeyboardEvent) {
 function onSelect(event: MouseEvent) {
   event.stopPropagation();
   if (!props.disabled) emit("select", props.node);
-}
-
-// 双击直接打开条目（对齐 tiny-rdm 习惯；右键菜单的「查看/编辑」保留）。
-function onView(event: MouseEvent) {
-  event.stopPropagation();
-  if (!props.disabled) emit("view", props.node.dn);
 }
 
 function onMenu(event: MouseEvent) {
@@ -77,7 +72,7 @@ const truncatedTitle = computed(() => {
     :aria-expanded="node.loaded && node.children.length > 0 ? node.expanded : undefined"
     :title="node.dn"
     @click="onSelect"
-    @dblclick="onView"
+    @dblclick="onToggle"
     @contextmenu="onMenu"
   >
     <span class="tree-row" :class="{ selected: selectedDn === node.dn }" :style="{ paddingLeft: `${6 + depth * 14}px` }">
@@ -96,7 +91,10 @@ const truncatedTitle = computed(() => {
         <ChevronDown v-else-if="node.expanded && node.children.length > 0" />
         <ChevronRight v-else />
       </span>
-      <span class="tree-label"><span class="tree-name">{{ node.label }}</span></span>
+      <span class="tree-label">
+        <TreeNodeIcon :dn="node.dn" :base-dn="baseDn" :expanded="node.expanded" />
+        <span class="tree-name">{{ node.label }}</span>
+      </span>
       <span v-if="node.loading" class="tree-badge tree-badge--loading" :title="t('tree.loading')">…</span>
       <span
         v-else-if="node.loaded && node.truncated"

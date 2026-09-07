@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { childBadgeText, flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "./dnTree";
+import { childBadgeText, compareDnByLabel, dnNodeKind, flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "./dnTree";
 
 // Node factory kept local so the spec stays free of component imports.
 function node(dn: string, overrides: Partial<DnTreeNode> = {}): DnTreeNode {
@@ -103,5 +103,56 @@ describe("tree keyboard navigation (P2-10)", () => {
     expect(nextTreeFocusIndex(4, 1, "Enter")).toBe(-1);
     expect(nextTreeFocusIndex(4, 1, "Tab")).toBe(-1);
     expect(nextTreeFocusIndex(0, -1, "ArrowDown")).toBe(-1);
+  });
+});
+
+describe("dnNodeKind (tree kind icons)", () => {
+  it("matches the base DN (case-insensitive) as root", () => {
+    expect(dnNodeKind("DC=Demo,DC=DBX", "dc=demo,dc=dbx")).toBe("root");
+    expect(dnNodeKind("dc=demo,dc=dbx", "dc=demo,dc=dbx")).toBe("root");
+    // 非 root 节点照常按 RDN 类型归类
+    expect(dnNodeKind("ou=people,dc=demo,dc=dbx", "dc=demo,dc=dbx")).toBe("ou");
+  });
+
+  it("classifies by the first RDN attribute type (case-insensitive)", () => {
+    expect(dnNodeKind("dc=example,dc=com")).toBe("dc");
+    expect(dnNodeKind("OU=People,dc=example,dc=com")).toBe("ou");
+    expect(dnNodeKind("cn=alice,dc=example,dc=com")).toBe("cn");
+    expect(dnNodeKind("UID=bob,ou=people,dc=example,dc=com")).toBe("uid");
+    expect(dnNodeKind("o=acme")).toBe("o");
+  });
+
+  it("falls back to other for unknown RDN types / malformed DNs", () => {
+    expect(dnNodeKind("c=CN,o=acme")).toBe("other");
+    expect(dnNodeKind("l=Beijing,c=CN")).toBe("other");
+    expect(dnNodeKind("noequalsign")).toBe("other");
+    expect(dnNodeKind("")).toBe("other");
+  });
+});
+
+describe("compareDnByLabel (filter-result alphabetical sort)", () => {
+  const sortDns = (dns: string[]) => [...dns].sort(compareDnByLabel);
+
+  it("sorts by the RDN label case-insensitively", () => {
+    expect(sortDns(["cn=bob,dc=x", "cn=Alice,dc=x", "cn=carol,dc=x"])).toEqual([
+      "cn=Alice,dc=x",
+      "cn=bob,dc=x",
+      "cn=carol,dc=x",
+    ]);
+  });
+
+  it("is numeric-aware: user2 sorts before user10", () => {
+    expect(sortDns(["uid=user10,dc=x", "uid=user2,dc=x", "uid=user1,dc=x"])).toEqual([
+      "uid=user1,dc=x",
+      "uid=user2,dc=x",
+      "uid=user10,dc=x",
+    ]);
+  });
+
+  it("breaks label ties by the full DN for stable output", () => {
+    expect(sortDns(["cn=ali,ou=b,dc=x", "cn=ali,ou=a,dc=x"])).toEqual([
+      "cn=ali,ou=a,dc=x",
+      "cn=ali,ou=b,dc=x",
+    ]);
   });
 });

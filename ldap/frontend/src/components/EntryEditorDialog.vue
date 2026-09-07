@@ -4,13 +4,14 @@
 // （serializeEntriesToLdif / parseLdif）。新增走 ldap/entry/add，修改走
 // ldap/entry/modify（按行 diff 生成 add/replace/delete changes）。
 import { computed, ref, watch } from "vue";
-import { Plus, Trash2, X } from "@lucide/vue";
+import { Copy, Plus, Trash2, X } from "@lucide/vue";
 import { ldapApi, type LdapEntry } from "../lib/api";
 import { parseLdif, serializeEntriesToLdif } from "../lib/ldif";
 import { attrRowsToAttributes, diffChanges, type AttrRowDraftSource } from "../lib/ldapDiff";
 import { joinRdnAndParent, isLikelyRdn, splitFirstDnRdn } from "../lib/dn";
 import { useModalA11y, decideBackdropClose } from "../lib/modal";
 import { looksBinaryAttribute } from "../lib/binaryValue";
+import { writeClipboardText } from "../lib/clipboard";
 import { t } from "../lib/i18n";
 import PasswordAttributeEditor from "./PasswordAttributeEditor.vue";
 import BinaryValueEditor from "./BinaryValueEditor.vue";
@@ -211,6 +212,12 @@ function onPlainGenerated(plain: string) {
   emit("notify", t("ldap.passwordEditor.plainNotice", { plain }));
 }
 
+// 复制入口（DN / 属性值 / LDIF 文本共用）：宿主桥缺失或写入失败时如实通知，
+// 不假装"已复制"。复制是只读动作，不受 editable 门禁限制。
+async function copyText(text: string) {
+  emit("notify", (await writeClipboardText(text)) ? t("copied") : t("copyFailed"));
+}
+
 function removeRow(index: number) {
   rows.value.splice(index, 1);
 }
@@ -288,10 +295,16 @@ function onBackdropClick() {
           <input :value="dnDraft" type="text" class="mono" :disabled="true" spellcheck="false" />
         </label>
       </div>
-      <p v-else class="entry-dn">{{ dnDraft }}</p>
-      <div class="mode-switch">
-        <button :class="{ 'is-active': !ldifMode }" @click="switchToForm">{{ t("editor.formMode") }}</button>
-        <button :class="{ 'is-active': ldifMode }" @click="switchToLdif">{{ t("editor.ldifMode") }}</button>
+      <div v-else class="entry-dn-row">
+        <p class="entry-dn" :title="dnDraft">{{ dnDraft }}</p>
+        <button class="icon-button" :title="t('copyDn')" :aria-label="t('copyDn')" @click="copyText(dnDraft)"><Copy aria-hidden="true" /></button>
+      </div>
+      <div class="mode-switch-row">
+        <div class="mode-switch">
+          <button :class="{ 'is-active': !ldifMode }" @click="switchToForm">{{ t("editor.formMode") }}</button>
+          <button :class="{ 'is-active': ldifMode }" @click="switchToLdif">{{ t("editor.ldifMode") }}</button>
+        </div>
+        <button v-if="ldifMode" class="icon-button" :title="t('editor.copyLdif')" :aria-label="t('editor.copyLdif')" :disabled="ldifText === ''" @click="copyText(ldifText)"><Copy aria-hidden="true" /></button>
       </div>
       <p v-if="!canWrite" class="hint">{{ t("editor.readonlyHint") }}</p>
       <p v-if="ldifError" class="form-error">{{ t("editor.ldifParseError", { error: ldifError }) }}</p>
@@ -320,7 +333,10 @@ function onBackdropClick() {
                 <small v-if="row.multiline" class="multiline-hint">{{ t("editor.multilineHint") }}</small>
               </template>
             </span>
-            <button :title="t('editor.removeAttribute')" :disabled="!editable" @click="removeRow(index)"><Trash2 /></button>
+            <span class="attr-actions">
+              <button :title="t('editor.copyValue')" :aria-label="t('editor.copyValue')" :disabled="row.valuesText === ''" @click="copyText(row.valuesText)"><Copy aria-hidden="true" /></button>
+              <button :title="t('editor.removeAttribute')" :disabled="!editable" @click="removeRow(index)"><Trash2 /></button>
+            </span>
           </div>
         </div>
       </template>

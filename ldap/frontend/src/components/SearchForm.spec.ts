@@ -103,6 +103,37 @@ describe("SearchForm (filter builder)", () => {
     expect(baseInput.classes()).not.toContain("base-dn-flash");
   });
 
+  it("runs a subtree search at a tree node immediately, falling back to match-all on a fresh form", async () => {
+    const wrapper = await mountForm();
+    // 新表单构建器是空子句（表单本身不可运行）：右键子树搜索仍必须出结果，
+    // 过滤回退匹配全部；范围强制 sub；Base DN 同步改写并带跟随高亮。
+    (wrapper.vm as unknown as { runSubtreeAt: (dn: string) => void }).runSubtreeAt("ou=people,dc=demo,dc=dbx");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("run")?.[0][0]).toMatchObject({
+      baseDn: "ou=people,dc=demo,dc=dbx",
+      scope: "sub",
+      filter: "(objectClass=*)",
+    });
+    const baseInput = wrapper.find(".field input.mono");
+    expect((baseInput.element as HTMLInputElement).value).toBe("ou=people,dc=demo,dc=dbx");
+    expect(baseInput.classes()).toContain("base-dn-flash");
+  });
+
+  it("keeps a configured filter (and forces scope=sub) when the tree requests a subtree search", async () => {
+    const wrapper = await mountForm();
+    await wrapper.find(".qb-attr").setValue("uid");
+    await wrapper.find(".qb-value").setValue("admin");
+    // 用户此前把范围切成 base：右键子树搜索要强制回 sub，过滤器照常沿用。
+    await wrapper.find("select").setValue("base");
+    (wrapper.vm as unknown as { runSubtreeAt: (dn: string) => void }).runSubtreeAt("ou=people,dc=demo,dc=dbx");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("run")?.[0][0]).toMatchObject({
+      baseDn: "ou=people,dc=demo,dc=dbx",
+      scope: "sub",
+      filter: "(uid=admin)",
+    });
+  });
+
   it("flags non-numeric size/page inputs instead of silently treating them as unlimited (P2-16)", async () => {
     const wrapper = await mountForm();
     const numeric = wrapper.findAll("input.numeric");

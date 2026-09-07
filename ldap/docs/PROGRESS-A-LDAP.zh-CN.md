@@ -620,3 +620,44 @@ pnpm typecheck 干净；vitest 全量 **190/190**（14 文件）；`pnpm build` 
 | 真机 | dbx-ldap-test 容器（:1389）ldapsearch 实测 v2 过滤串：关键字 "exa" 命中 dc 根 + mail @example.org 的 2 个 uid；"bob" 命中 1；`ou=`/`uid=` 存在性列出全部；`dc=exa` 命中根；`objectClass=inetOrgPerson` 等值 4 条 | 全部符合预期 |
 | 全量 | `scripts/test.sh`：typecheck + vitest 401/401 + build + ui_test 7/7 + go vet/test | 全绿 |
 | 打包/smoke | 同前：package 因既有 go.work 版本不匹配失败；smoke 默认探 :389 而容器映射 :1389（`LDAP_TEST_*` 可覆盖）15/15 SKIP | 既有问题 / 设计内 |
+
+## 24. 2026-09-07 修复：simple 模式连接报「Kerberos password is required」（幽灵必填）
+
+用户报告：KN-LDAP（simple 认证）连接/测试报
+`Plugin connection field 'Kerberos password' is required`，simple 模式下
+不该出现。发生在 d84787d 连接表单重构后的连接设置调整中。
+
+### 24.1 根因
+
+§22 宿主文档（`shared/PROGRESS-HOST-SUBREPO.zh-CN.md`）同款 bug 的宿主校验
+层复现：对话框保存（`buildPluginConnectionConfig`）对所有声明字段写入
+`values[key] ?? field.default`，simple 模式下隐藏的 `krb_credential_type`
+默认值 `"password"` 被持久化；对话框侧校验有 §22 级联可见性放行，但宿主
+Rust 校验（`dbx-core/src/plugins/host.rs`）当时还是非级联求值，按存储值判
+`krb_password`（visible_when/required_when 引用 krb_credential_type）可见 +
+必填 + secret 空 → 连接/测试时拒绝。
+
+### 24.2 改动
+
+- **manifest**：`krb_credential_type` 移除 `default: "password"`（兜底旧
+  宿主，同 kafka §11 对 oauth_token_source 的先例）——隐藏字段不再有默认值
+  可写；存量污染值在重存连接时被 `delete external_config[key]` 清除。
+  kerberos 模式下需显式选凭据类型后凭据字段才可见/必填（0.1.49）。
+- **契约测试**（`manifest_contract_test.go`）：显隐矩阵「kerberos（凭据类型
+  未选）」不再预亮 `krb_password`；必填矩阵补「凭据类型未选时不强制」+
+  「显式 password 才必填 krb_password」两场景。求值器
+  `manifestEvaluateVisible` 本就带 §22 级联语义，无需改。
+- **宿主侧根治**：`host.rs` `plugin_field_is_visible` 递归级联（seen 防环），
+  见宿主文档 §24——重建宿主后全家族（含 kafka/ssh 同型链）根治。
+
+### 24.3 验证
+
+| 层 | 内容 | 结果 |
+| --- | --- | --- |
+| 契约 | `go test ./internal/ldapconn/ -run TestManifest`（显隐 + 必填矩阵，含新增场景） | PASS |
+| 后端 | `go test ./...`（ldapconn/ldapgssapi/lifecycle/store） | 全绿 |
+| 宿主 | `cargo test -p dbx-core --lib plugins::host`（含新增回归
+  `cascaded_hidden_container_default_does_not_force_grandchild_required`：
+  simple 存量污染放行 / kerberos+password 拒绝 / 环防死锁） | 9/9 |
+- 用户侧生效路径：重装 0.1.49 插件 + 重存一次 KN-LDAP 连接（旧宿主即可解
+  锁）；或重建宿主后直接根治（无需重存）。

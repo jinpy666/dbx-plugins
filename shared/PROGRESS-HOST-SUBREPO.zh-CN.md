@@ -50,6 +50,9 @@ dbx-plugins/
 | `697b44989` | 插件连接按 manifest 豁免登录密码弹窗（SSH key 认证不再报 "Password is required"，见第 7 节） |
 | `859de2744` | `buildPluginConnectionConfig` 兼容 reactive existing config（修复编辑导入连接时 "The object can not be cloned."，见第 7 节） |
 | `6ffc010f8` | 删上游遗留未使用 `Loader2` import（vue-tsc TS6133 卡 typecheck） |
+| `b8bae0f80` | 插件连接字段条件级联可见性（前端侧，§22） |
+| `82dc7fa6d` / `a3d6d56eb` | 插件 tab 条不渲染修复（§17 回归，§23） |
+| `1f0d9342e` | 宿主连接校验补齐级联可见性——simple 模式 Kerberos 幽灵必填（§24） |
 
 本轮收编时新提交（原未跟踪/未提交改动，随迁移落库）：
 
@@ -684,3 +687,51 @@ files PROGRESS-P-FILES §14。
   图层 + suppressed 收条是纯本地适配；凡上游动 tab/布局（下次还有），jsdom
   spec 全绿也不代表真机成立。release-local.sh 发布后应加"装插件 → 打开
   连接 → 断言 tab 条可见"的 e2e 冒烟门（待办）。
+
+## 24. 本地二开补丁：宿主连接校验补齐 §22 级联可见性（KN-LDAP simple 模式幽灵必填）（2026-09-07）
+
+- **症状**：ldap 连接（simple 认证）保存/测试报
+  `Plugin connection field 'Kerberos password' is required`，而表单里根本
+  没有（也不该有）该字段；用户在 d84787d 连接表单重构后调整连接设置时出现。
+- **根因**：§22 修了前端（`pluginFieldConditions.ts` 级联可见性），但宿主
+  Rust 校验侧 `crates/dbx-core/src/plugins/host.rs` 的
+  `plugin_field_condition_matches`/`plugin_field_is_visible` 仍是**非级联**
+  求值（只看被引用字段的当前存储值）。而对话框保存时
+  `buildPluginConnectionConfig`（frontendPlugin.ts）对**所有声明字段**写入
+  `values[key] ?? field.default`——simple 模式下隐藏的 `krb_credential_type`
+  默认值 `"password"` 被持久化进 external_config，连接/测试时宿主按该存储值
+  判定 `krb_password`（visible_when/required_when 引用 krb_credential_type）
+  可见 + 必填 + secret 为空 → 报错。即：§22 同类 bug 在宿主校验层复现，
+  对话框（级联）放行的保存，宿主（非级联）拒绝。
+- **修复**：`plugin_field_is_visible` 递归化——raw 条件匹配后再校验被引用
+  字段自身可见（seen 集合防环；引用未知字段放行），与前端
+  `pluginFieldIsVisibleCached` 逐条对齐；`required_when` 保持 raw 求值但被
+  级联后的可见性门控（与对话框 `visible && required` 语义一致）。
+- **插件侧兜底**（不升级宿主时解除 simple 模式死锁，同 kafka §11 对
+  oauth_token_source 的先例）：ldap manifest 移除 `krb_credential_type` 的
+  `default: "password"`（ldap 0.1.49；用户重装插件 + 重存一次连接后，旧宿主
+  下隐藏字段不再有默认值可写，存量污染值在重存时被 `delete external_config`
+  清除）。kerberos 模式下用户需显式选凭据类型后凭据字段才可见/必填。
+- **验证**：host.rs 新增回归测试
+  `cascaded_hidden_container_default_does_not_force_grandchild_required`
+  （simple 存量污染值必须放行 / kerberos+password 空密码必须拒绝 / 环引用
+  防死锁），plugins::host 9/9 绿；ldap 契约矩阵同步（凭据类型未选时不预亮
+  krb_password，显式选择后才必填），`go test ./...` 全绿。
+- **遗留风险扫描**（旧宿主 + 各插件 manifest 链式默认值，宿主补丁重建后
+  自愈）：kafka `sasl_mechanism`（default PLAIN）链 `sasl_password`/
+  `sasl_username`/`kerberos_principal` 等 required_when；`glue_auth_mode`
+  （default default）链 Glue AK/SK 必填——与 §22/§11 处理过的
+  oauth_token_source 同型，PLAINTEXT 新建连接在旧宿主上仍可能幽灵必填，
+  建议 kafka 工作流同样移除这两个 default；ssh `totp_*` 仅 visible_when 链
+  `auth_flow_mode`（default password_then_otp），无 required_when，不受影响。
+- **环境备注**：本机 `/usr/local/bin/rustc`（1.69.0 旧独立安装）遮蔽
+  rustup 工具链，直调 cargo 会拿错 rustc 报 MSRV 错误；须以
+  `PATH="$HOME/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin:$PATH"`
+  前缀运行。另：dbx-core 全量 lib 测试存在**既有**失败（stash 验证与本次
+  改动无关）：`agent_tools::tests::mongodb_agent_registers_shell_query_tool...`
+  与 `table_export::tests::external_driver_table_export_cancels_blocked_fetch`
+  两处栈溢出 SIGABRT，跑全量需 `--skip agent_tools --skip table_export`
+  绕过，待另行排查。
+- **生效方式**：宿主重建后即全家族根治（含存量污染连接，无需重存）；
+  不升级宿主时按上述 ldap manifest 兜底。
+  本补丁已落分支：`1f0d9342e`（dev/plugin-framework-current，见 §3 保留清单）。

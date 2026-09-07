@@ -249,10 +249,13 @@ func TestManifestAuthTypeVisibilityMatrix(t *testing.T) {
 			append(append([]string{}, common...), "username", "domain", "ntlm_hash")},
 		{"digest_md5", manifestFormState{"auth_type": "digest_md5"},
 			append(append([]string{}, common...), "username", "domain", "bind_password", "sasl_host")},
-		{"kerberos (default credential_type=password)", manifestFormState{"auth_type": "kerberos"},
+		// krb_credential_type 无 manifest default（§24 兜底旧宿主：隐藏字段
+		// 默认值会穿透宿主非级联校验制造幽灵必填），用户显式选择后凭据
+		// 字段才可见。
+		{"kerberos (credential type unselected)", manifestFormState{"auth_type": "kerberos"},
 			append(append([]string{}, common...),
 				"username", "krb_credential_type", "krb_realm", "krb_kdc_host", "krb_kdc_port",
-				"krb5_conf_path", "krb_username", "sasl_qop", "sasl_mutual_auth", "krb_password")},
+				"krb5_conf_path", "krb_username", "sasl_qop", "sasl_mutual_auth")},
 		{"kerberos + keytab", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "keytab"},
 			append(append([]string{}, common...),
 				"username", "krb_credential_type", "krb_realm", "krb_kdc_host", "krb_kdc_port",
@@ -351,7 +354,8 @@ func TestManifestAuthTypeRequiredMatrix(t *testing.T) {
 		{"ntlm requires username + password", manifestFormState{"auth_type": "ntlm"}, []string{"bind_password", "username"}},
 		{"ntlm_hash requires username + hash", manifestFormState{"auth_type": "ntlm_hash"}, []string{"ntlm_hash", "username"}},
 		{"digest_md5 requires username + password", manifestFormState{"auth_type": "digest_md5"}, []string{"bind_password", "username"}},
-		{"kerberos password is required", manifestFormState{"auth_type": "kerberos"}, []string{"krb_password"}},
+		{"kerberos password is required", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "password"}, []string{"krb_password"}},
+		{"kerberos unselected credential type defers requirement", manifestFormState{"auth_type": "kerberos"}, nil},
 		{"kerberos keytab path is required", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "keytab"}, []string{"krb_keytab_path"}},
 		{"kerberos cache path is required", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "ccache"}, []string{"krb_ccache_path"}},
 		{"anonymous ignores stale Kerberos credential selection", manifestFormState{"auth_type": "anonymous", "krb_credential_type": "keytab"}, nil},

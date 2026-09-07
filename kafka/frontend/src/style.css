@@ -422,7 +422,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .drawer-backdrop { position: fixed; z-index: 70; inset: 0; background: var(--overlay); }
 .drawer { position: fixed; z-index: 75; top: 0; right: 0; bottom: 0; display: flex; width: min(560px, 92vw); flex-direction: column; border-left: 1px solid var(--border); background: var(--popover); color: var(--foreground); box-shadow: -12px 0 36px rgb(0 0 0 / 28%); }
 .drawer header { display: flex; min-height: 34px; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 10px; font-size: 12px; font-weight: 600; }
-.drawer-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; overflow: auto; padding: 10px; }
+.drawer-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; overflow: hidden; padding: 10px; }
+/* Value 区块吃满抽屉剩余高度：编辑器/错误视图自行滚动，headers 元信息自然高。 */
+.detail-block--value { flex: 1 1 auto; min-height: 220px; }
+.detail-block--value .detail-block__body { flex: 1 1 auto; min-height: 0; }
+.detail-block--value .dbx-code-editor { flex: 1 1 auto; min-height: 0; height: auto; }
 .drawer .kv-grid dd { white-space: pre-wrap; }
 /* 详情抽屉 v2：区块化（Headers 表格/JSON 切换 + Value 编辑器），操作收敛为
    区块标题行 icon（行内复制走 icon-button--inline），替代原先散落的按钮排。 */
@@ -432,17 +436,16 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .icon-button--inline { flex: 0 0 auto; width: 20px; height: 20px; color: var(--muted-foreground); }
 .icon-button--inline:hover { color: var(--primary); }
 .detail-block { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
-/* 可折叠区块头（ChevronDown + 标题整行可点；chev/folded 复用 filter-group 既有样式） */
-.detail-block__head { display: flex; min-height: 24px; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; padding: 0; cursor: default; }
-.detail-block__head--toggle { cursor: pointer; color: inherit; justify-content: flex-start; gap: 6px; }
-.detail-block__head--toggle:hover .detail-block__title { color: var(--foreground); }
-.detail-block__head--toggle .chev { width: 14px; height: 14px; transition: transform 0.15s ease; }
-.detail-block__head--toggle .chev.folded { transform: rotate(-90deg); }
-.detail-block__title { font-size: 11px; font-weight: 600; color: var(--muted-foreground); }
+/* 区块头：左侧折叠热区（chevron+标题）+ 右侧操作（切换/复制/下载），单行省高度 */
+.detail-block__head { display: flex; min-height: 24px; align-items: center; justify-content: space-between; gap: 8px; }
+.detail-block__toggle { display: inline-flex; min-width: 0; align-items: center; gap: 6px; border: 0; background: transparent; padding: 0; cursor: pointer; color: inherit; }
+.detail-block__toggle:hover .detail-block__title { color: var(--foreground); }
+.detail-block__toggle .chev { flex: 0 0 auto; width: 14px; height: 14px; transition: transform 0.15s ease; }
+.detail-block__toggle .chev.folded { transform: rotate(-90deg); }
+.detail-block__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; color: var(--muted-foreground); }
 .detail-block__busy { color: var(--primary); }
-.detail-block__actions { display: inline-flex; align-items: center; gap: 4px; }
+.detail-block__actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .detail-block__body { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
-.detail-block__body .detail-block__actions { justify-content: flex-end; }
 .detail-block .icon-button { color: var(--muted-foreground); }
 .detail-block .icon-button:hover { color: var(--primary); }
 .detail-view-form { padding: 0; }
@@ -464,7 +467,6 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .kv-table .kv-table__action-col { width: 32px; }
 .value-view--headers { flex: 0 0 auto; max-height: 220px; }
 .detail-headers-empty { padding: 6px 0; }
-.drawer .dbx-code-editor { flex: 0 0 auto; }
 .value-view { min-height: 0; flex: 1; border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow: auto; background: var(--background); font-family: var(--mono-font-family); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .value-view.error { color: var(--destructive); }
 .drawer-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

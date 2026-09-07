@@ -747,3 +747,23 @@ client 接口抽象（超出本轮"不重构"约束，登记不实施）。
   隐藏；`prettyXml` 单测 4 例（良构缩进/不良构原样/DOCTYPE+ENTITY 红线/
   实体保留）；typecheck + 225 单测全绿；smoke all green（PASS=11 FAIL=0
   SKIP=4）；打包 io.dbx.kafka-0.1.20。纯前端改动，协议与 sidecar 无涉。
+
+## 16. 详情抽屉三轮：标题行合并操作 + 编辑器吃满底部（2026-09-07）
+
+- **反馈（用户）**：① Headers/Value 标题行与下一行的切换/复制按钮应合并成
+  一行，省高度；② value 高亮展示区应吃满抽屉底部剩余高度，而不是固定
+  320px 后留白。
+- **改造（frontend，纯样式/模板）**：
+  1. 区块头单行化：`detail-block__head` = 左侧折叠热区（chevron+标题的
+     `detail-block__toggle` button）+ 右侧 `detail-block__actions`
+     （表格/JSON 切换、完整值、下载、复制 icon）；折叠收起时 actions 一并
+     隐藏。body 里不再有独立操作行（每区块省 ~24px）。
+  2. 编辑器吃满：drawer-body `overflow: hidden` + value 区块
+     `flex: 1 1 auto; min-height: 220px` + CodeEditor 去 max-height
+     （flex: 1 1 auto, min-height: 0），CodeMirror 内部滚动；错误/完整值
+     pre 视图同样 flex 拉伸。修复过程中发现并清掉一条后置
+     `.drawer .dbx-code-editor { flex: 0 0 auto }` 旧规则（同特异性后到
+     覆盖导致 flex 拉伸失效）。
+- **验证**：mock 实测 evaluate 量高——valueBody 448px、编辑器 402px
+  flex=1 1 auto 拉伸到底，截图确认；typecheck + 225 单测全绿；smoke all
+  green（PASS=11 FAIL=0 SKIP=4）；打包 io.dbx.kafka-0.1.22。

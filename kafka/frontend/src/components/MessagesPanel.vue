@@ -1219,20 +1219,21 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
             <dd v-if="detail.decodeError" class="form-error">{{ detail.decodeError }}</dd>
           </dl>
 
-          <!-- Headers：可折叠区块；表格（key|value + 行复制，限高滚动）⇄ 格式化 JSON -->
+          <!-- Headers：可折叠区块（标题行右侧直接挂切换/复制操作，省一行高度）；
+               表格（key|value + 行复制，限高滚动）⇄ 格式化 JSON -->
           <section class="detail-block">
-            <button class="detail-block__head detail-block__head--toggle" type="button" :aria-expanded="sectionsOpen.headers" @click="toggleSection('headers')">
-              <ChevronDown class="chev" :class="{ folded: !sectionsOpen.headers }" aria-hidden="true" />
-              <span class="detail-block__title">{{ t("messages.colHeaders") }} · {{ headersEntries.length }}</span>
-            </button>
+            <div class="detail-block__head">
+              <button class="detail-block__toggle" type="button" :aria-expanded="sectionsOpen.headers" @click="toggleSection('headers')">
+                <ChevronDown class="chev" :class="{ folded: !sectionsOpen.headers }" aria-hidden="true" />
+                <span class="detail-block__title">{{ t("messages.colHeaders") }} · {{ headersEntries.length }}</span>
+              </button>
+              <span v-if="sectionsOpen.headers && headersEntries.length > 0" class="detail-block__actions">
+                <button class="seg-toggle" type="button" :class="{ 'is-active': headersView === 'table' }" @click="headersView = 'table'">{{ t("messages.headersViewTable") }}</button>
+                <button class="seg-toggle" type="button" :class="{ 'is-active': headersView === 'json' }" @click="headersView = 'json'">{{ t("messages.headersViewJson") }}</button>
+                <button class="icon-button" type="button" :title="t('messages.copyHeaders')" data-testid="copy-headers" @click="copyDetail('headers')"><Copy /></button>
+              </span>
+            </div>
             <div v-show="sectionsOpen.headers" class="detail-block__body">
-              <div class="detail-block__actions">
-                <template v-if="headersEntries.length > 0">
-                  <button class="seg-toggle" type="button" :class="{ 'is-active': headersView === 'table' }" @click="headersView = 'table'">{{ t("messages.headersViewTable") }}</button>
-                  <button class="seg-toggle" type="button" :class="{ 'is-active': headersView === 'json' }" @click="headersView = 'json'">{{ t("messages.headersViewJson") }}</button>
-                  <button class="icon-button" type="button" :title="t('messages.copyHeaders')" data-testid="copy-headers" @click="copyDetail('headers')"><Copy /></button>
-                </template>
-              </div>
               <div v-if="headersView === 'table' && headersEntries.length > 0" class="kv-scroll">
                 <table class="kv-table">
                   <thead>
@@ -1258,20 +1259,23 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
             </div>
           </section>
 
-          <!-- Value：可折叠区块；CodeEditor 只读高亮（json/xml）+ 解码管线 + 收敛后的操作 icon -->
-          <section class="detail-block">
-            <button class="detail-block__head detail-block__head--toggle" type="button" :aria-expanded="sectionsOpen.value" @click="toggleSection('value')">
-              <ChevronDown class="chev" :class="{ folded: !sectionsOpen.value }" aria-hidden="true" />
-              <span class="detail-block__title">{{ t("messages.colValue") }}<span v-if="viewBusy" class="detail-block__busy">…</span></span>
-            </button>
-            <div v-show="sectionsOpen.value" class="detail-block__body">
-              <div class="detail-block__actions">
+          <!-- Value：可折叠区块（编辑器吃满抽屉剩余高度）；CodeEditor 只读高亮（json/xml）
+               + 解码管线 + 标题行右侧操作 icon -->
+          <section class="detail-block detail-block--value">
+            <div class="detail-block__head">
+              <button class="detail-block__toggle" type="button" :aria-expanded="sectionsOpen.value" @click="toggleSection('value')">
+                <ChevronDown class="chev" :class="{ folded: !sectionsOpen.value }" aria-hidden="true" />
+                <span class="detail-block__title">{{ t("messages.colValue") }}<span v-if="viewBusy" class="detail-block__busy">…</span></span>
+              </button>
+              <span v-if="sectionsOpen.value" class="detail-block__actions">
                 <button class="seg-toggle" type="button" :class="{ 'is-active': showFullBase64 }" :title="t('messages.fullValue')" @click="showFullBase64 = !showFullBase64">
                   {{ showFullBase64 ? t("messages.formatRaw") : t("messages.fullValue") }}
                 </button>
                 <button class="icon-button" type="button" :title="t('messages.downloadValue')" @click="downloadValue"><Download /></button>
                 <button class="icon-button" type="button" :title="t('messages.copyValue')" data-testid="copy-value" @click="copyDetail('value')"><Copy /></button>
-              </div>
+              </span>
+            </div>
+            <div v-show="sectionsOpen.value" class="detail-block__body">
               <div class="kafka-form kafka-form--bare detail-view-form">
                 <label class="field">
                   <span>{{ t("messages.decode") }}</span>
@@ -1309,7 +1313,6 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
                 :language="viewFormat === 'json' || viewFormat === 'xml' ? viewFormat : 'text'"
                 disabled
                 min-height="140px"
-                max-height="320px"
               />
             </div>
           </section>

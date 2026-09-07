@@ -618,7 +618,7 @@ sidecar 兜底校验）。SR 后端由新增决策字段 **`schema_registry`**�
 | glue_access_key_id | text | config | — | glue_auth_mode ∈ [static] | AWS Access Key ID；required_when 见矩阵 |
 | glue_secret_access_key | password | **secret** | — | glue_auth_mode ∈ [static] | AWS Secret Access Key；required_when 见矩阵（凭据红线：secret binding） |
 | glue_session_token | password | **secret** | — | glue_auth_mode ∈ [static] | AWS 会话令牌（可选，STS 临时凭据） |
-| **oauth_token_source** | select | config | msk_iam | sasl_mechanism ∈ [OAUTHBEARER] | **msk_iam / static_token**（Phase 3 OAUTHBEARER token 来源） |
+| **oauth_token_source** | select | config | —（不声明 default） | sasl_mechanism ∈ [OAUTHBEARER] | **msk_iam / static_token**（Phase 3 OAUTHBEARER token 来源）；表单须显式选择，后端空值仍回退 msk_iam——不声明 default 是因为宿主条件求值会把 default 代入下游 visible_when，回填 msk_iam 会让 msk_region 在普通 PLAINTEXT/SCRAM 表单上幽灵必填（宿主旧版不级联可见性时直接死锁保存按钮） |
 | msk_region | text | config | — | oauth_token_source ∈ [msk_iam] | MSK 集群 AWS 区域（签名 IAM token）；required_when 见矩阵 |
 | msk_access_key_id | text | config | — | oauth_token_source ∈ [msk_iam] | 可选：显式覆盖 AWS 默认凭据链（与 msk_secret_access_key 成对） |
 | msk_secret_access_key | password | **secret** | — | oauth_token_source ∈ [msk_iam] | 显式凭据 SK（与 AK 成对；凭据红线：secret binding） |

@@ -162,7 +162,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .tree-node { border: 0; width: 100%; background: transparent; }
 .tree-row { display: flex; width: 100%; min-height: 26px; align-items: center; gap: 4px; border: 0; border-radius: 4px; padding: 2px 6px; text-align: left; cursor: default; }
 .tree-row:hover { background: color-mix(in srgb, var(--accent) 65%, transparent); }
-.tree-row.selected, .tree-row.selected:hover { background: var(--accent); color: var(--accent-foreground); }
+/* 选中态：轻底 + 主色文字/图标高亮（不整行铺实底，避免与 hover 底色块混淆）。 */
+.tree-row.selected, .tree-row.selected:hover { background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary); }
+.tree-row.selected .icon-violet, .tree-row.selected .icon-neutral { color: var(--primary); }
 .tree-twist { display: inline-grid; width: 16px; height: 16px; flex: 0 0 16px; place-items: center; border: 0; border-radius: 3px; padding: 0; background: transparent; color: var(--muted-foreground); cursor: pointer; }
 .tree-twist:hover { background: color-mix(in srgb, var(--muted-foreground) 25%, transparent); }
 .tree-twist svg { width: 12px; height: 12px; }
@@ -275,6 +277,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .pager button:disabled { opacity: .4; }
 .empty { display: flex; min-height: 120px; align-items: center; justify-content: center; gap: 8px; padding: 16px; color: var(--muted-foreground); font-size: 12px; text-align: center; }
 .empty.compact { min-height: 42px; padding: 8px; }
+/* grid-box 是 row 向 flex 容器：空态 p 作为 flex item 默认按内容宽靠左，
+   撑满后才谈得上自身 justify-content 的水平居中（结果区/未消费空态共用）。 */
+.grid-box > .empty { flex: 1 1 auto; }
 .truncated-badge { border: 1px solid color-mix(in srgb, var(--primary) 45%, var(--border)); border-radius: 999px; padding: 1px 8px; color: var(--primary); font-size: 10px; }
 
 /* Context menu */

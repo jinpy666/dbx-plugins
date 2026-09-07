@@ -290,6 +290,13 @@ func TestManifestBackendFieldContract(t *testing.T) {
 	if oauthSource.RequiredWhen != nil {
 		t.Errorf("oauth_token_source required_when = %+v, want nil", oauthSource.RequiredWhen)
 	}
+	// 不声明 default：宿主条件求值会拿字段 default 参与下游 visible_when，
+	// 回填 msk_iam 会让 msk_region 在纯 PLAINTEXT/SCRAM 表单上幽灵必填
+	//（宿主旧版不级联可见性时直接死锁保存按钮）；后端空值语义仍回退
+	// msk_iam（NormalizeOauthTokenSource）。
+	if oauthSource.Default != nil {
+		t.Errorf("oauth_token_source default = %v, want nil (must stay unset)", oauthSource.Default)
+	}
 	tokenSourceValues := map[string]bool{}
 	for _, option := range fields["oauth_token_source"].Options {
 		tokenSourceValues[option.Value] = true

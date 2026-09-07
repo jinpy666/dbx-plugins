@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.kafka",
   "name": "DBX Kafka",
-  "version": "0.1.14",
+  "version": "0.1.17",
   "publisher": "dbx",
   "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
   "icon": "assets/plugin.svg",
@@ -171,7 +171,7 @@
         {
           "key": "oauth_token_source",
           "label": "OAuth token source",
-          "description": "Where the OAUTHBEARER token comes from: AWS MSK IAM signed token (default) or a static token.",
+          "description": "Where the OAUTHBEARER token comes from: AWS MSK IAM signed token or a static token. Left empty it still defaults to MSK IAM on connect, but must be picked explicitly so the region field shows up.",
           "type": "select",
           "options": [
             {
@@ -183,7 +183,6 @@
               "value": "static_token"
             }
           ],
-          "default": "msk_iam",
           "binding": "config",
           "visible_when": {
             "field": "sasl_mechanism",

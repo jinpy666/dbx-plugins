@@ -600,3 +600,59 @@ client 接口抽象（超出本轮"不重构"约束，登记不实施）。
 `CGO_ENABLED=0 go vet ./...` 通过；`go test ./... -count=1` 3 包 ok
 （kafkaconn 169 用例全 PASS）；cover total 73.0%；smoke 全套
 `total=15 PASS=11 FAIL=0 SKIP=4`（S10/S13 -32602 断言 PASS）。
+
+## 11. 连接表单幽灵必填修复：oauth_token_source 不再声明 default（2026-09-07）
+
+- **症状（用户报告）**：新建连接表单默认就要求填 AWS region，PLAINTEXT/SCRAM
+  普通 Kafka 集群无法添加连接。
+- **根因（宿主 × manifest 叠加）**：宿主 `hasRequiredConnectionTarget` 要求
+  "所有字段：不可见或非必填或有值"。manifest 中 `oauth_token_source` 声明
+  `default: "msk_iam"`，而宿主条件求值（`pluginFieldConditions.ts`）在表单值
+  缺失时回退字段 default 代入下游 `visible_when`/`required_when` —— 于是
+  `msk_region` 在 sasl_mechanism 仍为 PLAIN（其自身及 oauth_token_source 均
+  不可见）时被判为"可见 + 必填 + 无值"，保存/测试按钮全部禁用。联动链
+  security_protocol → sasl_mechanism → oauth_token_source → msk_region 的
+  级联可见性宿主侧不成立（条件只看被引用字段的值，不看该字段是否可见）。
+- **修复（两处）**：
+  1. 宿主（二开补丁，见 `shared/PROGRESS-HOST-SUBREPO.zh-CN.md` §22）：
+     `pluginFieldIsVisible` 支持级联（传入 sibling resolver，条件引用的
+     字段自身不可见则条件不成立，带 seen 防环）；两个调用方
+     （PluginConnectionFields.vue / ConnectionDialog.vue）传入 resolver。
+  2. 插件 manifest 兜底（旧宿主不级联时也不被卡死）：`oauth_token_source`
+     移除 `default`（不声明时旧宿主条件求值得 undefined → msk_region 隐藏）；
+     后端空值语义不变（`NormalizeOauthTokenSource` 空值回退 msk_iam，且仅在
+     OAUTHBEARER 分支校验 msk_region），已存连接不受影响。副作用：MSK 用户
+     需显式选一次 token source（更符合"显式优于隐式"）。
+- **守护**：`manifest_contract_test.go` 新增断言 `oauth_token_source.default
+  必须为 nil`（防止回填复发）；宿主 `pluginFieldConditions.spec.ts` 新增
+  kafka 形联动链 dormant/复活用例 + 未知字段/自环用例；
+  `PluginConnectionFields.spec.ts` 新增 msk_region 幽灵必填回归用例。
+- **协议同步**：`PROTOCOL_KAFKA.zh-CN.md` §9 字段表 default 列改"—（不声明
+  default）"并注明原因；manifest version 0.1.14 → 0.1.15。
+- **验证**：宿主相关 spec（pluginFieldConditions 8 + PluginConnectionFields 8
+  + connectionPassword/connectionStore 30 + connection 目录 10）全绿；
+  kafka `scripts/test.sh` all green（前端三件套 + go vet/test + 打包
+  io.dbx.kafka-0.1.15-darwin-arm64.dbxp + smoke `total=15 PASS=11 FAIL=0
+  SKIP=4`，SKIP 均为设计内）。
+- **遗留**：用户期望的"连接类型选择器"（原生 / Confluent / AWS MSK 一键
+  预设）受宿主条件模型限制（`visible_when` 仅单字段 one_of，预设需要多条件
+  AND），本期不实施；现表单已可通过 security_protocol × sasl_mechanism ×
+  schema_registry 组合表达全部形态，如需一键预设须先扩展宿主条件模型。
+
+## 12. 消息页 UI 微调：topic 选中态与空态居中（2026-09-07）
+
+- **反馈（用户）**：① 消息页左侧 topic 树选中行是整行实底色块，"高亮和底色
+  反了"不好看；② 右侧空态「暂无消息——请调整条件后重新消费」不居中。
+- **修复**：
+  1. `style.css` `.tree-row.selected`：整行 `var(--accent)` 实底 →
+     `--primary` 14% 轻底 + 文字/图标（icon-violet/icon-neutral）转主色，
+     选中靠"轻底 + 主色高亮"表达而非实色块；hover（accent 65%）不变。
+  2. `MessagesPanel.vue` 未消费空态（P2-21 两态空态）包进
+     `grid-box grid-box--fill` 与结果区同容器；`style.css` 增
+     `.grid-box > .empty { flex: 1 1 auto }`——grid-box 是 row 向 flex 容器，
+     空 p 作为 flex item 默认按内容宽靠左，撑满后自身 justify-content 才
+     生效（结果区空态 1126 同路径一并修正）。
+- **验证**：mock 页（?theme=dark/light）浏览器实测——选中行计算样式
+  primary 14% 底 + rgb(59,130,246) 字，空态几何中心与容器双向偏差 <2px；
+  前端 typecheck + 219 单测全绿（MessagesPanel.spec 空态文案断言不受
+  容器包裹影响）。纯样式/模板结构调整，协议与 sidecar 无涉。

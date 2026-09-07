@@ -652,3 +652,25 @@ files PROGRESS-P-FILES §14。
   kafka 0.1.15 的 manifest 兜底同样解除死锁（MSK 用户需显式选 token source）。
 - **注意**：本补丁未提交（工作区改动），需按第 3 节保留清单流程落入分支，
   防止子仓库同步丢失。
+
+## 23. §17 回归（第二次）：portal 重构后插件 tab 条高度塌缩（2026-09-07）
+
+- **症状**：与 §17 完全相同——插件连接打开后工作台内容占满、无 tab 条；
+  内置数据连接的 tab 条正常（用户报告 + 截图确认）。
+- **根因**：上游 `148345494`（grouped tab bar portal，随 6aae0c1 合入）把
+  SqlEditorWorkspace 根改为 flex-row 并保留 `h-full` + `flex-1`。插件 tab
+  激活时 App.vue 外层 wrapper 是 `flex-none`（高度不定），`flex-1`
+  （flex-basis: 0%）在高度不定父级中塌缩为 0，`overflow-hidden` 把已渲染的
+  组 tab 条裁掉——DOM 在、视觉无。内置 tab 时 wrapper 是 `flex-1`（高度
+  确定），不受影响。§17/§17a 的全部契约 spec 均绿：jsdom 无布局引擎，
+  高度塌缩类回归 spec 天然测不到。
+- **修复**（host/ 1 文件，`82dc7fa6d`）：沿用 §17 的 suppressed 高度契约——
+  `contentSuppressed` 时工作区根 `h-auto`（内容驱动），正常模式保持
+  `h-full flex-1`；`SqlEditorWorkspace.mount.spec` 增补双向断言。顺带修正
+  `pluginFieldConditions.spec` 两处 read 回调类型标注（此前 vue-tsc 就红）。
+- **验证**：typecheck 0 错；layout 26 文件 210 用例 + pluginFieldConditions
+  8 用例全绿。重建 DBX.app 后真机复验：打开四插件连接，tab 条应出现。
+- **系统性教训**：这是 §17 类回归的第二次。上游无插件框架，always-mounted
+  图层 + suppressed 收条是纯本地适配；凡上游动 tab/布局（下次还有），jsdom
+  spec 全绿也不代表真机成立。release-local.sh 发布后应加"装插件 → 打开
+  连接 → 断言 tab 条可见"的 e2e 冒烟门（待办）。

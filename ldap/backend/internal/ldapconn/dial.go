@@ -185,8 +185,9 @@ func resolveLDAPSASLHost(profile Profile, logicalHost string) string {
 // required（ldaps 或 StartTLS）时即使未显式开启也启用；ServerName 缺省用
 // connection.host；tls_verify=false → InsecureSkipVerify（连接级显式配置）。
 func ldapTLSConfig(profile Profile, required bool, logicalHost string) (*tls.Config, error) {
-	enabled := required || profile.TLSServerName != "" || profile.TLSCAPath != ""
-	if !enabled {
+	// Hidden TLS fields are retained by the host form for later reuse. They
+	// must not enable TLS or trigger certificate-file I/O on a plain connection.
+	if !required {
 		return nil, nil
 	}
 	cfg := &tls.Config{
@@ -194,7 +195,7 @@ func ldapTLSConfig(profile Profile, required bool, logicalHost string) (*tls.Con
 		ServerName:         firstLDAPNonEmpty(profile.TLSServerName, logicalHost),
 		MinVersion:         tls.VersionTLS12,
 	}
-	if path := strings.TrimSpace(profile.TLSCAPath); path != "" {
+	if path := strings.TrimSpace(profile.TLSCAPath); profile.TLSVerify && path != "" {
 		pem, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read tls_ca_path: %w", err)

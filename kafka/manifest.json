@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.kafka",
   "name": "DBX Kafka",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "publisher": "dbx",
   "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
   "icon": "assets/plugin.svg",
@@ -50,6 +50,24 @@
           "required": true
         },
         {
+          "key": "connection_source",
+          "label": "Connection source",
+          "description": "Where broker endpoints come from: direct bootstrap list, or discovered from ZooKeeper (zk_servers).",
+          "options": [
+            {
+              "label": "Bootstrap servers",
+              "value": "bootstrap"
+            },
+            {
+              "label": "ZooKeeper discovery",
+              "value": "zookeeper"
+            }
+          ],
+          "default": "bootstrap",
+          "type": "select",
+          "binding": "config"
+        },
+        {
           "key": "bootstrap_servers",
           "label": "Bootstrap servers",
           "description": "Comma- or newline-separated broker list (host:port).",
@@ -57,7 +75,38 @@
           "placeholder": "localhost:9092,localhost:9093",
           "default": "",
           "binding": "config",
-          "required": true
+          "visible_when": {
+            "field": "connection_source",
+            "one_of": [
+              "bootstrap"
+            ]
+          },
+          "required_when": {
+            "field": "connection_source",
+            "one_of": [
+              "bootstrap"
+            ]
+          }
+        },
+        {
+          "key": "zk_servers",
+          "label": "ZooKeeper servers",
+          "description": "Comma-separated ZooKeeper ensemble (host:port[/chroot]) used to discover brokers when the connection source is zookeeper.",
+          "placeholder": "zk1:2181,zk2:2181/chroot",
+          "type": "textarea",
+          "binding": "config",
+          "visible_when": {
+            "field": "connection_source",
+            "one_of": [
+              "zookeeper"
+            ]
+          },
+          "required_when": {
+            "field": "connection_source",
+            "one_of": [
+              "zookeeper"
+            ]
+          }
         },
         {
           "key": "security_protocol",
@@ -130,10 +179,11 @@
           "default": "",
           "binding": "config",
           "visible_when": {
-            "field": "security_protocol",
+            "field": "sasl_mechanism",
             "one_of": [
-              "SASL_PLAINTEXT",
-              "SASL_SSL"
+              "PLAIN",
+              "SCRAM-SHA-256",
+              "SCRAM-SHA-512"
             ]
           },
           "required_when": {
@@ -153,10 +203,11 @@
           "default": "",
           "binding": "secret",
           "visible_when": {
-            "field": "security_protocol",
+            "field": "sasl_mechanism",
             "one_of": [
-              "SASL_PLAINTEXT",
-              "SASL_SSL"
+              "PLAIN",
+              "SCRAM-SHA-256",
+              "SCRAM-SHA-512"
             ]
           },
           "required_when": {
@@ -169,9 +220,87 @@
           }
         },
         {
+          "key": "kerberos_principal",
+          "label": "Kerberos principal",
+          "description": "Client principal in user@REALM form used with the keytab; required when the SASL mechanism is GSSAPI.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          },
+          "required_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_keytab_path",
+          "label": "Kerberos keytab path",
+          "description": "Path to the keytab file on this machine (file path only, never the content); required when the SASL mechanism is GSSAPI.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          },
+          "required_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_realm",
+          "label": "Kerberos realm",
+          "description": "Kerberos realm; empty derives the realm from kerberos_principal (user@REALM) or krb5.conf.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_service_name",
+          "label": "Kerberos service name",
+          "description": "Kafka service name used for the GSSAPI ticket (the first part of broker principal kafka/BROKER@REALM).",
+          "default": "kafka",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
+          "key": "kerberos_krb5_conf_path",
+          "label": "krb5.conf path",
+          "description": "Path to krb5.conf; empty falls back to $KRB5_CONFIG, then /etc/krb5.conf.",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "GSSAPI"
+            ]
+          }
+        },
+        {
           "key": "oauth_token_source",
           "label": "OAuth token source",
-          "description": "Where the OAUTHBEARER token comes from: AWS MSK IAM signed token or a static token. Left empty it still defaults to MSK IAM on connect, but must be picked explicitly so the region field shows up.",
+          "description": "Choose AWS MSK IAM or a static token. OAUTHBEARER requires SASL over TLS (SASL_SSL).",
           "type": "select",
           "options": [
             {
@@ -185,6 +314,12 @@
           ],
           "binding": "config",
           "visible_when": {
+            "field": "sasl_mechanism",
+            "one_of": [
+              "OAUTHBEARER"
+            ]
+          },
+          "required_when": {
             "field": "sasl_mechanism",
             "one_of": [
               "OAUTHBEARER"
@@ -302,8 +437,8 @@
         {
           "key": "tls_client_key",
           "label": "Client private key (PEM)",
-          "description": "PEM-encoded client private key for mutual TLS (mTLS); stored via host secret binding.",
-          "type": "password",
+          "description": "Paste the complete PEM key including BEGIN/END lines, together with the client certificate for mutual TLS. Leave both empty for server-only TLS.",
+          "type": "textarea",
           "default": "",
           "binding": "secret",
           "visible_when": {
@@ -326,140 +461,6 @@
             "one_of": [
               "SSL",
               "SASL_SSL"
-            ]
-          }
-        },
-        {
-          "key": "client_id",
-          "label": "Client ID",
-          "description": "Optional client.id reported to brokers; defaults to dbx-plugin-kafka.",
-          "type": "text",
-          "default": "",
-          "binding": "config"
-        },
-        {
-          "key": "read_only",
-          "label": "Read-only mode",
-          "description": "Reject all write operations (produce, topic create/alter/delete, group delete and offset reset, ACL writes).",
-          "type": "boolean",
-          "default": true,
-          "binding": "config"
-        },
-        {
-          "key": "allow_delete",
-          "label": "Allow delete operations",
-          "description": "Allow delete-class operations (topics/delete, groups/delete, acls/delete); has no effect while read-only is on.",
-          "type": "boolean",
-          "default": false,
-          "binding": "config"
-        },
-        {
-          "key": "connection_source",
-          "label": "Connection source",
-          "description": "Where broker endpoints come from: direct bootstrap list, or discovered from ZooKeeper (zk_servers).",
-          "options": [
-            {
-              "label": "Bootstrap servers",
-              "value": "bootstrap"
-            },
-            {
-              "label": "ZooKeeper discovery",
-              "value": "zookeeper"
-            }
-          ],
-          "default": "bootstrap",
-          "type": "select",
-          "binding": "config"
-        },
-        {
-          "key": "zk_servers",
-          "label": "ZooKeeper servers",
-          "description": "Comma-separated ZooKeeper ensemble (host:port[/chroot]) used to discover brokers when the connection source is zookeeper.",
-          "placeholder": "zk1:2181,zk2:2181/chroot",
-          "type": "textarea",
-          "binding": "config",
-          "visible_when": {
-            "field": "connection_source",
-            "one_of": [
-              "zookeeper"
-            ]
-          }
-        },
-        {
-          "key": "kerberos_service_name",
-          "label": "Kerberos service name",
-          "description": "Kafka service name used for the GSSAPI ticket (the first part of broker principal kafka/BROKER@REALM).",
-          "default": "kafka",
-          "type": "text",
-          "binding": "config",
-          "visible_when": {
-            "field": "sasl_mechanism",
-            "one_of": [
-              "GSSAPI"
-            ]
-          }
-        },
-        {
-          "key": "kerberos_realm",
-          "label": "Kerberos realm",
-          "description": "Kerberos realm; empty derives the realm from kerberos_principal (user@REALM) or krb5.conf.",
-          "type": "text",
-          "binding": "config",
-          "visible_when": {
-            "field": "sasl_mechanism",
-            "one_of": [
-              "GSSAPI"
-            ]
-          }
-        },
-        {
-          "key": "kerberos_principal",
-          "label": "Kerberos principal",
-          "description": "Client principal in user@REALM form used with the keytab; required when the SASL mechanism is GSSAPI.",
-          "type": "text",
-          "binding": "config",
-          "visible_when": {
-            "field": "sasl_mechanism",
-            "one_of": [
-              "GSSAPI"
-            ]
-          },
-          "required_when": {
-            "field": "sasl_mechanism",
-            "one_of": [
-              "GSSAPI"
-            ]
-          }
-        },
-        {
-          "key": "kerberos_keytab_path",
-          "label": "Kerberos keytab path",
-          "description": "Path to the keytab file on this machine (file path only, never the content); required when the SASL mechanism is GSSAPI.",
-          "type": "text",
-          "binding": "config",
-          "visible_when": {
-            "field": "sasl_mechanism",
-            "one_of": [
-              "GSSAPI"
-            ]
-          },
-          "required_when": {
-            "field": "sasl_mechanism",
-            "one_of": [
-              "GSSAPI"
-            ]
-          }
-        },
-        {
-          "key": "kerberos_krb5_conf_path",
-          "label": "krb5.conf path",
-          "description": "Path to krb5.conf; empty falls back to $KRB5_CONFIG, then /etc/krb5.conf.",
-          "type": "text",
-          "binding": "config",
-          "visible_when": {
-            "field": "sasl_mechanism",
-            "one_of": [
-              "GSSAPI"
             ]
           }
         },
@@ -644,6 +645,36 @@
               "static"
             ]
           }
+        },
+        {
+          "key": "client_id",
+          "label": "Client ID",
+          "description": "Optional client.id reported to brokers; defaults to dbx-plugin-kafka.",
+          "type": "text",
+          "default": "",
+          "binding": "config"
+        },
+        {
+          "key": "read_only",
+          "label": "Read-only mode",
+          "description": "Reject all write operations (produce, topic create/alter/delete, group delete and offset reset, ACL writes).",
+          "type": "boolean",
+          "default": true,
+          "binding": "config"
+        },
+        {
+          "key": "allow_delete",
+          "label": "Allow delete operations",
+          "description": "Allow delete-class operations (topics/delete, groups/delete, acls/delete); has no effect while read-only is on.",
+          "type": "boolean",
+          "default": false,
+          "binding": "config",
+          "visible_when": {
+            "field": "read_only",
+            "one_of": [
+              "false"
+            ]
+          }
         }
       ]
     },
@@ -703,7 +734,7 @@
             },
             "oauth_token_source": {
               "label": "OAuth token 来源",
-              "description": "OAUTHBEARER token 的来源：AWS MSK IAM 签名 token（默认）或静态 token。",
+              "description": "请选择 AWS MSK IAM 或静态令牌。OAUTHBEARER 必须使用 SASL over TLS（SASL_SSL）。",
               "options": {
                 "msk_iam": "AWS MSK IAM（签名 token）",
                 "static_token": "静态 token"
@@ -739,7 +770,7 @@
             },
             "tls_client_key": {
               "label": "客户端私钥（PEM）",
-              "description": "双向 TLS（mTLS）使用的 PEM 编码客户端私钥；经宿主 secret binding 存储。"
+              "description": "粘贴完整 PEM 私钥（含 BEGIN/END 行），并配套填写客户端证书以使用双向 TLS；仅验证服务器时两项均留空。"
             },
             "tls_insecure_skip_verify": {
               "label": "跳过 TLS 校验",
@@ -893,7 +924,7 @@
             },
             "oauth_token_source": {
               "label": "OAuth token 來源",
-              "description": "OAUTHBEARER token 的來源：AWS MSK IAM 簽章 token（預設）或靜態 token。",
+              "description": "請選擇 AWS MSK IAM 或靜態權杖。OAUTHBEARER 必須使用 SASL over TLS（SASL_SSL）。",
               "options": {
                 "msk_iam": "AWS MSK IAM（簽章 token）",
                 "static_token": "靜態 token"
@@ -929,7 +960,7 @@
             },
             "tls_client_key": {
               "label": "用戶端私鑰（PEM）",
-              "description": "雙向 TLS（mTLS）使用的 PEM 編碼用戶端私鑰；經宿主 secret binding 儲存。"
+              "description": "貼上完整 PEM 私鑰（含 BEGIN/END 行），並搭配客戶端憑證以使用雙向 TLS；僅驗證伺服器時兩項皆留空。"
             },
             "tls_insecure_skip_verify": {
               "label": "略過 TLS 驗證",
@@ -1083,7 +1114,7 @@
             },
             "oauth_token_source": {
               "label": "OAuth token source",
-              "description": "Where the OAUTHBEARER token comes from: AWS MSK IAM signed token (default) or a static token.",
+              "description": "Choose AWS MSK IAM or a static token. OAUTHBEARER requires SASL over TLS (SASL_SSL).",
               "options": {
                 "msk_iam": "AWS MSK IAM (signed token)",
                 "static_token": "Static token"
@@ -1119,7 +1150,7 @@
             },
             "tls_client_key": {
               "label": "Client private key (PEM)",
-              "description": "PEM-encoded client private key for mutual TLS (mTLS); stored via host secret binding."
+              "description": "Paste the complete PEM key including BEGIN/END lines, together with the client certificate for mutual TLS. Leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "Skip TLS verification",
@@ -1273,7 +1304,7 @@
             },
             "oauth_token_source": {
               "label": "Origen del token OAuth",
-              "description": "De dónde proviene el token OAUTHBEARER: token firmado de AWS MSK IAM (predeterminado) o token estático.",
+              "description": "Elija AWS MSK IAM o un token estático. OAUTHBEARER requiere SASL sobre TLS (SASL_SSL).",
               "options": {
                 "msk_iam": "AWS MSK IAM (token firmado)",
                 "static_token": "Token estático"
@@ -1309,7 +1340,7 @@
             },
             "tls_client_key": {
               "label": "Clave privada del cliente (PEM)",
-              "description": "Clave privada del cliente en formato PEM para TLS mutuo (mTLS); se guarda mediante secret binding del host."
+              "description": "Pegue la clave PEM completa, incluidas BEGIN/END, junto con el certificado de cliente para TLS mutuo. Deje ambos vacíos para TLS solo de servidor."
             },
             "tls_insecure_skip_verify": {
               "label": "Omitir verificación TLS",
@@ -1463,7 +1494,7 @@
             },
             "oauth_token_source": {
               "label": "Origine del token OAuth",
-              "description": "Da dove proviene il token OAUTHBEARER: token firmato AWS MSK IAM (predefinito) o token statico.",
+              "description": "Scegli AWS MSK IAM o un token statico. OAUTHBEARER richiede SASL su TLS (SASL_SSL).",
               "options": {
                 "msk_iam": "AWS MSK IAM (token firmato)",
                 "static_token": "Token statico"
@@ -1499,7 +1530,7 @@
             },
             "tls_client_key": {
               "label": "Chiave privata del client (PEM)",
-              "description": "Chiave privata del client in formato PEM per TLS reciproco (mTLS); salvata tramite secret binding dell'host."
+              "description": "Incolla la chiave PEM completa, incluse BEGIN/END, con il certificato client per TLS reciproco. Lascia entrambi vuoti per TLS solo server."
             },
             "tls_insecure_skip_verify": {
               "label": "Salta verifica TLS",
@@ -1653,7 +1684,7 @@
             },
             "oauth_token_source": {
               "label": "OAuth トークンソース",
-              "description": "OAUTHBEARER トークンの取得元: AWS MSK IAM 署名トークン（既定）または静的トークン。",
+              "description": "AWS MSK IAM または静的トークンを選択してください。OAUTHBEARER には SASL over TLS（SASL_SSL）が必要です。",
               "options": {
                 "msk_iam": "AWS MSK IAM（署名トークン）",
                 "static_token": "静的トークン"
@@ -1689,7 +1720,7 @@
             },
             "tls_client_key": {
               "label": "クライアント秘密鍵（PEM）",
-              "description": "相互 TLS（mTLS）に使う PEM 形式のクライアント秘密鍵。ホストの secret binding で保存されます。"
+              "description": "BEGIN/END 行を含む完全な PEM 秘密鍵を貼り付けてください。相互 TLS ではクライアント証明書とセットで指定します。サーバー認証のみの場合は両方空欄にします。"
             },
             "tls_insecure_skip_verify": {
               "label": "TLS 検証をスキップ",
@@ -1843,7 +1874,7 @@
             },
             "oauth_token_source": {
               "label": "Origem do token OAuth",
-              "description": "De onde vem o token OAUTHBEARER: token assinado da AWS MSK IAM (padrão) ou token estático.",
+              "description": "Escolha AWS MSK IAM ou um token estático. OAUTHBEARER exige SASL sobre TLS (SASL_SSL).",
               "options": {
                 "msk_iam": "AWS MSK IAM (token assinado)",
                 "static_token": "Token estático"
@@ -1879,7 +1910,7 @@
             },
             "tls_client_key": {
               "label": "Chave privada do cliente (PEM)",
-              "description": "Chave privada do cliente em formato PEM para TLS mútuo (mTLS); armazenada via secret binding do host."
+              "description": "Cole a chave PEM completa, incluindo BEGIN/END, com o certificado de cliente para TLS mútuo. Deixe ambos vazios para TLS apenas do servidor."
             },
             "tls_insecure_skip_verify": {
               "label": "Ignorar verificação TLS",

@@ -134,11 +134,14 @@ func TestRequiredCombinationMatrix(t *testing.T) {
 			wantInvalid: true,
 		},
 		{
-			name:        "oauthbearer with plaintext",
-			config:      `{` + baseBootstrap + `, "security_protocol": "PLAINTEXT", "sasl_mechanism": "OAUTHBEARER", "msk_region": "us-east-1"}`,
-			secrets:     `{}`,
-			wantErrSub:  "OAUTHBEARER requires security_protocol SASL_SSL",
-			wantInvalid: true,
+			name:    "switching to plaintext ignores dormant OAuth credentials",
+			config:  `{` + baseBootstrap + `, "security_protocol": "PLAINTEXT", "sasl_mechanism": "OAUTHBEARER"}`,
+			secrets: `{}`,
+		},
+		{
+			name:    "switching to TLS without SASL ignores dormant OAuth credentials",
+			config:  `{` + baseBootstrap + `, "security_protocol": "SSL", "sasl_mechanism": "OAUTHBEARER"}`,
+			secrets: `{}`,
 		},
 		{
 			name:        "oauthbearer msk_iam without region",

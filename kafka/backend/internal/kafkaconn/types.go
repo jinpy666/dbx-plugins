@@ -336,9 +336,9 @@ func validateRequiredCombination(p Profile, s connSecrets) error {
 			}
 		}
 	}
-	// OAUTHBEARER（Phase 3 §12.2.3）：SASL_SSL 约束 + token 来源矩阵
-	//（违者 -32602；放在 hasSASL 块外，覆盖 protocol 配错的全部组合）。
-	if p.SASLMechanism == SASLMechanismOAUTHBEARER {
+	// Inactive SASL values remain in saved forms so switching back restores
+	// credentials. Only validate OAuth while a SASL transport is selected.
+	if p.hasSASL() && p.SASLMechanism == SASLMechanismOAUTHBEARER {
 		if p.SecurityProtocol != SecurityProtocolSASLSSL {
 			return &InvalidParamsError{Msg: fmt.Sprintf("OAUTHBEARER requires security_protocol SASL_SSL (got %s)", p.SecurityProtocol)}
 		}

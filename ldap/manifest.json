@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.ldap",
   "name": "DBX LDAP",
-  "version": "0.1.45",
+  "version": "0.1.47",
   "publisher": "dbx",
   "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
   "icon": "assets/plugin.svg",
@@ -59,15 +59,6 @@
           "required": true
         },
         {
-          "key": "port",
-          "label": "Port",
-          "type": "number",
-          "description": "389 for ldap/StartTLS, 636 for LDAPS; leave empty for the scheme default.",
-          "default": 389,
-          "binding": "port",
-          "required": true
-        },
-        {
           "key": "tls_mode",
           "label": "Encryption",
           "type": "select",
@@ -87,6 +78,14 @@
           ],
           "default": "none",
           "binding": "config"
+        },
+        {
+          "key": "port",
+          "label": "Port",
+          "type": "number",
+          "description": "Empty uses 389 for LDAP/StartTLS or 636 for LDAPS. An explicit port is preserved. With a host tunnel or proxy, enter the remote port.",
+          "binding": "port",
+          "placeholder": "389 / 636"
         },
         {
           "key": "tls_verify",
@@ -109,12 +108,12 @@
           "default": "",
           "binding": "config",
           "visible_when": {
-            "field": "tls_mode",
+            "field": "tls_verify",
             "one_of": [
-              "starttls",
-              "ldaps"
+              "true"
             ]
-          }
+          },
+          "description": "Optional PEM CA file on the DBX machine (server/container for Web). Empty uses system roots. Used only when TLS certificate verification is enabled."
         },
         {
           "key": "tls_server_name",
@@ -183,7 +182,7 @@
           "key": "bind_dn",
           "label": "Bind DN",
           "type": "text",
-          "description": "DN used for the bind. Required for unauthenticated bind (DN with empty password).",
+          "description": "For Simple bind, use this DN/AD login or Username below. This field takes precedence when both are filled. Unauthenticated bind requires this field and sends no password.",
           "default": "",
           "binding": "config",
           "visible_when": {
@@ -283,6 +282,20 @@
           }
         },
         {
+          "key": "sasl_host",
+          "label": "SASL host override",
+          "type": "text",
+          "description": "Optional DIGEST-MD5 SASL host; defaults to the host in the LDAP URL.",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "digest_md5"
+            ]
+          }
+        },
+        {
           "key": "krb_credential_type",
           "label": "Kerberos credential type",
           "type": "select",
@@ -310,8 +323,93 @@
           }
         },
         {
+          "key": "krb_username",
+          "label": "Kerberos username override",
+          "type": "text",
+          "description": "Optional principal username (without realm); defaults to the username field.",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "krb_password",
+          "label": "Kerberos password",
+          "type": "password",
+          "description": "Secret used only when the Kerberos credential type is password (ignored for keytab/ccache).",
+          "default": "",
+          "binding": "secret",
+          "visible_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "password"
+            ]
+          },
+          "required_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "password"
+            ]
+          }
+        },
+        {
+          "key": "krb_keytab_path",
+          "label": "Keytab file path",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "keytab"
+            ]
+          },
+          "required_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "keytab"
+            ]
+          }
+        },
+        {
+          "key": "krb_ccache_path",
+          "label": "Credential cache path",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "ccache"
+            ]
+          },
+          "required_when": {
+            "field": "krb_credential_type",
+            "one_of": [
+              "ccache"
+            ]
+          }
+        },
+        {
           "key": "krb_realm",
           "label": "Kerberos realm",
+          "type": "text",
+          "default": "",
+          "binding": "config",
+          "visible_when": {
+            "field": "auth_type",
+            "one_of": [
+              "kerberos"
+            ]
+          }
+        },
+        {
+          "key": "krb5_conf_path",
+          "label": "krb5.conf path",
           "type": "text",
           "default": "",
           "binding": "config",
@@ -340,73 +438,6 @@
           "label": "KDC port",
           "type": "number",
           "default": 88,
-          "binding": "config",
-          "visible_when": {
-            "field": "auth_type",
-            "one_of": [
-              "kerberos"
-            ]
-          }
-        },
-        {
-          "key": "krb_keytab_path",
-          "label": "Keytab file path",
-          "type": "text",
-          "default": "",
-          "binding": "config",
-          "visible_when": {
-            "field": "krb_credential_type",
-            "one_of": [
-              "keytab"
-            ]
-          }
-        },
-        {
-          "key": "krb_ccache_path",
-          "label": "Credential cache path",
-          "type": "text",
-          "default": "",
-          "binding": "config",
-          "visible_when": {
-            "field": "krb_credential_type",
-            "one_of": [
-              "ccache"
-            ]
-          }
-        },
-        {
-          "key": "krb5_conf_path",
-          "label": "krb5.conf path",
-          "type": "text",
-          "default": "",
-          "binding": "config",
-          "visible_when": {
-            "field": "auth_type",
-            "one_of": [
-              "kerberos"
-            ]
-          }
-        },
-        {
-          "key": "sasl_host",
-          "label": "SASL host override",
-          "type": "text",
-          "description": "Optional DIGEST-MD5 SASL host; defaults to the host in the LDAP URL.",
-          "default": "",
-          "binding": "config",
-          "visible_when": {
-            "field": "auth_type",
-            "one_of": [
-              "digest_md5"
-            ]
-          }
-        },
-        {
-          "key": "krb_username",
-          "label": "Kerberos username override",
-          "type": "text",
-          "description": "Optional principal username (without realm); defaults to the username field.",
-          "default": "",
           "binding": "config",
           "visible_when": {
             "field": "auth_type",
@@ -450,20 +481,6 @@
           "description": "Request mutual authentication in the GSSAPI context.",
           "default": false,
           "binding": "config",
-          "visible_when": {
-            "field": "auth_type",
-            "one_of": [
-              "kerberos"
-            ]
-          }
-        },
-        {
-          "key": "krb_password",
-          "label": "Kerberos password",
-          "type": "password",
-          "description": "Secret used only when the Kerberos credential type is password (ignored for keytab/ccache).",
-          "default": "",
-          "binding": "secret",
           "visible_when": {
             "field": "auth_type",
             "one_of": [
@@ -548,7 +565,8 @@
               }
             },
             "bind_dn": {
-              "label": "Bind DN"
+              "label": "Bind DN",
+              "description": "Simple 认证可在此填写 DN/AD 登录名，也可填写下方用户名；两者都有值时优先使用此项。未认证绑定必须填写此项且不发送密码。"
             },
             "username": {
               "label": "用户名"
@@ -566,7 +584,8 @@
               "label": "校验 TLS 证书"
             },
             "tls_ca_path": {
-              "label": "TLS CA 证书路径"
+              "label": "TLS CA 证书路径",
+              "description": "可选，DBX 所在机器上的 PEM CA 文件；Web 环境指服务器或容器路径。留空使用系统证书，仅在验证 TLS 证书时生效。"
             },
             "tls_server_name": {
               "label": "TLS 服务器名"
@@ -640,7 +659,8 @@
               "label": "服务器地址"
             },
             "port": {
-              "label": "端口"
+              "label": "端口",
+              "description": "留空时 LDAP/StartTLS 使用 389，LDAPS 使用 636；已填端口保持不变。使用宿主隧道或代理时请填写远端端口。"
             },
             "tls_mode": {
               "label": "加密方式",
@@ -686,7 +706,8 @@
               }
             },
             "bind_dn": {
-              "label": "Bind DN"
+              "label": "Bind DN",
+              "description": "Simple 認證可在此填寫 DN/AD 登入名稱，也可填寫下方使用者名稱；兩者都有值時優先使用此項。未認證繫結必須填寫此項且不傳送密碼。"
             },
             "username": {
               "label": "使用者名稱"
@@ -704,7 +725,8 @@
               "label": "驗證 TLS 憑證"
             },
             "tls_ca_path": {
-              "label": "TLS CA 憑證路徑"
+              "label": "TLS CA 憑證路徑",
+              "description": "選填，DBX 所在機器上的 PEM CA 檔案；Web 環境指伺服器或容器路徑。留空使用系統憑證，僅在驗證 TLS 憑證時生效。"
             },
             "tls_server_name": {
               "label": "TLS 伺服器名稱"
@@ -778,7 +800,8 @@
               "label": "伺服器位址"
             },
             "port": {
-              "label": "連接埠"
+              "label": "連接埠",
+              "description": "留空時 LDAP/StartTLS 使用 389，LDAPS 使用 636；已填連接埠保持不變。使用宿主通道或代理時請填寫遠端連接埠。"
             },
             "tls_mode": {
               "label": "加密方式",
@@ -824,7 +847,8 @@
               }
             },
             "bind_dn": {
-              "label": "Bind DN"
+              "label": "Bind DN",
+              "description": "For Simple bind, use this DN/AD login or Username below. This field takes precedence when both are filled. Unauthenticated bind requires this field and sends no password."
             },
             "username": {
               "label": "Username"
@@ -842,7 +866,8 @@
               "label": "Verify TLS certificate"
             },
             "tls_ca_path": {
-              "label": "TLS CA certificate path"
+              "label": "TLS CA certificate path",
+              "description": "Optional PEM CA file on the DBX machine (server/container for Web). Empty uses system roots. Used only when TLS certificate verification is enabled."
             },
             "tls_server_name": {
               "label": "TLS server name"
@@ -916,7 +941,8 @@
               "label": "Server host"
             },
             "port": {
-              "label": "Port"
+              "label": "Port",
+              "description": "Empty uses 389 for LDAP/StartTLS or 636 for LDAPS. An explicit port is preserved. With a host tunnel or proxy, enter the remote port."
             },
             "tls_mode": {
               "label": "Encryption",
@@ -962,7 +988,8 @@
               }
             },
             "bind_dn": {
-              "label": "DN de bind"
+              "label": "DN de bind",
+              "description": "Para Simple, use este DN/usuario AD o Usuario abajo. Este campo tiene prioridad si se rellenan ambos. El bind no autenticado lo exige y no envía contraseña."
             },
             "username": {
               "label": "Usuario"
@@ -980,7 +1007,8 @@
               "label": "Verificar certificado TLS"
             },
             "tls_ca_path": {
-              "label": "Ruta del certificado CA TLS"
+              "label": "Ruta del certificado CA TLS",
+              "description": "CA PEM opcional en la máquina DBX (servidor/contenedor en Web). Vacío usa las CA del sistema. Solo se usa al verificar TLS."
             },
             "tls_server_name": {
               "label": "Nombre del servidor TLS"
@@ -1054,7 +1082,8 @@
               "label": "Servidor"
             },
             "port": {
-              "label": "Puerto"
+              "label": "Puerto",
+              "description": "Vacío usa 389 para LDAP/StartTLS o 636 para LDAPS. Se conserva el puerto indicado. Con túnel o proxy del host, indique el puerto remoto."
             },
             "tls_mode": {
               "label": "Cifrado",
@@ -1100,7 +1129,8 @@
               }
             },
             "bind_dn": {
-              "label": "DN di bind"
+              "label": "DN di bind",
+              "description": "Per Simple, usa questo DN/nome AD o Nome utente sotto. Questo campo ha priorità se entrambi sono compilati. Il bind non autenticato lo richiede e non invia password."
             },
             "username": {
               "label": "Nome utente"
@@ -1118,7 +1148,8 @@
               "label": "Verifica certificato TLS"
             },
             "tls_ca_path": {
-              "label": "Percorso certificato CA TLS"
+              "label": "Percorso certificato CA TLS",
+              "description": "CA PEM opzionale sulla macchina DBX (server/container per Web). Se vuoto usa le CA di sistema. Usato solo con la verifica TLS."
             },
             "tls_server_name": {
               "label": "Nome server TLS"
@@ -1192,7 +1223,8 @@
               "label": "Server"
             },
             "port": {
-              "label": "Porta"
+              "label": "Porta",
+              "description": "Se vuoto usa 389 per LDAP/StartTLS o 636 per LDAPS. La porta indicata viene conservata. Con tunnel o proxy dell’host, indica la porta remota."
             },
             "tls_mode": {
               "label": "Crittografia",
@@ -1238,7 +1270,8 @@
               }
             },
             "bind_dn": {
-              "label": "Bind DN"
+              "label": "Bind DN",
+              "description": "Simple 認証ではここに DN/AD ログイン名を入力するか、下のユーザー名を使います。両方あればこちらを優先します。未認証バインドでは必須で、パスワードは送信しません。"
             },
             "username": {
               "label": "ユーザー名"
@@ -1256,7 +1289,8 @@
               "label": "TLS 証明書を検証"
             },
             "tls_ca_path": {
-              "label": "TLS CA 証明書のパス"
+              "label": "TLS CA 証明書のパス",
+              "description": "DBX マシン上の任意の PEM CA ファイルです。Web ではサーバー／コンテナーのパスです。空欄はシステム証明書を使い、TLS 検証時のみ適用します。"
             },
             "tls_server_name": {
               "label": "TLS サーバー名"
@@ -1330,7 +1364,8 @@
               "label": "サーバーホスト"
             },
             "port": {
-              "label": "ポート"
+              "label": "ポート",
+              "description": "空欄なら LDAP/StartTLS は 389、LDAPS は 636 です。入力済みのポートは保持します。ホストのトンネルやプロキシでは接続先ポートを入力してください。"
             },
             "tls_mode": {
               "label": "暗号化",
@@ -1376,7 +1411,8 @@
               }
             },
             "bind_dn": {
-              "label": "DN de bind"
+              "label": "DN de bind",
+              "description": "Para Simple, use este DN/login AD ou Nome de usuário abaixo. Este campo tem prioridade se ambos estiverem preenchidos. O bind não autenticado o exige e não envia senha."
             },
             "username": {
               "label": "Nome de usuário"
@@ -1394,7 +1430,8 @@
               "label": "Verificar certificado TLS"
             },
             "tls_ca_path": {
-              "label": "Caminho do certificado CA TLS"
+              "label": "Caminho do certificado CA TLS",
+              "description": "CA PEM opcional na máquina DBX (servidor/contêiner na Web). Vazio usa as CAs do sistema. Usado apenas com verificação TLS."
             },
             "tls_server_name": {
               "label": "Nome do servidor TLS"
@@ -1468,7 +1505,8 @@
               "label": "Servidor"
             },
             "port": {
-              "label": "Porta"
+              "label": "Porta",
+              "description": "Vazio usa 389 para LDAP/StartTLS ou 636 para LDAPS. A porta informada é mantida. Com túnel ou proxy do host, informe a porta remota."
             },
             "tls_mode": {
               "label": "Criptografia",

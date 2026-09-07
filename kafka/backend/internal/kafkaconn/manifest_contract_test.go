@@ -287,8 +287,8 @@ func TestManifestBackendFieldContract(t *testing.T) {
 		len(oauthSource.VisibleWhen.OneOf) != 1 || oauthSource.VisibleWhen.OneOf[0] != "OAUTHBEARER" {
 		t.Errorf("oauth_token_source visible_when = %+v, want sasl_mechanism one_of [OAUTHBEARER]", oauthSource.VisibleWhen)
 	}
-	if oauthSource.RequiredWhen != nil {
-		t.Errorf("oauth_token_source required_when = %+v, want nil", oauthSource.RequiredWhen)
+	if rw := oauthSource.RequiredWhen; rw == nil || rw.Field != "sasl_mechanism" || !slicesEqual(rw.OneOf, []string{"OAUTHBEARER"}) {
+		t.Errorf("oauth_token_source must require an explicit token source for OAUTHBEARER")
 	}
 	// 不声明 default：宿主条件求值会拿字段 default 参与下游 visible_when，
 	// 回填 msk_iam 会让 msk_region 在纯 PLAINTEXT/SCRAM 表单上幽灵必填
@@ -348,7 +348,7 @@ func TestManifestBackendFieldContract(t *testing.T) {
 
 	// visible_when：SASL 字段挂在 security_protocol ∈ SASL 两态上。
 	saslProtocols := map[string]bool{"SASL_PLAINTEXT": true, "SASL_SSL": true}
-	for _, key := range []string{"sasl_mechanism", "sasl_username", "sasl_password"} {
+	for _, key := range []string{"sasl_mechanism"} {
 		field := fields[key]
 		if field.VisibleWhen == nil || field.VisibleWhen.Field != "security_protocol" {
 			t.Errorf("%s visible_when missing security_protocol", key)
@@ -363,6 +363,10 @@ func TestManifestBackendFieldContract(t *testing.T) {
 	// required_when：SASL 账密挂在 sasl_mechanism ∈ PLAIN/SCRAM（GSSAPI 不需要账密）。
 	saslCredMechanisms := []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"}
 	for _, key := range []string{"sasl_username", "sasl_password"} {
+		visible := fields[key].VisibleWhen
+		if visible == nil || visible.Field != "sasl_mechanism" || !slicesEqual(visible.OneOf, saslCredMechanisms) {
+			t.Errorf("%s must only appear for password-based SASL mechanisms", key)
+		}
 		rw := fields[key].RequiredWhen
 		if rw == nil || rw.Field != "sasl_mechanism" || !slicesEqual(rw.OneOf, saslCredMechanisms) {
 			t.Errorf("%s required_when = %+v, want sasl_mechanism one_of %v", key, rw, saslCredMechanisms)

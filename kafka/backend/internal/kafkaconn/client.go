@@ -112,6 +112,11 @@ func (e *connEntry) computeFingerprint() string {
 // seedBrokers 返回拨号地址列表：bootstrap 原样（宿主改写后的地址），
 // 空时 runtime.host:port 兜底。
 func (e *connEntry) seedBrokers() []string {
+	// Selecting ZooKeeper must not keep using a previous bootstrap list (or
+	// runtime endpoint) retained in the form's inactive branch.
+	if e.profile.ConnectionSource == ConnectionSourceZookeeper {
+		return nil
+	}
 	if len(e.profile.BootstrapServers) > 0 {
 		return e.profile.BootstrapServers
 	}

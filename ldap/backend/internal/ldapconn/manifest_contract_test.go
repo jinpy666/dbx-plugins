@@ -9,6 +9,7 @@ package ldapconn
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -154,20 +155,25 @@ func TestManifestExposesSASLKerberosOverrides(t *testing.T) {
 type manifestFormState map[string]string
 
 // manifestEvaluateVisible 复现宿主 pluginFieldIsVisible。
-func manifestEvaluateVisible(field manifestField, state manifestFormState) bool {
+func manifestValue(key string, state manifestFormState, fields map[string]manifestField) string {
+	if value, ok := state[key]; ok {
+		return value
+	}
+	if value := fields[key].Default; value != nil {
+		return fmt.Sprint(value)
+	}
+	return ""
+}
+
+func manifestEvaluateVisible(field manifestField, state manifestFormState, fields map[string]manifestField) bool {
 	if field.VisibleWhen == nil {
 		return true
 	}
-	value, ok := state[field.VisibleWhen.Field]
-	if !ok {
-		// 未出现在状态里的字段回退 default（宿主 pluginFieldValue 语义）。
-		if def, isString := field.Default.(string); isString {
-			value = def
-		}
-	}
+	target := field.VisibleWhen.Field
+	value := manifestValue(target, state, fields)
 	for _, allowed := range field.VisibleWhen.OneOf {
 		if allowed == value {
-			return true
+			return manifestEvaluateVisible(fields[target], state, fields)
 		}
 	}
 	return false
@@ -178,18 +184,18 @@ func manifestRequiredMissing(fields map[string]manifestField, state manifestForm
 	missing := []string{}
 	for _, key := range []string{
 		"display_name", "url", "bind_dn", "username", "domain", "bind_password",
-		"ntlm_hash", "krb_password",
+		"ntlm_hash", "krb_password", "krb_keytab_path", "krb_ccache_path",
 	} {
 		field, ok := fields[key]
 		if !ok {
 			continue
 		}
-		if !manifestEvaluateVisible(field, state) {
+		if !manifestEvaluateVisible(field, state, fields) {
 			continue
 		}
 		required := field.Required
 		if field.RequiredWhen != nil {
-			value := state[field.RequiredWhen.Field]
+			value := manifestValue(field.RequiredWhen.Field, state, fields)
 			for _, allowed := range field.RequiredWhen.OneOf {
 				if allowed == value {
 					required = true
@@ -250,11 +256,11 @@ func TestManifestAuthTypeVisibilityMatrix(t *testing.T) {
 		{"kerberos + keytab", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "keytab"},
 			append(append([]string{}, common...),
 				"username", "krb_credential_type", "krb_realm", "krb_kdc_host", "krb_kdc_port",
-				"krb5_conf_path", "krb_username", "sasl_qop", "sasl_mutual_auth", "krb_password", "krb_keytab_path")},
+				"krb5_conf_path", "krb_username", "sasl_qop", "sasl_mutual_auth", "krb_keytab_path")},
 		{"kerberos + ccache", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "ccache"},
 			append(append([]string{}, common...),
 				"username", "krb_credential_type", "krb_realm", "krb_kdc_host", "krb_kdc_port",
-				"krb5_conf_path", "krb_username", "sasl_qop", "sasl_mutual_auth", "krb_password", "krb_ccache_path")},
+				"krb5_conf_path", "krb_username", "sasl_qop", "sasl_mutual_auth", "krb_ccache_path")},
 		// TLS 字段随 tls_mode 联动（manifest default = "none" → 隐藏；
 		// 上面各场景未给 tls_mode，走 default 回退，同样应隐藏）。
 		{"simple + tls_mode=none (TLS fields hidden)", manifestFormState{"auth_type": "simple", "tls_mode": "none"}, simpleCommon},
@@ -269,7 +275,7 @@ func TestManifestAuthTypeVisibilityMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := []string{}
 			for key, field := range fields {
-				if manifestEvaluateVisible(field, tc.state) {
+				if manifestEvaluateVisible(field, tc.state, fields) {
 					got = append(got, key)
 				}
 			}
@@ -286,7 +292,7 @@ func TestManifestAuthTypeVisibilityMatrix(t *testing.T) {
 				}
 			}
 			for key := range want {
-				if !manifestEvaluateVisible(fields[key], tc.state) {
+				if !manifestEvaluateVisible(fields[key], tc.state, fields) {
 					t.Fatalf("field %q should be visible in scenario %q", key, tc.name)
 				}
 			}
@@ -345,7 +351,10 @@ func TestManifestAuthTypeRequiredMatrix(t *testing.T) {
 		{"ntlm requires username + password", manifestFormState{"auth_type": "ntlm"}, []string{"bind_password", "username"}},
 		{"ntlm_hash requires username + hash", manifestFormState{"auth_type": "ntlm_hash"}, []string{"ntlm_hash", "username"}},
 		{"digest_md5 requires username + password", manifestFormState{"auth_type": "digest_md5"}, []string{"bind_password", "username"}},
-		{"kerberos validates at bind time", manifestFormState{"auth_type": "kerberos"}, nil},
+		{"kerberos password is required", manifestFormState{"auth_type": "kerberos"}, []string{"krb_password"}},
+		{"kerberos keytab path is required", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "keytab"}, []string{"krb_keytab_path"}},
+		{"kerberos cache path is required", manifestFormState{"auth_type": "kerberos", "krb_credential_type": "ccache"}, []string{"krb_ccache_path"}},
+		{"anonymous ignores stale Kerberos credential selection", manifestFormState{"auth_type": "anonymous", "krb_credential_type": "keytab"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

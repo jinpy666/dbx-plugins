@@ -625,3 +625,30 @@ files PROGRESS-P-FILES §14。
 - **生效方式**：SDK 由宿主在 iframe 创建时注入，随宿主构建分发——重建/重启
   DBX.app（或 web 镜像）即生效，插件 .dbxp 无需重发。真机复验：ssh 批量发送
   任意命令应正常出结果摘要，不再报 clone 错误。
+
+## 22. 本地二开补丁：插件连接字段条件级联可见性（kafka msk_region 幽灵必填死锁）（2026-09-07）
+
+- **症状**：kafka 插件新建连接表单在默认值下（PLAINTEXT、未选 SASL）要求
+  必填 "MSK AWS region"，普通集群的保存/测试按钮全部禁用，无法添加连接。
+- **根因**：`pluginFieldConditions.ts` 的条件求值只看被引用字段的当前值
+  （缺失时回退字段 default），不判断该字段自身是否可见。kafka manifest 链
+  security_protocol → sasl_mechanism（default PLAIN，隐藏）→
+  oauth_token_source（default msk_iam，隐藏）→ msk_region（visible_when/
+  required_when 引用 oauth_token_source）：`msk_iam` 默认值穿透两级隐藏字段
+  让 msk_region 幽灵可见 + 必填，`hasRequiredConnectionTarget` 的 every 校验
+  恒 false → footer 死锁。
+- **修复**：`pluginFieldIsVisible` 增加可选 `resolveField` 参数，条件成立后
+  递归校验被引用字段自身可见（seen 集合防环；引用未知字段保持放行，与
+  readValue 对未知键返回 undefined 的既有语义一致）。调用方两处接线：
+  `PluginConnectionFields.vue`（`resolveSiblingField`）与
+  `ConnectionDialog.vue`（`pluginFieldVisible` 内联查找）。插件侧另将
+  `oauth_token_source` 的 manifest default 移除兜底旧宿主（详见
+  `kafka/docs/PROGRESS-B-KAFKA.zh-CN.md` §11）。
+- **验证**：`pluginFieldConditions.spec.ts` 8/8（新增 kafka 形联动链
+  dormant/复活、未知字段、自环用例）；`PluginConnectionFields.spec.ts` 8/8
+  （新增 msk_region 幽灵必填回归）；connectionPassword/connectionStore/
+  connection 目录相关 spec 全绿。kafka 插件 `scripts/test.sh` all green。
+- **生效方式**：随宿主构建分发，重建/重启 DBX.app 即生效；不升级宿主时，
+  kafka 0.1.15 的 manifest 兜底同样解除死锁（MSK 用户需显式选 token source）。
+- **注意**：本补丁未提交（工作区改动），需按第 3 节保留清单流程落入分支，
+  防止子仓库同步丢失。

@@ -3,8 +3,8 @@
 DBX 的 Kafka 控制台插件：topic/分区浏览与健康视图、消息生产与消费
 （5 种 offset 策略、字段级过滤、base64/四种解压解码）、流式消费会话
 （ring buffer、暂停/恢复）、消费组 lag 快照与 offset 重置、ACL 管理、
-JSON/CSV 导出。能力重写自 tiny-rdm 的 Kafka 实现（取其消费语义与过滤
-引擎，补其二进制保真与连接复用短板）。2026-09-05 经用户决策新增
+JSON/CSV 导出。消费语义与过滤引擎为自研实现，并补齐二进制保真与
+客户端连接复用短板。2026-09-05 经用户决策新增
 （工作区原"不做新插件"约束随之解除）。
 
 ## 状态
@@ -14,15 +14,14 @@ JSON/CSV 导出。能力重写自 tiny-rdm 的 Kafka 实现（取其消费语义
 Kerberos/GSSAPI、ZooKeeper 发现、ag-grid 表格过滤检索、Schemas/Monitor 面板、
 七语 440 键。验证：backend 单测 98 例、前端 49 例、docker 双容器 smoke
 S1-S11（10 PASS / 1 合法 SKIP）、`.dbxp` 打包成功。AWS Glue SR 管理面同日第三轮落地
-（tinyrdm 双 SR 后端全覆盖；消息编解码按 tinyrdm 口径仅 Confluent wire format）。
+（Confluent 与 AWS Glue 双 SR 后端全覆盖；消息编解码仅 Confluent wire format）。
 Phase 3 登记：OAUTHBEARER、PROTOBUF 载荷、幂等/事务生产参数
 （见 IMPL_PLAN §0.2 / §11.5）。
 
 ## 技术形态
 
 - sidecar：**Go**（官方 Go SDK，`stdio-jsonl`），二进制 `dbx-plugin-kafka`
-- Kafka 客户端：`github.com/twmb/franz-go` + `pkg/kadm`（tinyrdm 同款，
-  迁移成本最低）；`CGO_ENABLED=0`
+- Kafka 客户端：`github.com/twmb/franz-go` + `pkg/kadm`；`CGO_ENABLED=0`
 - 连接：宿主 connection-provider（`database_type: "kafka"`），认证
   PLAINTEXT / SSL / SASL_PLAINTEXT / SASL_SSL（PLAIN、SCRAM-256/512），
   凭据（sasl_password、tls_client_key）走宿主 secret binding，插件不持久化

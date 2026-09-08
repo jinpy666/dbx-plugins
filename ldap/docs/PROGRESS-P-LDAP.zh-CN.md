@@ -29,7 +29,7 @@
 | `sasl_qop` | select auth/auth-int/auth-conf，默认 auth | `auth_type ∈ [kerberos]` | `auth_gssapi.go` `ldapGSSAPIClientOptions` | GSSAPI 保护质量 |
 | `sasl_mutual_auth` | boolean，默认 false | `auth_type ∈ [kerberos]` | `ldapGSSAPIClientOptions.MutualAuth` | GSSAPI 相互认证开关 |
 
-> **与任务字面要求的偏差说明**：任务原文为「digest_md5 的 sasl_qop/sasl_mutual_auth」。核对后按消费方暴露——go-ldap 的 `MD5Bind(host, username, password)` 无 security layer/QoP 协商（tiny-rdm 同构：其 UI 虽对 digest_md5 展示 QoP 面板，但 `conn.MD5Bind` 同样不消费 qop），把 `sasl_qop`/`sasl_mutual_auth` 挂到 digest_md5 会是零效果的死字段；二者真正生效面是 GSSAPI（kerberos），故 `visible_when` 绑 kerberos。`sasl_host` 为 digest_md5 实消费，绑 digest_md5。已在 manifest description 与本文档注明。
+> **与任务字面要求的偏差说明**：任务原文为「digest_md5 的 sasl_qop/sasl_mutual_auth」。核对后按消费方暴露——go-ldap 的 `MD5Bind(host, username, password)` 无 security layer/QoP 协商（外部参照实现同构：其 UI 虽对 digest_md5 展示 QoP 面板，但 `conn.MD5Bind` 同样不消费 qop），把 `sasl_qop`/`sasl_mutual_auth` 挂到 digest_md5 会是零效果的死字段；二者真正生效面是 GSSAPI（kerberos），故 `visible_when` 绑 kerberos。`sasl_host` 为 digest_md5 实消费，绑 digest_md5。已在 manifest description 与本文档注明。
 
 ### 2.2 七语与测试
 
@@ -147,7 +147,7 @@
 1. **KDC 真机集成**（smoke_gssapi_test.py 全绿 DoD）：需真实 KDC/域控；A5 已验证到协议客户端边界（沿袭 X-C 遗留 1）。
 2. **NTLM 真机（AD/Samba4 DC）与 DIGEST-MD5 容器**（需带 cyrus-sasl-digestmd5 的镜像）：沿袭 X-C 遗留 2/3。
 3. **宿主端到端（.dbxp 装测试宿主）**：连接表单 4 个新字段的宿主渲染效果未在真宿主验证（宿主按 manifest 渲染为通用表单控件，风险低）；沿袭 D 遗留 1-2。
-4. **树子节点计数徽章**：`ou=people` 显示 500（服务端 sizeLimit 截断值）而非真实 1000——沿袭 tiny-rdm 语义（sizeLimit 500），如需精确计数需额外 `ldap/count` 能力，本路未做。
+4. **树子节点计数徽章**：`ou=people` 显示 500（服务端 sizeLimit 截断值）而非真实 1000——沿袭初版语义（sizeLimit 500），如需精确计数需额外 `ldap/count` 能力，本路未做。
 5. **mock 桥仅覆盖正/误注入**：未模拟权限拒绝（denied audit 事件）分支的截图，该分支代码路径与错误横幅共用 showError（07 已覆盖展示形态）。
 
 ## 9. 阻塞

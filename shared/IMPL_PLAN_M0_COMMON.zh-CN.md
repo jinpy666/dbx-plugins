@@ -1,6 +1,5 @@
 # M0 共用基础实施文档：Go sidecar 基线（dbx-ldap-plugin / dbx-files-plugin 共用）
 
-> 上游方案：`PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md`（已定稿）。
 > 本文是两插件实施文档（`IMPL_PLAN_DBX_LDAP.zh-CN.md` / `IMPL_PLAN_DBX_FILES.zh-CN.md`）
 > 的公共基线：SDK 契约、manifest/打包、连接生命周期、本地数据与审计、测试基建。
 > 完成本文任务清单后，两插件在其上并行开发。
@@ -223,7 +222,7 @@ connection/disconnect → stdin 关闭进程退出
 | 容器 | 服务 | 用于 |
 |---|---|---|
 | `linuxserver/openssh-server`（ssh-sftp 已有配方） | SSH 2222 | Files 插件 sftp 后端（M3） |
-| `bitnami/openldap`（或 tiny-rdm `docker-compose.ldap-test.yml` 同款 + ldap-seed） | LDAP 389/636 | LDAP 插件全量（M1） |
+| `bitnami/openldap`（或 `docker-compose.ldap-test.yml` 同款 + ldap-seed） | LDAP 389/636 | LDAP 插件全量（M1） |
 | `minio/minio` 单容器 | S3 9000/9001 | Files 插件 s3/minio（M2） |
 
 ### 5.4 go test 与静态检查
@@ -252,8 +251,7 @@ connection/disconnect → stdin 关闭进程退出
 - 每个任务以各实施文档的 DoD 列为准；仓库级完成定义 =
   「单测 + smoke + 对标清单更新 + 七语」四件套（本仓 skill 硬性约定）。
 - 遇宿主侧不确定项（表单形态/隧道 API/多会话语义），一律：
-  记录进 `docs/FRAMEWORK_FEEDBACK.zh-CN.md`（本仓既有反馈文档）+ 按文档
-  内已备的降级/备份方案继续，不阻塞主线。
+  记录进对应插件 PROGRESS 文档 + 按 optional 降级/备份方案继续，不阻塞主线。
 
 ### 6.1 任务清单（适用范围见行末标注）
 

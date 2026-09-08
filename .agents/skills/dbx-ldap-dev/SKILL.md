@@ -31,7 +31,7 @@ scripts/sidecar_client_jsonl.py  # stdio-jsonl 协议客户端（直接驱动 si
 
 - 测试容器：`docker compose -f docker-compose.ldap-test.yml up -d`
   （TLS 用 `docker-compose.ldap-tls-test.yml`）；种子数据见 `scripts/ldap-seed`。
-- 后端并行开发期：go test 失败记入 `docs/PROGRESS-C.zh-CN.md` 而非阻塞前端路径；
+- 后端并行开发期：go test 失败记入 `docs/PROGRESS-P-LDAP.zh-CN.md` 而非阻塞前端路径；
   未实现方法在 smoke 中必须 SKIP 而非 FAIL。
 
 ## 协议要点

@@ -28,7 +28,7 @@ node scripts/ui_test.mjs || exit 1
 
 if [ -f backend/go.mod ] && command -v go >/dev/null 2>&1; then
   echo "==> backend unit tests (owned by backend path)"
-  (cd backend && go vet ./... && go test ./...) || echo "WARN: backend go test failed (parallel development) — see docs/PROGRESS-C.zh-CN.md"
+  (cd backend && go vet ./... && go test ./...) || echo "WARN: backend go test failed (parallel development) — see docs/PROGRESS-P-LDAP.zh-CN.md"
 else
   echo "==> backend unit tests skipped (no backend/go.mod or no go toolchain yet)"
 fi

@@ -408,10 +408,10 @@ Registry 管理面（Phase 3，见文末 **Phase 3（AWS Glue）** 小节）。�
 （select：`default`|`static`，默认 `default`）、`glue_access_key_id`（text，
 static 时使用）、`glue_secret_access_key`（password，**secret** binding）、
 `glue_session_token`（password，**secret** binding，可选）。auth_mode 归一化
-取值 `default|static`；tinyrdm 的 aws-profile 模式 sidecar 场景不提供
+取值 `default|static`；aws-profile 凭据模式 sidecar 场景不提供
 （Phase 3 后续），传 `profile` → `-32000`。
 
-**Glue 后端语义**（API 映射照 tinyrdm：ListSchemas / ListSchemaVersions /
+**Glue 后端语义**（Glue API 集合：ListSchemas / ListSchemaVersions /
 GetSchema / GetSchemaVersion / RegisterSchemaVersion / CreateSchema /
 UpdateSchema(Compatibility) / CheckSchemaVersionValidity /
 DeleteSchemaVersions / DeleteSchema）：
@@ -448,8 +448,8 @@ DeleteSchemaVersions / DeleteSchema）：
   connSecrets，只进 SigV4 签名，不落日志/审计/事件。
 
 **produce/consume/stream 的 schema 挂载**：`schema{}` 增加 `registry?`
-（同上探测规则）。wire format 编解码**仅支持 Confluent**（tinyrdm 同款
-语义，不发明 Glue wire format）：provider=glue 时 `-32000` 业务错
+（同上探测规则）。wire format 编解码**仅支持 Confluent**（语义与既有口径
+一致，不发明 Glue wire format）：provider=glue 时 `-32000` 业务错
 "schema-aware produce/consume currently supports Confluent wire format;
 AWS Glue schema management is available"；双配置歧义/未知 registry →
 `-32602`；未配置任何 SR → `-32000`。
@@ -530,8 +530,8 @@ fieldFilters/时间戳或 offset 范围）同给 → `-32602`（commit 与过滤
 ```
 
 - 单条消息体上限 **512KB**，超出截断且 `truncated:true`；
-- `valueText` 恒为 UTF-8 安全预览、`valueBase64` 恒完整（tinyrdm
-  `string(record.Value)` 二进制损坏问题的修正）。
+- `valueText` 恒为 UTF-8 安全预览、`valueBase64` 恒完整（二进制消息不被
+  `string(record.Value)` 类直转损坏）。
 
 ## 6. 事件（sidecar → 宿主 notification）
 

@@ -42,7 +42,7 @@
 | DIGEST-MD5（realm/QoP/authzid） | ✅ | 🔶 sasl_host 覆盖 + authzId；realm 未单独暴露（由服务端 challenge 驱动） | 🔶 | P2：digest realm 字段 |
 | NTLM / NTLM hash | 🔶（ADS 经 SASL NTLM） | ✅ | ✅ | — |
 | SASL EXTERNAL | ✅ | ✅ | ✅ | — |
-| CRAM-MD5 | ✅ | ❌（tiny-rdm 也无） | ❌ | P2 |
+| CRAM-MD5 | ✅ | ❌ | ❌ | P2 |
 | SASL QoP（auth/auth-int/auth-conf） | ✅ | ✅ sasl_qop（kerberos） | ✅ | — |
 | GSSAPI mutual auth | ✅ | ✅ sasl_mutual_auth | ✅ | — |
 | 授权身份（authzid / proxy） | ✅ | ✅ authzId 字段（后端） | ✅ | — |

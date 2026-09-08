@@ -1,6 +1,6 @@
 # DBX 插件族工作区（dbx-plugins）
 
-tiny-rdm（`~/GolandProjects/tiny-rdm`）能力向 DBX 插件迁移的统一工作区。
+DBX 插件族统一工作区。
 **聚焦四插件，不做任何新插件**（决策存档见 `shared/CAPABILITY_CANDIDATES.zh-CN.md`；
 2026-09-05 经用户决策新增 kafka 插件，见 `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md`）。
 
@@ -13,7 +13,6 @@ dbx-plugins/
 ├── .agents/skills/    # 触发式工程 skills：dbx-plugin-dev / dbx-host-e2e /
 │                      #   dbx-ldap-dev / dbx-files-dev / dbx-kafka-dev / dbx-web-docker
 ├── shared/            # 公共目录：跨插件方案与基线文档（插件族共同遵循）
-│   ├── PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md   # 总提案（定稿，含全部决策记录）
 │   ├── IMPL_PLAN_M0_COMMON.zh-CN.md           # M0 公共基线（SDK 契约/lifecycle/审计/测试基建/roadmap）
 │   ├── CAPABILITY_CANDIDATES.zh-CN.md         # 能力盘点（聚焦版：三插件边界 + 不迁移清单）
 │   └── host-e2e/      # 插件无关的宿主 e2e 安装脚本（install.sh，隔离 app-data）
@@ -48,7 +47,7 @@ dbx-plugins/
 1. 读 `shared/IMPL_PLAN_M0_COMMON.zh-CN.md` §6.0（实施顺序总览）与 §6.1（M0 任务清单）；
 2. M0 验收后并行：LDAP M1（`ldap/docs` §9）∥ Files F2-0/F2-1（`files/docs` §11）；
 3. 完成定义四件套：单测 + smoke + 对标清单更新 + 七语（ssh 仓 skill 硬性约定，沿用）；
-4. 宿主侧不确定项记入 `ssh/docs/FRAMEWORK_FEEDBACK.zh-CN.md` 并按文档内降级方案继续。
+4. 宿主侧不确定项按 optional 降级处理，记录进对应插件 PROGRESS 文档。
 
 ## 宿主子仓库与相邻目录
 
@@ -60,7 +59,8 @@ dbx-plugins/
   `../../host/plugins/sdk/rust/dbx-plugin-sdk` 引用其 Rust SDK。
   旧相邻路径 `~/btroot/dbx-plugin-host-worktree` 保留为指向 `host/` 的符号链接，
   兼容历史文档与外部引用。
-- 参照源：`~/GolandProjects/tiny-rdm`（能力来源，只读）。
+- 历史基线：四插件能力已全面超越早期外部参照（历史对标记录已随基线退役删除），
+  后续不再参考外部实现。
 - ssh 专项 skill：`dbx-ssh-sftp-dev`（用户级，构建/测试/安装全流程，环境
   准备同源适用）。
 

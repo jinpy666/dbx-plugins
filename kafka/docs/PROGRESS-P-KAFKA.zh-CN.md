@@ -23,7 +23,7 @@ vite、vitest、vue-tsc。
 | 文件 | 内容 |
 | --- | --- |
 | `src/lib/api.ts` | `callKafka<T>(method, params)`（`invoke ?? request` + connectionId 注入）；`kafkaApi` 覆盖 IMPL_PLAN §5.2 全部方法：brokers/list+config、topics/list/describe/create/delete/partitions-update/config-get/config-alter/offsets-list、groups/list/describe/offsets-list/delete/offsets-reset、acls/list/create/delete、messages/produce/consume/export、stream/start/stop/pause/resume/status/messages、presets/list/save/remove、connections/statuses；事件类型 `kafka/stream/messages`（含 bufferSize）、`kafka/stream/error`、`kafka/audit` |
-| `src/lib/kafkaModel.ts` | 纯函数：消息二次解码/格式化管线（valueBase64 → 内层 base64 → GZip inflate（浏览器 DecompressionStream；lz4/zstd/snappy 标注降级）→ raw/JSON pretty/hex/BitSet）、`appendStreamRows` 环形上限裁剪、topic 业务评分排序（internal 沉底，对标 tinyrdm kafkaNormalize）、lag 聚合、CSV（RFC 4180）/JSON 导出序列化、Confluent properties 解析（注释/续行/转义）→ 连接表单字段映射、`validateConsumeForm`（§5.3 互斥规则）、partition/partitionOffsets 解析、offsetTime 解析（unix ms/datetime-local/RFC3339） |
+| `src/lib/kafkaModel.ts` | 纯函数：消息二次解码/格式化管线（valueBase64 → 内层 base64 → GZip inflate（浏览器 DecompressionStream；lz4/zstd/snappy 标注降级）→ raw/JSON pretty/hex/BitSet）、`appendStreamRows` 环形上限裁剪、topic 业务评分排序（internal 沉底）、lag 聚合、CSV（RFC 4180）/JSON 导出序列化、Confluent properties 解析（注释/续行/转义）→ 连接表单字段映射、`validateConsumeForm`（§5.3 互斥规则）、partition/partitionOffsets 解析、offsetTime 解析（unix ms/datetime-local/RFC3339） |
 | `src/lib/i18n.ts` | 七语（zh-CN/zh-TW/en/es/it/ja/pt-BR），**每语 325 个 key，集合经 spec 断言完全一致** |
 | `src/lib/i18n.spec.ts` | 七语完整性守卫（7 locale 集合相等 + 无空值 + locale 家族回退 + 模板替换） |
 | `src/lib/kafkaErrors.ts` | `friendlyKafkaError`：门禁类（read-only/allow-delete/confirmTopic）优先，其次 SASL/TLS/网络/超时，未知透传 |
@@ -177,8 +177,8 @@ Wrote self-contained plugin UI to .../kafka/ui/index.html
 Phase 1 面板表格为零依赖自绘网格（无列过滤/排序能力有限）、SR（Schema
 Registry）/Kerberos/ZK 连接面缺失、监控只有单次快照无趋势与告警。本期按
 Phase 2 冻结契约（任务书 11 个 `kafka/schema/*` 方法 + produce/consume/stream
-扩展 + statuses 扩展）做商用化补齐，对标 tinyrdm KafkaGrid/SchemasTab/
-MonitorTab/ProducerTab/ConnectionDialog 的能力面，视觉维持 DBX 设计系统。
+扩展 + statuses 扩展）做商用化补齐，覆盖商用控制台的表格检索、Schema 管理、
+监控与生产/连接配置能力面，视觉维持 DBX 设计系统。
 
 ### 5.2 改动清单
 

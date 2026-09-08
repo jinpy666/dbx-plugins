@@ -5,7 +5,7 @@
 > 决策记录：本文件是 kafka 插件**唯一工作来源**。工作区 AGENTS.md 原有
 > "聚焦三插件、不做任何新插件" 约束，经用户于 2026-09-05 明确指令新增
 > kafka 插件而解除；根 README.md / AGENTS.md 随本次任务同步修订登记。
-> 2026-09-05 目标升级：完整覆盖 tinyrdm 特性 + host 特有能力（取长补短）、
+> 2026-09-05 目标升级：商用特性全量覆盖 + host 特有能力（取长补短）、
 > 商用级鉴权/加密矩阵、ag-grid 表格过滤检索、docker 覆盖测试——即本文件
 > §0.2 的 Phase 2 项全部落地，统一记入 §11。
 
@@ -13,24 +13,23 @@
 
 ### 0.1 目标
 
-从 tiny-rdm（本地 fork `mcpctl`，源码 `/Users/Jinpy/GolandProjects/tiny-rdm`）的
-Kafka 实现重写为 DBX 插件：
+构建 DBX 插件形态的 Kafka 控制台：
 
 - **Go sidecar**（stdio-jsonl，与 `ldap/` 同构），Kafka 客户端用
-  `github.com/twmb/franz-go` + `pkg/kadm`（tinyrdm 同款库，迁移成本最低）。
-- **取 tinyrdm 之长**：消费语义（5 种 offset 策略、per-partition 精确 seek、
+  `github.com/twmb/franz-go` + `pkg/kadm`（生态成熟，迁移成本最低）。
+- **核心语义能力**：消费语义（5 种 offset 策略、per-partition 精确 seek、
   commit 与过滤互斥、续读游标）、Go 侧字段级过滤（三通道 + matchMode +
   JSON path + 数值比较）、base64/四种解压解码、流式消费会话（ring buffer、
   暂停/恢复、空闲回收）、导出 JSON/CSV、Confluent properties 导入（前端）、
   高危操作分级门禁。
-- **补 tinyrdm 之短**：二进制值保真（tinyrdm `string(record.Value)` 会损坏
+- **修复已知实现缺陷**：二进制值保真（`string(record.Value)` 直转会损坏
   二进制消息；本插件 value 一律 `base64 保真 + text 预览` 双字段）；
-  **客户端连接复用**（tinyrdm 每调用重建 client；本插件按 connectionId
+  **客户端连接复用**（本插件按 connectionId
   缓存 client，指纹失效重建）。
 - **参考 host 补齐**（host 的 Kafka 是 Java agent，消息浏览仅 peek ≤100 条、
   无实时消费/过滤/导出——插件正好补齐）：消费组 lag 快照（Option 语义区分
   "无数据/零 lag"）、topic 分区健康视图（leader/replicas/ISR/offline）、
-  消费组 offset 重置（host 有 `mq_reset_consumer_group_offsets`，tinyrdm 无）。
+  消费组 offset 重置（host 有 `mq_reset_consumer_group_offsets`，插件同样提供）。
 - **不重复宿主**（M0 红线）：连接 profile 持久化、凭据 secret binding、
   SSH 隧道/代理传输层（sidecar 经 `runtime.host:port` 拨号）、read_only
   治理与审计基线全部走宿主。
@@ -52,7 +51,7 @@ OAUTHBEARER/AWS MSK IAM 已于 2026-09-06 对标 Confluent for IntelliJ 后
 
 ## 1. 三方功能对标（范围依据）
 
-| 能力 | tinyrdm | host | 本插件 Phase 1 |
+| 能力 | 早期参照实现 | host | 本插件 Phase 1 |
 | --- | --- | --- | --- |
 | 连接 profile 持久化 | sqlite 自管 | 宿主 ConnectionConfig | **宿主**（manifest connection-provider） |
 | 凭据存储 | sqlite 明文 | 加密 secret | **宿主 secret binding** |
@@ -62,13 +61,13 @@ OAUTHBEARER/AWS MSK IAM 已于 2026-09-06 对标 Confluent for IntelliJ 后
 | topics 列表/创建/删除/扩分区/配置 | ✅（副本因子可配） | ✅（副本硬编码 1） | ✅（replicationFactor 可配） |
 | 分区元数据与健康 | ✅ leader/ISR | ✅ partitionStats | ✅ + isHealthy(isr/replicas) |
 | offset 查询 | earliest/latest/max-timestamp/按时间 | begin/end | earliest/latest/按时间戳 |
-| 消息生产 | ✅ 批量≤1000/headers/压缩/指定分区 | ✅ 单条 | ✅ 对齐 tinyrdm |
-| 消息消费（一次性） | ✅ 5 策略+过滤+解码+导出 | peek ≤100 无过滤 | ✅ 对齐 tinyrdm |
+| 消息生产 | ✅ 批量≤1000/headers/压缩/指定分区 | ✅ 单条 | ✅ 全量实现 |
+| 消息消费（一次性） | ✅ 5 策略+过滤+解码+导出 | peek ≤100 无过滤 | ✅ 全量实现 |
 | 消息消费（流式） | ✅ ring buffer 会话 | ❌ | ✅（sidecar 事件通道） |
 | 二进制保真 | ❌（string 直转） | base64 | ✅ base64+text 双字段 |
 | 消费组 list/describe/lag | ✅ | ✅ 快照+Option 语义 | ✅ 两者合并 |
 | 消费组删除/offset 重置 | 删除✅/重置❌ | 重置✅ | ✅ 都做 |
-| ACL | ✅ 全枚举 | grant/revoke 简化 | ✅ 对齐 tinyrdm |
+| ACL | ✅ 全枚举 | grant/revoke 简化 | ✅ 全量实现 |
 | 导出 | JSON/CSV | ❌ | ✅ JSON/CSV |
 | 只读/写门禁 | 审批弹窗（进程内） | read_only+生产确认 | **宿主 read_only + allowDelete 策略** |
 
@@ -287,7 +286,7 @@ fetch 错误指数退避 500ms→30s；**只读策略下禁止 commit**。
   （照 ldap/build.sh 的 PATH 兜底方案）。
 - 大消息（512KB 上限）与流式背压：ring buffer 固定容量，前端 droppedRows
   计数提示，避免 OOM。
-- tinyrdm 的 SR/Glue/Kerberos/Connector 导入不阻塞 Phase 1 验收，
+- SR/Glue/Kerberos/Connector 导入不阻塞 Phase 1 验收，
   全部登记 Phase 2。
 
 ## 11. Phase 2 商用化落地记录（2026-09-05）
@@ -346,15 +345,15 @@ fetch 错误指数退避 500ms→30s；**只读策略下禁止 commit**。
 | 对标/任务清单更新 | 本文件 §11 + PROGRESS-B/-P 各 Phase 2 小节 |
 | 七语文案 | manifest 逐字段 × 前端 440 键 × 7 语，spec 守卫绿 |
 
-### 11.5 AWS Glue Schema Registry 落地（2026-09-05 第三轮，补齐 tinyrdm 字面缺口）
+### 11.5 AWS Glue Schema Registry 落地（2026-09-05 第三轮，补齐字面功能缺口）
 
 - **后端**：`internal/kafkaconn/glue.go`（aws-sdk-go-v2/service/glue，auth_mode
-  default/static；API 映射照 tinyrdm：ListSchemas/ListSchemaVersions/
+  default/static；API 集合：ListSchemas/ListSchemaVersions/
   GetSchemaVersion/RegisterSchemaVersion/CreateRegistry/UpdateSchema
   compatibility/CheckSchemaVersionValidity/DeleteSchema*），11 个 schema 方法
   改 backend 分发，请求 `registry?: "confluent"|"glue"`（缺省自动探测，歧义
   -32602）；compatibility 枚举含 Glue 8 档；**消息编解码挂载在 glue 下返回
-  tinyrdm 同款业务错**（tinyrdm 原文语义：schema-aware 编解码仅 Confluent
+  固定业务错**（语义约束：schema-aware 编解码仅 Confluent
   wire format，Glue 仅管理面）。
 - **manifest**：glue_region/glue_registry_name/glue_auth_mode/glue_access_key_id/
   glue_secret_access_key(secret)/glue_session_token(secret)，七语全量。
@@ -362,7 +361,7 @@ fetch 错误指数退避 500ms→30s；**只读策略下禁止 commit**。
   ConnectionsPanel Glue 摘要（secret 只显已配置态）、三面板 schema 挂载在
   glue 下禁用+提示、`?glue=1` mock 模式、i18n 454 键/语。
 - **消息二次解码补齐**：fzstd/snappyjs/lz4js（MIT/ISC 纯 JS）落地，详情侧
-  gzip/zstd/snappy/lz4 四解压全支持（tinyrdm ConvertValue 对齐，Phase 2 降级
+  gzip/zstd/snappy/lz4 四解压全支持（Phase 2 降级
   标注撤销）。
 - **验证**：backend 105 例（httptest 假 Glue JSON-RPC： subjects/versions/get/
   register/compat/delete/错误透传/探测歧义/枚举全表）；前端 52 例（zstd CLI

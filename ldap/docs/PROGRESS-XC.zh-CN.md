@@ -3,7 +3,7 @@
 > 记录人：X-C（dbx-ldap-plugin TLS 路径与 M3 认证）。
 > 日期：2026-08-28。工具链：go 1.27.0（darwin/arm64）/ Docker 29.4.0 / dbx-plugin CLI 0.1.0（经 /tmp/go-shim 剥 GOWORK）/ python3.11。
 > 凭据红线：容器管理员密码、测试 bind 密码全程仅经环境变量（`LDAP_ADMIN_PASSWORD` → compose 变量替换 → 容器 env / smoke 的 `connection_secrets`），随机生成、未写入任何文件/日志/报告；TLS 服务器证书为一次性 `openssl req -x509` 自签、写入系统临时目录并在收尾删除。SASL/GSSAPI 相关日志与错误不含凭据。
-> 前序：M1 已完成（L-A/L-B/L-C/L-D，容器冒烟 S1-S10 10/10，见 docs/PROGRESS-D.zh-CN.md §4-5）。
+> 前序：M1 已完成（L-A/L-B/L-C/L-D，容器冒烟 S1-S10 10/10，前序记录文档已删除，见 git 历史）。
 
 ## 1. 交付总览
 
@@ -11,7 +11,7 @@
 |---|---|
 | TLS 容器路径（ldaps 636 / StartTLS 389 / tls_verify 语义 / 审计 warning） | **实跑通过**（T1-T5 全 PASS） |
 | M3 认证：external / digest_md5 / ntlm / ntlm_hash / kerberos | **实现完成**；容器可测段实跑 PASS，难造段 SKIP+原因或单测覆盖 |
-| internal/ldapgssapi（tiny-rdm GSSAPI 客户端搬运） | **原样搬运**（`diff -w` 仅 gofmt 空白），go test ok |
+| internal/ldapgssapi（GSSAPI 客户端搬运） | **原样搬运**（`diff -w` 仅 gofmt 空白），go test ok |
 | manifest / lifecycle 的 M3 字段接通 | **核对+接线完成**（krb_* 26 字段已在 manifest；lifecycle → Profile 全接通） |
 | go build / vet / test（4 包）、S1-S10 回归、打包 | **全绿**（零回归） |
 
@@ -48,9 +48,9 @@
 
 ## 3. 任务 2：M3 认证实施（对照表）
 
-### 3.1 tiny-rdm 行号 → 本仓函数对照
+### 3.1 参照基线行号 → 本仓函数对照（历史）
 
-| tiny-rdm 源（backend/services/ldap_service.go） | 本仓位置 | 改造点 |
+| 参照基线源（backend/services/ldap_service.go，已退役） | 本仓位置 | 改造点 |
 |---|---|---|
 | `bindLDAPConnection` :1210-1264（8 种分发） | `internal/ldapconn/dial.go` `bindLDAPConnection`（新增 `ctx`/`logicalHost`/`bindSecrets` 参数） | target 收敛为 URL 逻辑主机（D5）；`bindSecrets` 聚合 bind/kerberos 两个 secret |
 | `bindLDAPKerberosConnection` :1268 | `auth_gssapi.go` `bindLDAPKerberosConnection` | 原样（authzID 从 `profile.AuthzID`） |
@@ -71,7 +71,7 @@
 
 - `types.go`：新增 `LDAPKerberosConfig`（CredentialType/Username/Realm/KDCHost/KDCPort/KeytabPath/CCachePath/Krb5ConfPath）+ `NormalizeLDAPKerberosConfig`（credentialType 缺省 password、KDCPort 缺省 88、Realm 大写）；`Profile` 新增 `Kerberos *LDAPKerberosConfig`、`SASLHost`、`SASLQoP`、`SASLMutualAuth`。
 - 凭据红线：**kerberos 密码不入 Profile**——`bindSecrets{BindPassword, KerberosPassword}` 只存 `connEntry`（service.go），与 M1 的 bind_password 同语义；`Profile.Redacted()` 继续清 NTLMHash。
-- `service.go` `NewProfileFromLifecycle`：接通 `krb_credential_type/krb_realm/krb_kdc_host/krb_kdc_port/krb_keytab_path/krb_ccache_path/krb5_conf_path`（config）与 `krb_password`（secret）；`bind_password`/`krb_password` → `bindSecrets`。SASL 覆盖项 `sasl_host/sasl_qop/sasl_mutual_auth` 也接线（manifest 未暴露，留内部扩展点，缺省对齐 tiny-rdm 行为）。
+- `service.go` `NewProfileFromLifecycle`：接通 `krb_credential_type/krb_realm/krb_kdc_host/krb_kdc_port/krb_keytab_path/krb_ccache_path/krb5_conf_path`（config）与 `krb_password`（secret）；`bind_password`/`krb_password` → `bindSecrets`。SASL 覆盖项 `sasl_host/sasl_qop/sasl_mutual_auth` 也接线（manifest 未暴露，留内部扩展点，缺省对齐参照基线行为）。
 - TLS 审计 warning：`service.go` `emitTLSInsecureAudit`——ldaps 或 StartTLS 且 `tls_verify=false` 时 dial 成功后发一条 `AuditRecord{action:"tls-insecure", result:"warning", detail:"InsecureSkipVerify…"}`（store 侧经 `auditAction` 折算为 `ldap/tls-insecure`，result `warning` 原样落 audit.jsonl；无凭据）。
 - `dial.go`：`dialProfile` 签名改为 `(ctx, profile, target, bindSecrets)`；KDC 88 回退移植（回退前打 NOTICE 日志，不含凭据）。
 
@@ -101,9 +101,9 @@
 | `backend/internal/ldapconn/dial.go` | bind 分发补全六种认证（external/digest_md5/ntlm/ntlm_hash/kerberos）+ `resolveLDAPSASLHost` + KDC 88 回退调用；`dialProfile`/`bindLDAPConnection` 签名带 ctx/logicalHost/bindSecrets |
 | `backend/internal/ldapconn/auth_gssapi.go` | 新增：Kerberos bind 支撑全套（见 §3.1 对照表） |
 | `backend/internal/ldapconn/service.go` | connEntry.secrets（bindSecrets）；NewProfileFromLifecycle 接 M3 字段；emitTLSInsecureAudit（tls_verify=false 审计 warning） |
-| `backend/internal/ldapgssapi/{client,client_test}.go` | 新增：tiny-rdm 原样搬运（实现 ldap.GSSAPIClient；integrity/confidentiality/mutualAuth） |
+| `backend/internal/ldapgssapi/{client,client_test}.go` | 新增：自外部参照原样搬运（实现 ldap.GSSAPIClient；integrity/confidentiality/mutualAuth） |
 | `backend/internal/ldapconn/auth_dial_m3_test.go` | 新增：M3/TLS 单测（§5） |
-| `backend/go.mod` / `go.sum` | +`github.com/jcmturner/gokrb5/v8 v8.4.4`（对齐 tiny-rdm）及传递依赖（aescts/dnsutils/gofork/goidentity/rpc） |
+| `backend/go.mod` / `go.sum` | +`github.com/jcmturner/gokrb5/v8 v8.4.4`（对齐参照基线）及传递依赖（aescts/dnsutils/gofork/goidentity/rpc） |
 | `docker-compose.ldap-tls-test.yml` | 新增：LDAPS/StartTLS 容器变体（凭据仅经环境变量） |
 | `scripts/smoke_auth_test.py` | 新增：M3/TLS smoke（自包含编排 + 就绪探测 + 临时自签证书 + SKIP 语义） |
 | `backend/bin/dbx-plugin-ldap`、`dist/*.dbxp` | 重建/重打包（产物） |
@@ -117,7 +117,7 @@
 3. **DIGEST-MD5 容器验证**：bitnami/openldap 的 cyrus-sasl 无 DIGEST-MD5 机制；需要带 `cyrus-sasl-digestmd5` 模块的 OpenLDAP 镜像（或 osixia/openldap）方可实跑成功路径。SASL host 解析已单测覆盖。
 4. **external 的 ldapi 成功路径**：需 sidecar 与 slapd 同机共享 unix socket（DBX 宿主形态下 = 宿主本机 slapd），当前以 ExternalBind 真实调用 + 服务器拒绝为证据；后续如宿主有本机 slapd（`ldapi://`）可补成功场景。
 5. **宿主端到端 / 浏览器截图**：沿袭 PROGRESS-D 遗留 1-2（.dbxp 未装测试宿主）。
-6. **manifest 潜在增补**（未做，留决策）：tiny-rdm 尚有 SPN 覆盖（ExplicitSPN/ServiceName）、SASL QoP、mutualAuth、krb_username 等字段；本仓后端已预留内部接线点（`sasl_qop`/`sasl_mutual_auth`/`sasl_host`/`krb_username` config key），如宿主表单需要可按 §4 格式补 manifest+七语。
+6. **manifest 潜在增补**（未做，留决策）：参照基线尚有 SPN 覆盖（ExplicitSPN/ServiceName）、SASL QoP、mutualAuth、krb_username 等字段；本仓后端已预留内部接线点（`sasl_qop`/`sasl_mutual_auth`/`sasl_host`/`krb_username` config key），如宿主表单需要可按 §4 格式补 manifest+七语。
 
 ## 8. 阻塞
 

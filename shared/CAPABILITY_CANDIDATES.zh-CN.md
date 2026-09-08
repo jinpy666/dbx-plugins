@@ -1,6 +1,5 @@
-# tiny-rdm → DBX 能力迁移评估（聚焦版，2026-08-28 定稿）
+# DBX 能力迁移评估（聚焦版，2026-08-28 定稿）
 
-> 上游：`PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md`。
 > **本版结论（用户决策）**：放弃 `io.dbx.mcp-hub` 设想；playbook/trigger/
 > 审批模式包/LLM 顾问等一切新插件与新包**全部不做**。迁移范围收敛为
 > **三个插件：io.dbx.ssh（已存在，继续增强）、io.dbx.ldap、
@@ -17,8 +16,8 @@
 
 | 项 | 内容 | 状态/前置 |
 |---|---|---|
-| batch-send（多终端批量命令广播） | tiny-rdm `useBatchSend.js`（201 行）+ SshBatchSendPanel：命令广播到多终端（active/visible/all-connected 三档、appendNewline、历史去重回填、Cmd/Ctrl+Enter）；纯前端 + 既有 `ssh/terminal/in/{sessionId}` 通道，无新 sidecar 方法 | **已被 ssh-sftp 仓评估为架构级**（其 docs/FEATURE_PARITY_BATCH3.zh-CN.md:94）：插件当前是单 workbench 单连接上下文，多终端目标集需先与宿主确认多会话语义（多 tab/分屏）——挂起，待宿主多会话 API 明确 |
-| 终端输出/会话体验类 | osc633 命令标记解析、session-status、terminal-output 处理（tiny-rdm ssh 模块） | 已有对标清单跟踪（ssh-sftp 仓 docs/FEATURE_PARITY.zh-CN.md），按既有节奏消化，非本轮新增 |
+| batch-send（多终端批量命令广播） | `useBatchSend.js`（201 行）+ SshBatchSendPanel：命令广播到多终端（active/visible/all-connected 三档、appendNewline、历史去重回填、Cmd/Ctrl+Enter）；纯前端 + 既有 `ssh/terminal/in/{sessionId}` 通道，无新 sidecar 方法 | **已被 ssh-sftp 仓评估为架构级**：插件当前是单 workbench 单连接上下文，多终端目标集需先与宿主确认多会话语义（多 tab/分屏）——挂起，待宿主多会话 API 明确 |
+| 终端输出/会话体验类 | osc633 命令标记解析、session-status、terminal-output 处理 | 已有对标清单跟踪（ssh-sftp 仓 docs/FEATURE_PARITY.zh-CN.md），按既有节奏消化，非本轮新增 |
 | 其余 | —— | ssh-sftp 仓对标清单（docs/FEATURE_PARITY*.zh-CN.md）即唯一 backlog，无新增 |
 
 ### 1.2 io.dbx.ldap（实施文档 `IMPL_PLAN_DBX_LDAP.zh-CN.md`）
@@ -40,7 +39,7 @@
 | 砍掉项 | 原设想 | 不做的理由 |
 |---|---|---|
 | `io.dbx.mcp-hub` 插件 | 外部 MCP endpoint 聚合网关（策略/脱敏/包装/审计） | 用户决策放弃；且与「放大三插件」的聚焦目标不一致 |
-| playbook + runs 编排插件 | 元数据编排 + Run 历史 | 沙箱 C1（插件间隔离）使执行器无法驱动其他插件；tiny-rdm 引擎本身半成品（db_call stub、approve_gate 是断言） |
+| playbook + runs 编排插件 | 元数据编排 + Run 历史 | 沙箱 C1（插件间隔离）使执行器无法驱动其他插件；外部参照实现的编排引擎本身半成品（db_call stub、approve_gate 是断言） |
 | trigger（cron + webhook） | 计划任务/webhook 网关 | webhook 被 C2（无监听权限）掐死；cron 需常驻执行目标，随 playbook 一并不做 |
 | 审批模式包 + LLM 顾问 | 跨插件规则引擎/验证码/LLM 风险评估 | 用户决策砍掉；三插件各自保留**已有的**「危险操作确认对话框 + audit.jsonl」语义（M4 落地），不再扩展 |
 
@@ -81,7 +80,7 @@
 - structure_sync：`structure_sync_service.go:48/92`（仅 2 方法）、
   `db/sync/`（~1300 行 diff 引擎）、前端向导 2204 行。
 - batch-send：`useBatchSend.js`（201 行）、`batch-send.js`、SshBatchSendPanel.vue；
-  ssh-sftp 仓评估记录 docs/`FEATURE_PARITY_BATCH3.zh-CN.md:94`。
+  ssh-sftp 仓评估记录（原批次对标文档已随批次退役删除）。
 - DBX 宿主：`plugins/connection-types/`（80+ yaml；`mq.yaml` 含
   kafka/rocketmq/rabbitmq，supportLevel: connect）、`manifest.schema.json`
   permissions 枚举。

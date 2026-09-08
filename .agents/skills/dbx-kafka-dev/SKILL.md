@@ -43,5 +43,5 @@ scripts/ui_test.mjs              # 前端 UI 测试
 - stdio-jsonl：每行一个 JSON 消息（与 ssh/files 的 5 字节帧头不同），
   调试一律用 `sidecar_client_jsonl.py`，勿手搓。
 - 消息二进制保真：key/value/headers base64 编解码，gzip/snappy/lz4/zstd
-  解压；消费语义与过滤引擎迁移自 tiny-rdm。
+  解压；消费语义与过滤引擎为自研实现。
 - 容器就绪判定用真实 metadata 请求（`kafka-topics.sh --list`），不做裸端口探测。

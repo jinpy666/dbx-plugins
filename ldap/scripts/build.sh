@@ -44,7 +44,7 @@ PLUGIN_VERSION="${PLUGIN_VERSION:-0.0.0-dev}"
 # itself (build_go_backend runs plain `go build`, no ldflags support), so the
 # same version is injected into that rebuild via GOFLAGS below.
 if [ -f backend/go.mod ] && command -v go >/dev/null 2>&1; then
-  echo "==> backend: go build (owned by backend path; failures are recorded in docs/PROGRESS-C.zh-CN.md)"
+  echo "==> backend: go build (owned by backend path; failures are recorded in docs/PROGRESS-P-LDAP.zh-CN.md)"
   (cd backend && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${PLUGIN_VERSION}" -o bin/dbx-plugin-ldap .) || {
     echo "WARN: go build failed (backend under parallel development); packaging will fail until it is green"
   }

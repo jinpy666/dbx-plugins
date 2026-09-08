@@ -1,13 +1,12 @@
 # dbx-ldap-plugin 可实施文档
 
-> 上游：`PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md`（定稿）；公共基线：
-> `IMPL_PLAN_M0_COMMON.zh-CN.md`（SDK/打包/lifecycle/审计/测试基建，下称 M0 文档）。
+> 公共基线：`IMPL_PLAN_M0_COMMON.zh-CN.md`（SDK/打包/lifecycle/审计/测试基建，下称 M0 文档）。
 > 插件：`io.dbx.ldap`，仓库 `~/btroot/dbx-plugins/ldap`，sidecar `dbx-plugin-ldap`（Go）。
-> 能力来源：tiny-rdm `backend/services/ldap_service.go` 等（file:line 见迁移映射表）。
+> 能力来源：初版迁移自已退役的外部参照实现（file:line 见迁移映射表）。
 
 ## 0. 目标与非目标
 
-**目标**：对齐 tiny-rdm LDAP Console 全部能力——19 个服务方法语义、8 种认证、
+**目标**：对齐参照基线 LDAP Console 全部能力——19 个服务方法语义、8 种认证、
 DN 树/搜索/条目编辑/LDIF/CSV/预设前端、DN 白名单与屏蔽属性安全策略、
 schema 元数据、（M4）14 个 MCP 工具。
 
@@ -15,7 +14,7 @@ schema 元数据、（M4）14 个 MCP 工具。
 - SQLite profile 存储 → 宿主 connection-provider；
 - SSH 隧道/代理/endpoint rewrite → DBX 传输层（拨 `runtime.host:port`）；
 - `ldapi://` Unix socket（Phase 2 视宿主需求）；password modify / WhoAmI /
-  Compare 扩展操作（tiny-rdm 亦无，不对齐不缺失。PLA 对标的密码能力走
+  Compare 扩展操作（参照基线亦无，不对齐不缺失。PLA 对标的密码能力走
   **客户端哈希编码 + bind 校验**实现，不新增扩展操作，见
   `PLA_GAP_ANALYSIS.zh-CN.md` N2）。
 
@@ -32,7 +31,7 @@ dbx-ldap-plugin/
 │   └── internal/
 │       ├── lifecycle/                  # M0-T5 公共包（lifecycle params 解析）
 │       ├── store/                      # M0-T5 公共包（prefs/audit/schema-cache）
-│       ├── ldapconn/                   # 领域层（自 tiny-rdm 移植，见 §3）
+│       ├── ldapconn/                   # 领域层（初版自外部参照移植，见 §3）
 │       │   ├── service.go              # 连接池/withConn 重连/操作入口
 │       │   ├── dial.go                 # dial/bind/TLS（8 种认证分发）
 │       │   ├── auth_gssapi.go          # kerberos（M3）
@@ -50,16 +49,16 @@ dbx-ldap-plugin/
 
 | 依赖 | 版本 | 用途 |
 |---|---|---|
-| `github.com/go-ldap/ldap/v3` | v3.4.13（对齐 tiny-rdm） | 协议、SearchWithPaging、GSSAPI/NTLM/Digest 绑定 |
+| `github.com/go-ldap/ldap/v3` | v3.4.13（对齐参照基线） | 协议、SearchWithPaging、GSSAPI/NTLM/Digest 绑定 |
 | `github.com/jcmturner/gokrb5/v8` | v8.4.4（对齐） | Kerberos 客户端（M3） |
 | `github.com/google/uuid` | latest | operationId/连接 id 兜底 |
 | dbx-plugin-sdk（Go） | CLI 捆绑版本 | M0 文档 §1.3 |
 
 无 cgo（gokrb5 纯 Go）；`CGO_ENABLED=0` 交叉编译。
 
-## 3. 代码迁移映射（tiny-rdm → 本插件）
+## 3. 初版代码迁移映射（外部参照 → 本插件，历史）
 
-| tiny-rdm 源 | 去处 | 改造点 |
+| 参照基线（已退役） | 去处 | 改造点 |
 |---|---|---|
 | `services/ldap_service.go`（2094 行） | `internal/ldapconn/service.go` + `dial.go` | ① 返回 `types.JSResp` → `(any, *PluginError)`；② profile 从 SQLite/参数 → lifecycle params 构造（§5.1）；③ 去 `ConnectionPoolService` 多窗口引用跟踪，改自管 `map[connectionID]*connEntry`（互斥锁）；④ `withConn` 缓存 + `ldapNeedsReconnect` 断线重连**原样保留**；⑤ 去 `prepareLDAPTransport`/`resolveLDAPTarget`/endpoint rewrite → 拨 `runtime.host:port`，TLS SNI 用 `connection.host`；⑥ 审计 `Audit()` → `store.Audit`（JSONL） |
 | `services/ldap_service.go:78-90,1862-1925` | `policy.go` | 默认屏蔽属性表、`ensureLDAPReadAllowed/WriteAllowed`、`dnWithinBase`、`normalizeLDAPWriteValues` 原样；策略参数改从连接配置读 |
@@ -122,12 +121,12 @@ DN 白名单约束（§6）。方法未注册返回 -32601。
   不缓存连接。
 - `connection/connect`：解析 lifecycle params → `Profile`（含策略派生）→
   存连接表 → `{success:true}`。**惰性建连**：首个领域调用才 dial/bind
-  （对齐 tiny-rdm withConn 语义），失败自动重连一次。
+  （含 withConn 缓存与自动重连语义），失败自动重连一次。
 - `connection/disconnect`：`{connection:{id}}` → 关闭并移除连接表条目。
 
-### 5.2 领域方法（对应 tiny-rdm 19 方法）
+### 5.2 领域方法（19 个领域方法）
 
-| 方法 | tiny-rdm | 请求（除 connectionId 外） | 返回 |
+| 方法 | 参照基线（已退役） | 请求（除 connectionId 外） | 返回 |
 |---|---|---|---|
 | `ldap/count` | —（A-LDAP 新增：树徽章精确计数） | `baseDn?`、`filter?` | `{count, truncated?}`（scope=one，上限 5000） |
 | `ldap/search` | Search(:356) | `baseDn?`（缺省 profile.base_dn）、`filter`（RFC 4515 校验）、`scope`（base/one/sub）、`attributes?[]`、`sizeLimit?`、`pageSize?`、`typesOnly?`、`derefAliases?`（never/searching/finding/always） | `{entries:[{dn,attributes:{attr:[v…]}}], count, truncated}`（pageSize 走 SearchWithPaging 聚合） |
@@ -155,7 +154,7 @@ LDAP 无流式场景，仅一个：`ldap/audit`（写操作成功/拒绝后发
 
 1. **DN 白名单**：读操作要求目标 DN ∈ `allowed_base_dns`（空=不限）；
    写操作（add/modify/delete/modifyDn 目标与来源）∈ `allowed_write_base_dns`
-   （空=回退读白名单，再空=不限）。实现 = tiny-rdm `dnWithinBase`(:1925)
+   （空=回退读白名单，再空=不限）。实现 = `dnWithinBase`
    原样 + 单测。
 2. **屏蔽属性**：默认表 11 项（userPassword、unicodePwd、objectSid 等，
    ldap_service.go:78-90）；返回/修改请求中出现即从结果剔除 / 拒绝；
@@ -194,7 +193,7 @@ src/
 │   └── ConnectionsPanel.vue   # 多连接状态（ldap/connections/statuses）
 └── lib/
     ├── api.ts                 # sidecar 调用封装（见上，camelCase）
-    ├── {ldapFilter,dn,ldif,ldapExporter,baseDn}.ts   # tiny-rdm utils 搬运
+    ├── {ldapFilter,dn,ldif,ldapExporter,baseDn}.ts   # 初版自外部参照 utils 搬运
     ├── schemaCache.ts         # useLdapSchemaCache 语义（进程内 + sidecar 缓存）
     └── i18n.ts                # 七语
 ```
@@ -227,10 +226,10 @@ src/
 | S9 | disconnect → 再调用 | 报连接不存在 |
 | S10 | 非法 filter | 报错文案 |
 
-**集成**：`docker-compose.ldap-test.yml` + `ldap-seed`（搬 tiny-rdm）；
+**集成**：`docker-compose.ldap-test.yml` + `ldap-seed`（初版改造自参照基线种子）；
 M3 增 `smoke_gssapi_test.py`（`ldap-gssapi-test.yml` + `scripts/ldap-gssapi-integration-test.sh`）。
 
-**对标清单**：`docs/FEATURE_PARITY.zh-CN.md` = tiny-rdm 19 方法 + 8 认证 +
+**能力清单**：`docs/FEATURE_PARITY.zh-CN.md` = 参照基线 19 方法 + 8 认证 +
 前端能力 × 状态（已移植/改造/不适用+原因），每完成一项更新。
 
 ## 9. 里程碑任务分解
@@ -259,7 +258,7 @@ M3 增 `smoke_gssapi_test.py`（`ldap-gssapi-test.yml` + `scripts/ldap-gssapi-in
 
 ### M4（MCP 工具）
 
-`internal/mcp/`：`mcp/tools`（14 个 ldap_* 定义，参数 schema 照 tiny-rdm
+`internal/mcp/`：`mcp/tools`（14 个 ldap_* 定义，参数 schema 照参照基线
 tools_ldap.go）、`mcp/call`（lifecycle payload 转发 + connectionId 池化，照
 ssh-sftp mcp.rs 语义）、`mcp/settings/get|set`（写白名单策略）；敏感属性
 脱敏（ldap_redaction.go 移植）进工具返回。DoD：`scripts/smoke_mcp.py` 同款。
@@ -284,5 +283,5 @@ DSML、schema 语法/匹配规则透出、uid 定位 DN、uid/gid 自动编号�
   `host`/`port`/`tls_mode` 结构化字段（见 §4 字段表与 PROGRESS-A §13/§14）。
 - ldaps 自签证书：`tls_verify=false` 走 InsecureSkipVerify（连接级显式配置，
   审计记录一条 warning）。
-- SearchWithPaging 聚合上限：`sizeLimit` 缺省 500（tiny-rdm 语义），truncated
+- SearchWithPaging 聚合上限：`sizeLimit` 缺省 500（沿袭初版语义），truncated
   标记返回给前端提示。

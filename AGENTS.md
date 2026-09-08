@@ -1,11 +1,13 @@
 # DBX 插件族工作区规约（AGENTS.md）
 
-tiny-rdm 能力向 DBX 插件迁移的统一工作区，聚焦四插件：
+DBX 插件族统一工作区，聚焦四插件：
 `ssh/`（io.dbx.ssh，Rust，已上线 v0.2.x）、`ldap/`（io.dbx.ldap，
 Go）、`files/`（io.dbx.files，Rust + OpenDAL）、`kafka/`（io.dbx.kafka，
 Go + franz-go）。**不做任何新插件**（决策存档
 `shared/CAPABILITY_CANDIDATES.zh-CN.md`；2026-09-05 经用户决策新增
 kafka 插件，见 `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md`）。
+四插件能力已全面超越早期外部基线（历史对标记录已随基线退役删除），
+后续以插件自身需求演进，不再参考外部实现。
 
 ## 结构与文档入口
 

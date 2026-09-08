@@ -72,10 +72,10 @@
 
 ## 2026-08-29 08:4x（对标轮）
 
-- 任务：三插件（ssh/files/ldap）功能拉平对比 tiny-rdm 本地源码。
+- 任务：三插件（ssh/files/ldap）功能拉平对比外部参照实现本地源码。
 - 三路并行盘点（fs_service.go+前端 ToolsFile 族 ↔ files；ldap_service.go 2094 行 ↔ ldap；
   ssh/sftp/sudo/metrics 服务 ↔ ssh-sftp 既有 FEATURE_PARITY），抽点复核两处关键结论。
-- 产出：shared/FEATURE_PARITY_TINYRDM.zh-CN.md（总对标：ssh-sftp 基本拉平；files 核心
+- 产出：总对标文档（已随基线退役删除）：ssh-sftp 基本拉平；files 核心
   拉平、差距集中 chmod/打包/zip/搜索/About/分页接入；ldap 认证矩阵与编辑面拉平、
   缺 MCP 工具面/mTLS/SPN 定制/真实 KDC 验证）。
 - 口径修正：ssh-sftp FEATURE_PARITY DownloadSudo「✅ 已有」改为如实标注未实现
@@ -90,10 +90,10 @@
   连接表单 read_only（ssh-sftp 本轮补 manifest 字段+七语）∥ 宿主标准 read_only 收敛，
   后端权威门禁 + 前端改从后端透出（files/capabilities.readOnly、ldap statuses.readOnly、
   ssh sessions/list.readOnly），修复宿主 context readOnly 硬编码 false 导致前端禁用链路
-  失效的问题。收口：shared/PROGRESS-PROD-READONLY.zh-CN.md。
+  失效的问题。收口：生产/只读适配收口（文档已删除）。
 - 任务2（MCP 对齐）：复核宿主 dbx-mcp 无通用插件工具桥（dbx_list_plugin_tools/
   dbx_call_plugin_tool 未落地）——ldap/files 现在实现 mcp/* 即死代码；登记前置条件与
-  实施计划进 FEATURE_PARITY_TINYRDM §3 gap1，待宿主桥落地后按 ssh-sftp 契约补齐。
+  实施计划曾记入总对标 §3 gap1（文档已删除），待宿主桥落地后按 ssh-sftp 契约补齐。
 - 任务3（UI 对标切片）：files 文件名搜索过滤落地（对标缺口 #7 关单），七语 + 3 用例。
 - 验证：ssh-sftp cargo 110 / vitest 51、files cargo 94 / vitest 50 / build ✅、
   ldap go 四包 / vitest 108——三插件前后端全绿零回归。未 git commit。

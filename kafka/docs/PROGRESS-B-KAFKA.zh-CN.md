@@ -1,7 +1,7 @@
 # B-KAFKA 路交付报告（io.dbx.kafka backend / Phase 1 全量 + Phase 2 商用化）
 
-> 路线：IMPL_PLAN_DBX_KAFKA.zh-CN.md §9 A 路 backend —— tinyrdm Kafka
-> 实现（franz-go + kadm）重写为 DBX Go sidecar（stdio-jsonl，与 ldap 同构）。
+> 路线：IMPL_PLAN_DBX_KAFKA.zh-CN.md §9 A 路 backend —— 自研 Kafka
+> Go sidecar（stdio-jsonl，与 ldap 同构，franz-go + kadm）。
 > Phase 1：仅 `kafka/backend/**` 与本文件。Phase 2（§6 小节）：另含
 > `kafka/manifest.json`、`docker-compose.kafka-test.yml`、
 > `docs/PROTOCOL_KAFKA.zh-CN.md`、`scripts/smoke_test.py`（追加 S11）、
@@ -76,8 +76,8 @@ kafka/backend/
 
 ## 3. 关键实现决策（现象 → 改动 → 验证）
 
-### ① 客户端连接复用（tinyrdm 每调用重建 client 的补齐）
-- **现象**：tinyrdm `newKafkaClient` 每次调用新建 + Close；管理面轮询浪费。
+### ① 客户端连接复用（修复每调用重建 client 的已知缺陷）
+- **现象**：`newKafkaClient` 每次调用新建 + Close；管理面轮询浪费。
 - **改动**：admin 类调用（brokers/topics/groups/acls/offsets）复用
   `connEntry.client`，指纹 = SHA256(bootstrap+securityProtocol+SASL 机制/
   用户名/密码+CA/cert/key+insecure+clientID)，指纹失效重建；同一连接操作经
@@ -88,7 +88,7 @@ kafka/backend/
   触发失效）；`TestSeedBrokersFallback`（bootstrap 缺失时 runtime.host:port
   兜底，任务书"拨号支持 runtime.host:port 语义"落地）。
 
-### ② 二进制保真（tinyrdm `string(record.Value)` 已知 bug）
+### ② 二进制保真（修复 `string(record.Value)` 已知缺陷）
 - **改动**：消息形状 `valueText` 恒为 UTF-8 安全预览（非法字节替换
   U+FFFD）、`valueBase64` 恒完整（512KB 上限截断并置 `truncated:true`）；
   key 合法 UTF-8 走 `key` 字段，否则 `keyBase64`；headers 值做 UTF-8 安全
@@ -130,7 +130,7 @@ kafka/backend/
 - **验证**：`policy_test.go`（2×2 门禁矩阵 + confirmTopic 四态）；
   `TestAuditCallback`（含"审计记录不含凭据标记"断言）。
 
-### ⑥ kafka/groups/offsets/reset（host 补齐能力，tinyrdm 无）
+### ⑥ kafka/groups/offsets/reset（host 补齐能力）
 - **改动**：kadm v1.17.2 无内建 OffsetReset，基于 `FetchOffsets` +
   `CommitOffsets` 自实现：earliest/latest/timestamp 用 ListOffsets 后提交；
   partitionOffset 用请求 `partitionOffsets{topic:{partition:offset}}` 直接
@@ -193,7 +193,7 @@ pierrec/lz4/v4。无 sarama、无 gokrb5（Kerberos 按契约 Phase 2）。
 
 IMPL_PLAN §0.2 三项全部落地：**Schema Registry**（Confluent 兼容 REST，
 含 Redpanda 内置 SR；AWS Glue 登记 Phase 3 不做）、**Kerberos/GSSAPI**
-（gokrb5 + franz-go pkg/sasl/kerberos，tinyrdm 同款）、**ZooKeeper 发现**
+（gokrb5 + franz-go pkg/sasl/kerberos）、**ZooKeeper 发现**
 （go-zookeeper/zk，支持 chroot）。另含冻结契约要求的既有方法扩展
 （produce/consume/stream 的 schema 挂载与 valueBase64/keyBase64、offsets
 全策略、statuses 摘要）与 manifest/协议文档同步。
@@ -314,7 +314,7 @@ CGO_ENABLED=0 go test -count=1 ./...
    chroot 走 go-zookeeper 原生语义。
 3. **PROTOBUF 载荷编解码未实现**（明确 -32000 报错），SR 的 protobuf
    subject 仅支持元数据/浏览/diff；如需编解码登记后续期。
-4. **JSON Schema 校验依赖 jsonschema-go**（tinyrdm 同款）；`format` 等
+4. **JSON Schema 校验依赖 jsonschema-go**；`format` 等
    关键字的覆盖面以该库为准。
 5. **AWS Glue SR**：按契约登记 Phase 3。
 6. scripts/sidecar_client_jsonl.py 的两处基础设施修复（读超时/stderr
@@ -323,17 +323,16 @@ CGO_ENABLED=0 go test -count=1 ./...
 
 ## 7. Phase 3：AWS Glue Schema Registry 接入（2026-09-05 增补）
 
-按冻结契约补齐 tinyrdm 的字面功能缺口：AWS Glue SR **管理面**。逻辑参照
-tiny-rdm `backend/services/kafka_schema_registry.go` 的 glue 分支重写
+按冻结契约补齐字面功能缺口：AWS Glue SR **管理面**。Glue API 逐一映射实现
 （kafkaGlueClient / ListSchemas / ListSchemaVersions / GetSchemaVersion /
-RegisterSchema / Get·Set·CheckSchemaCompatibility / DeleteSchema 逐一映射）。
+RegisterSchema / Get·Set·CheckSchemaCompatibility / DeleteSchema）。
 
 ### 7.1 交付内容
 
 1. **`backend/internal/kafkaconn/glue.go`（新增）**：aws-sdk-go-v2
    （config/credentials/service/glue + smithy-go）Glue 客户端与后端实现。
    auth_mode 归一化 `default|static`（static = NewStaticCredentialsProvider；
-   tinyrdm 的 aws-profile 模式 sidecar 不提供，协议文档登记 Phase 3 后续，
+   aws-profile 凭据模式 sidecar 场景不提供，协议文档登记 Phase 3 后续，
    传 `profile` 明确报错）；`glueBaseEndpointOverride` 包级 seam 供单测注入
    httptest 端点（生产恒空）。compatibility 枚举映射 `normalizeGlueCompatibility`
    （`*_TRANSITIVE` 输入归并 `*_ALL`，另支持 Glue 特有 `DISABLED`）；
@@ -347,7 +346,7 @@ RegisterSchema / Get·Set·CheckSchemaCompatibility / DeleteSchema 逐一映射�
 3. **挂载门禁**（messages.go/stream.go）：produce/consume/stream start 的
    `schema{}` 增加 `registry?`；provider=glue → 业务错
    "schema-aware produce/consume currently supports Confluent wire format;
-   AWS Glue schema management is available"（tinyrdm 同款语义，不发明 Glue
+   AWS Glue schema management is available"（语义与既有口径一致，不发明 Glue
    wire format）；`schemaClientFor` 正名为 `confluentClientFor`。
 4. **Profile/secrets**：`glue_region/glue_registry_name/glue_auth_mode/
    glue_access_key_id`（config）+ `glue_secret_access_key/glue_session_token`
@@ -370,7 +369,7 @@ RegisterSchema / Get·Set·CheckSchemaCompatibility / DeleteSchema 逐一映射�
    compat get·set·check（含全局 get 必败断言）/register create+version/
    delete version+subject/挂载业务错。
 
-### 7.2 实现差异与取舍（tinyrdm 对齐备注）
+### 7.2 实现差异与取舍（Glue 后端语义备注）
 
 - **数字 schemaID**：Glue 无数字 id，`id` 恒 0，GUID 走新增
   `versionId?:string` 字段（SchemaVersionInfo/SchemaGetResult/
@@ -378,7 +377,7 @@ RegisterSchema / Get·Set·CheckSchemaCompatibility / DeleteSchema 逐一映射�
 - **全局兼容级别**：Glue 仅 per-schema，compatibility get/set 的
   subject 为空 → `-32000`；set 增加可选 `version`（UpdateSchema 版本
   检查点，缺省 LatestSchemaVersion）。
-- **compatibility/check**：tinyrdm 同款映射 CheckSchemaVersionValidity
+- **compatibility/check**：映射 CheckSchemaVersionValidity
   （纯语法校验、无副作用），`isCompatible`=Glue Valid，messages 首条为
   无副作用说明。
 - **register**：GetSchema 探测 404（EntityNotFound）→ CreateSchema
@@ -387,8 +386,8 @@ RegisterSchema / Get·Set·CheckSchemaCompatibility / DeleteSchema 逐一映射�
 - **delete**：version>0 → DeleteSchemaVersions（本版 SDK 未建模
   VersionNumbers，按 SchemaVersionErrors 折算：无错误 = 已删）；subject
   整删 → `deletedVersions` 空数组（Glue 不返回清单）。
-- **subjects/list**：Glue 列表级无 DataFormat/版本/兼容级别（tinyrdm 同款
-  不逐条回查），formats 空数组、description 透出；versions/list 补一次
+- **subjects/list**：Glue 列表级无 DataFormat/版本/兼容级别（不逐条回查），
+  formats 空数组、description 透出；versions/list 补一次
   GetSchema 取全版本同款 DataFormat。
 
 ### 7.3 Phase 3 验证证据
@@ -418,10 +417,10 @@ python3 scripts/smoke_test.py         # 无 Glue 环境：S12 SKIP（其余场�
 1. **无真实 AWS Glue 环境**：正路径全部由 httptest 假 Glue（JSON-RPC 按
    X-Amz-Target 路由，含 EntityNotFound 错误形状）覆盖；签名请求的真实
    AWS 往返需 `GLUE_TEST_REGION`+`GLUE_TEST_REGISTRY` 环境跑 S12 复核。
-2. **aws-profile 凭据模式**：tinyrdm 支持但 sidecar 场景不提供（shared
+2. **aws-profile 凭据模式**：sidecar 场景不提供（shared
    config 的 default 链已覆盖本机 profile 场景），协议文档已登记。
-3. **produce/consume 的 schema 编解码不含 Glue**：按冻结契约对齐 tinyrdm
-   （仅 Confluent wire format），Glue 消息解码如需支持须引入 Glue 的
+3. **produce/consume 的 schema 编解码不含 Glue**：仅 Confluent wire format，
+   Glue 消息解码如需支持须引入 Glue 的
    schema registry 消息头格式，登记后续期。
 4. **SDK DeleteSchemaVersionsOutput 未建模 VersionNumbers**：单版本删除
    结果按 SchemaVersionErrors 折算（无错误即成功），与 AWS 控制台语义

@@ -179,7 +179,7 @@ if err := server.Serve(); err != nil { ... }
 ## 4. 本地数据与审计基线（`DBX_PLUGIN_DATA_DIR`）
 
 ```
-DBX_PLUGIN_DATA_DIR/                 # 缺省 fallback: $TMPDIR/dbx-plugin-data/<plugin-id>
+<数据目录>/                          # 解析顺序见下，四插件一致
 ├── prefs.json                       # UI 偏好（列宽/面板开关等，非敏感）
 ├── presets.json                     # LDAP 搜索预设（明文，不含凭据）
 ├── transfers.json                   # Files 传输历史（上限 200 条，环形覆盖）
@@ -187,8 +187,21 @@ DBX_PLUGIN_DATA_DIR/                 # 缺省 fallback: $TMPDIR/dbx-plugin-data/
 └── cache/schema-<connHash>.json     # LDAP schema 缓存（可删，重建无害）
 ```
 
-- 环境变量 `DBX_PLUGIN_DATA_DIR`（ssh-sftp `main.rs:744` 同源语义）；
-  启动时 `os.MkdirAll`。
+- 数据目录解析顺序（2026-09-09 起，四插件同构实现；"可用" = 环境变量存在
+  且 trim 后非空，取第一个可用项）：
+  1. `DBX_PLUGIN_DATA_DIR` → 原样使用（宿主显式注入接入点；当前宿主
+     **尚未注入**该变量，拉起 sidecar 只带 `DBX_PLUGIN_ID/VERSION`、
+     `DBX_APP_VERSION`、`DBX_HOST_API_VERSION`、`DBX_PLUGIN_PROTOCOL_VERSION`）；
+  2. `DBX_DATA_DIR` → `<DBX_DATA_DIR>/plugin-data/<plugin-id>`（宿主便携/web
+     模式设此变量、子进程继承；用 `plugin-data/` 而非 `plugins/` 避开安装器
+     管理的注册树）；
+  3. 平台标准用户数据目录下 `dbx-plugin-data/<plugin-id>`：macOS
+     `$HOME/Library/Application Support/`、其他 unix
+     `${XDG_DATA_HOME:-$HOME/.local/share}/`、Windows `%APPDATA%\`；
+  4. 以上全缺 → `$TMPDIR/dbx-plugin-data/<plugin-id>` 最后兜底，永不失败。
+  **历史教训**：此前缺省直接落 `$TMPDIR`，macOS 重启即清空该目录，导致
+  Quick Sudo 配置/快捷命令/known_hosts 等全丢（2026-09-09 实发），故不再
+  把临时目录当缺省。启动时 `MkdirAll`。
 - **凭据红线**：以上任何文件不落密码/私钥/token；日志（stderr）与事件不携带
   凭据字段；审计记录 target 只记路径/DN，不记值。
 - 审计记录格式（与 ssh-sftp 对齐）：JSONL，每行

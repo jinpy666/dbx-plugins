@@ -3,6 +3,8 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,14 +30,29 @@ func TestOpenCreatesDir(t *testing.T) {
 	}
 }
 
-func TestOpenFallsBackToTempDir(t *testing.T) {
+func TestOpenFallbackIsPersistentDir(t *testing.T) {
+	// 接线测试（非平台分支）：清掉两个环境变量，按当前 GOOS 把对应平台根
+	// 指到临时目录，避免在真实 HOME/APPDATA 下创建目录。
 	t.Setenv(EnvDataDir, "")
+	t.Setenv(EnvDataRoot, "")
+	switch runtime.GOOS {
+	case "darwin":
+		t.Setenv("HOME", t.TempDir())
+	case "windows":
+		t.Setenv("APPDATA", t.TempDir())
+	default:
+		t.Setenv("XDG_DATA_HOME", t.TempDir())
+	}
 	st, err := Open()
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	if st.Dir() == "" || filepath.Base(st.Dir()) != DefaultDirName {
 		t.Errorf("fallback dir = %q", st.Dir())
+	}
+	// 修复点：无环境变量时不得再落系统临时目录（macOS $TMPDIR 重启清空）。
+	if strings.HasPrefix(st.Dir(), os.TempDir()+string(filepath.Separator)) {
+		t.Errorf("fallback dir %q still under TempDir", st.Dir())
 	}
 }
 
@@ -48,6 +65,86 @@ func TestOpenEnvOverride(t *testing.T) {
 	}
 	if st.Dir() != dir {
 		t.Errorf("dir = %q, want %q", st.Dir(), dir)
+	}
+}
+
+// TestResolveDataDir 覆盖统一解析顺序（fake getenv + 显式 goos，不依赖真实环境）。
+func TestResolveDataDir(t *testing.T) {
+	home := "/home/u"
+	appdata := `C:\Users\u\AppData\Roaming`
+	xdg := "/home/u/.xdg-data"
+	explicit := "/explicit/plugin-data"
+	dbxData := "/host-data"
+
+	tests := []struct {
+		name   string
+		getenv map[string]string
+		goos   string
+		want   string
+	}{
+		{
+			// ① DBX_PLUGIN_DATA_DIR 优先，压过其他所有变量。
+			name:   "plugin data dir wins",
+			getenv: map[string]string{EnvDataDir: explicit, EnvDataRoot: dbxData, "HOME": home},
+			goos:   "darwin",
+			want:   explicit,
+		},
+		{
+			// ② 空白字符串视为未设，落到下一级。
+			name:   "blank value treated as unset",
+			getenv: map[string]string{EnvDataDir: "   ", EnvDataRoot: dbxData, "HOME": home},
+			goos:   "darwin",
+			want:   filepath.Join(dbxData, "plugin-data", DefaultDirName),
+		},
+		{
+			// ③ DBX_DATA_DIR → <root>/plugin-data/io.dbx.ldap。
+			name:   "dbx data dir joins plugin-data",
+			getenv: map[string]string{EnvDataRoot: dbxData, "HOME": home},
+			goos:   "darwin",
+			want:   filepath.Join(dbxData, "plugin-data", DefaultDirName),
+		},
+		{
+			// ④ darwin：$HOME/Library/Application Support/dbx-plugin-data/<id>。
+			name:   "darwin home",
+			getenv: map[string]string{"HOME": home},
+			goos:   "darwin",
+			want:   filepath.Join(home, "Library", "Application Support", "dbx-plugin-data", DefaultDirName),
+		},
+		{
+			// ⑤ linux：XDG_DATA_HOME 优先于 ~/.local/share。
+			name:   "linux xdg set",
+			getenv: map[string]string{"XDG_DATA_HOME": xdg, "HOME": home},
+			goos:   "linux",
+			want:   filepath.Join(xdg, "dbx-plugin-data", DefaultDirName),
+		},
+		{
+			name:   "linux xdg unset",
+			getenv: map[string]string{"HOME": home},
+			goos:   "linux",
+			want:   filepath.Join(home, ".local", "share", "dbx-plugin-data", DefaultDirName),
+		},
+		{
+			// ⑥ windows：%APPDATA%\dbx-plugin-data\<id>。
+			name:   "windows appdata",
+			getenv: map[string]string{"APPDATA": appdata},
+			goos:   "windows",
+			want:   filepath.Join(appdata, "dbx-plugin-data", DefaultDirName),
+		},
+		{
+			// ⑦ 全缺（HOME 未设等）→ 最后兜底 TempDir，永不失败。
+			name:   "all missing falls back to tempdir",
+			getenv: map[string]string{},
+			goos:   "darwin",
+			want:   filepath.Join(os.TempDir(), "dbx-plugin-data", DefaultDirName),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(key string) string { return tt.getenv[key] }
+			if got := ResolveDataDir(getenv, tt.goos); got != tt.want {
+				t.Errorf("ResolveDataDir() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

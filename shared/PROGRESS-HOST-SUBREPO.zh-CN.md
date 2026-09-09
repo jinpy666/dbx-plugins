@@ -53,6 +53,7 @@ dbx-plugins/
 | `b8bae0f80` | 插件连接字段条件级联可见性（前端侧，§22） |
 | `82dc7fa6d` / `a3d6d56eb` | 插件 tab 条不渲染修复（§17 回归，§23） |
 | `1f0d9342e` | 宿主连接校验补齐级联可见性——simple 模式 Kerberos 幽灵必填（§24） |
+| （未提交，2026-09-09） | 拉起 sidecar 注入 `DBX_PLUGIN_DATA_DIR=<data dir>/plugin-data/<id>`（§25，`crates/dbx-core/src/plugins.rs` + `plugins/host.rs`） |
 
 本轮收编时新提交（原未跟踪/未提交改动，随迁移落库）：
 
@@ -735,3 +736,46 @@ files PROGRESS-P-FILES §14。
 - **生效方式**：宿主重建后即全家族根治（含存量污染连接，无需重存）；
   不升级宿主时按上述 ldap manifest 兜底。
   本补丁已落分支：`1f0d9342e`（dev/plugin-framework-current，见 §3 保留清单）。
+
+## 25. 本地二开补丁：拉起 sidecar 注入 `DBX_PLUGIN_DATA_DIR`（插件数据重启即丢根治）（2026-09-09）
+
+- **症状**：机器重启（08:25）后 ssh 插件的 Quick Sudo 配置/快捷命令/
+  mcp-settings/插件 known_hosts 全部消失；宿主 `dbx.db` 里的连接本身完好。
+- **根因**：宿主 `spawn_plugin_child`（`crates/dbx-core/src/plugins/runtime.rs`）
+  只注入 `DBX_PLUGIN_ID/VERSION`、`DBX_APP_VERSION`、`DBX_HOST_API_VERSION`、
+  `DBX_PLUGIN_PROTOCOL_VERSION`，**从未注入 `DBX_PLUGIN_DATA_DIR`**；四插件
+  （ssh/files/ldap/kafka）按 M0 §4 基线统一回落 `$TMPDIR/dbx-plugin-data/<id>`，
+  macOS `/var/folders/.../T/` 重启即清空。不是插件 0.4.45 改动引入，是自
+  M0 起潜伏的设计缺口，今天被重启触发。
+- **修复（宿主侧，方案 A）**：
+  - `PluginRegistry::plugin_data_dir(id)` → `<root_dir 父目录>/plugin-data/<id>`
+    （root_dir 恒为 `<data dir>/plugins`，故落 `<data dir>/plugin-data/<id>`，
+    与 `versions/`+`activations/` 注册树平级、跨版本升级不变、不与安装器扫描
+    冲突；便携模式/`DBX_DATA_DIR` 覆盖自然跟随）；
+  - `PluginRuntimeEnv::with_plugin_data_dir(path)`：仅在调用方未显式给
+    `DBX_PLUGIN_DATA_DIR` 时设置，显式值优先；
+  - 三处生产注入点：`PluginRegistry::invoke_driver_with_env_and_timeout`、
+    `PluginRegistry::start_driver_session_with_env`（driver 插件）、
+    `PluginHost::activate_with_env`（工作台插件）。刻意**不**给
+    `InstalledPlugin` 加字段，把上游结构体冲突面压到最小（纯增量方法 +
+    三行注入）。
+- **插件侧兜底（方案 B，已同步落地）**：四插件 fallback 改为
+  `DBX_PLUGIN_DATA_DIR` → `DBX_DATA_DIR/plugin-data/<id>` → 平台用户数据目录
+  `dbx-plugin-data/<id>`（macOS `~/Library/Application Support/`）→ temp_dir
+  最后兜底；见 `shared/IMPL_PLAN_M0_COMMON.zh-CN.md` §4 与各插件 PROGRESS。
+  现行正式版 DBX.app（未含本补丁）下插件走 B 的第 3 级，宿主重建后走 A 注入
+  的 `<data dir>/plugin-data/<id>`——两条路径不同，切换时数据不会自动迁移
+  （本次数据本就已丢，无存量需迁；日后如需可手工 mv）。
+- **验证**：`cargo +1.97.1 test -p dbx-core --lib plugins::` 70/70 绿，其中
+  新增 4 条：`plugin_data_dir_lives_beside_the_plugin_registry`、
+  `plugin_data_dir_falls_back_to_registry_root_without_a_parent`、
+  `with_plugin_data_dir_sets_the_env_var_once`（显式值优先）、
+  `activated_sidecar_receives_plugin_data_dir_env`（fixture sidecar 经
+  `PluginHost::invoke` 拉起后把 `$DBX_PLUGIN_DATA_DIR` 原样回传，断言等于
+  `<data dir>/plugin-data/sample.sidecar`，证明变量真实到达子进程）；
+  clippy 对两改动文件无告警；`scripts/host-sync.sh contract` 桥快照无变化
+  （纯后端 env 契约扩展，不动前端桥）。
+- **生效方式**：宿主重建（`pnpm tauri build --debug` / 发版）后生效；未重建
+  前由插件侧方案 B 兜底。本补丁**尚未提交**到 host 分支（同批还有终端 MCP
+  模式的 `useTauriEvents.ts`/`mcp_bridge.rs` 未提交改动），待用户确认后一并
+  落分支并回填 §3 保留清单 commit 号。

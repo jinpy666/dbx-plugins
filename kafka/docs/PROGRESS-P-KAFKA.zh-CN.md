@@ -872,3 +872,34 @@ TopicTree 57.89 / MessagesPanel 61.75 / api 70.17 / ProducePanel 72.86。
 
 `pnpm typecheck` 0 错；`pnpm test` 23 文件 219 用例全绿；`pnpm build`
 通过（chunk warning 为既有现象）；改动仅 `kafka/frontend/**`。
+
+## 工作台滚动条隐藏：条体不再常驻显示（2026-09-09）
+
+`style.css` 全局滚动条由"6px thin 常驻"改为全部隐藏（`scrollbar-width: none` +
+`::-webkit-scrollbar { display: none }`），滚动仍由滚轮/触控板/键盘驱动；`.tab-bar`
+横向滚动残留的 `scrollbar-width: thin` 同步移除。原先对 webkit 伪元素定制宽高会把
+滚动条从悬浮态固化为占位常驻态，与宿主观感不符。改动仅 `kafka/frontend/src/style.css`；
+验证：`pnpm typecheck` 0 错、`pnpm test` 23 文件 225 用例全绿。
+## 插件数据目录 fallback 由 $TMPDIR 改为持久化路径（2026-09-09）
+
+根因：DBX 宿主拉起 sidecar 时从未注入 `DBX_PLUGIN_DATA_DIR`，插件一直走
+`os.TempDir()/dbx-plugin-data/io.dbx.kafka` 兜底；macOS 的 `$TMPDIR` 在重启时
+清空，prefs/presets/audit 全部丢失（ssh 插件先发现，kafka 同构）。
+
+修复：`internal/store` 新增纯函数 `resolveDataDir(getenv, goos)`，按序取第一个
+可用项：① `DBX_PLUGIN_DATA_DIR` 原样使用（宿主显式注入，未来方案 A 接入点）；
+② `DBX_DATA_DIR` 非空 → `<root>/plugin-data/io.dbx.kafka`（便携/web 模式，
+`plugin-data/` 避开安装器注册树）；③ 平台标准用户数据目录下
+`dbx-plugin-data/io.dbx.kafka`（darwin `$HOME/Library/Application Support`、
+其他 unix `${XDG_DATA_HOME:-$HOME/.local/share}`、windows `%APPDATA%`）；
+④ 全缺才回落 `os.TempDir()`，永不失败。不用 `os.UserConfigDir()`（Linux 上
+语义是 config 非 data），保证四插件路径一致；`Open()` 传 `os.Getenv` 与
+`runtime.GOOS`。backend 中无第二处同语义目录解析（其余 TempDir 均为测试
+临时文件用途）。
+
+验证（TDD）：先写 `TestResolveDataDir` 11 个平台分支用例（fake getenv +
+显式 goos，不用 `t.Setenv` 测平台分支）确认失败（`undefined: resolveDataDir`），
+实现后全绿；`go test ./...`（kafkaconn/lifecycle/store）全过，`go vet`、
+`go build` 通过；本机 darwin 实际解析到
+`~/Library/Application Support/dbx-plugin-data/io.dbx.kafka`（0700）。改动仅
+`kafka/backend/internal/store/{store.go,store_test.go}`。

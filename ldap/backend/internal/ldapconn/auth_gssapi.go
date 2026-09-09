@@ -7,8 +7,8 @@
 // 相对 tiny-rdm 的改造：
 //   - 删除 prepareLDAPKerberosRuntime 中的 proxy/SSH 路由与 KDCNetworkAddress
 //     拨号改写（DBX 传输层替代，方案 D5）：KDC 直连 krb.KDCHost:KDCPort；
-//   - 临时 krb5.conf 落 DBX_PLUGIN_DATA_DIR/krb5/（无该环境变量时退回
-//     os.TempDir()），内容模板原样（实施文档 §3 映射表）；
+//   - 临时 krb5.conf 落插件数据目录（store.ResolveDataDir 统一解析，含持久
+//     fallback）下的 krb5/ 子目录，内容模板原样（实施文档 §3 映射表）；
 //   - GSSAPI 客户端在 internal/ldapgssapi（tiny-rdm backend/ldapgssapi 原样搬运）。
 //
 // 脱敏红线：本文件任何日志/错误不得携带密码、keytab 内容、票据内容。
@@ -20,12 +20,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	ldap "github.com/go-ldap/ldap/v3"
 	krbclient "github.com/jcmturner/gokrb5/v8/client"
 
 	"io.dbx.ldap.plugin/internal/ldapgssapi"
+	"io.dbx.ldap.plugin/internal/store"
 )
 
 // bindLDAPKerberosConnection 建立 GSSAPI 客户端并执行 SASL GSSAPI bind
@@ -152,8 +154,8 @@ func ldapKerberosConfigPath(krb LDAPKerberosConfig) (string, func(), error) {
 }
 
 // ldapWriteTempKrb5Conf 生成临时 krb5.conf（tiny-rdm :1649 模板原样）。
-// 落点：$DBX_PLUGIN_DATA_DIR/krb5/（实施文档 §3），不可用时退回系统临时目录。
-// 文件权限 0600；内容仅 realm/kdc 拓扑，不含凭据。
+// 落点：插件数据目录（store.ResolveDataDir 统一解析）/krb5/，不可用时退回
+// 系统临时目录。文件权限 0600；内容仅 realm/kdc 拓扑，不含凭据。
 func ldapWriteTempKrb5Conf(krb LDAPKerberosConfig) (string, error) {
 	realm := strings.ToUpper(strings.TrimSpace(krb.Realm))
 	kdcHost := strings.TrimSpace(krb.KDCHost)
@@ -206,13 +208,13 @@ func ldapWriteTempKrb5Conf(krb LDAPKerberosConfig) (string, error) {
 	return file.Name(), nil
 }
 
-// krb5TempDir 返回临时 krb5.conf 的目录（MkdirAll 失败时退回 os.TempDir()）。
+// krb5TempDir 返回临时 krb5.conf 的目录：复用插件数据目录统一解析
+// （store.ResolveDataDir，与 store 包 fallback 顺序一致）下的 krb5/ 子目录，
+// MkdirAll 失败时退回 os.TempDir()。文件在连接结束即删，不留残留。
 func krb5TempDir() string {
-	if base := strings.TrimSpace(os.Getenv("DBX_PLUGIN_DATA_DIR")); base != "" {
-		dir := filepath.Join(base, "krb5")
-		if err := os.MkdirAll(dir, 0o700); err == nil {
-			return dir
-		}
+	dir := filepath.Join(store.ResolveDataDir(os.Getenv, runtime.GOOS), "krb5")
+	if err := os.MkdirAll(dir, 0o700); err == nil {
+		return dir
 	}
 	return os.TempDir()
 }

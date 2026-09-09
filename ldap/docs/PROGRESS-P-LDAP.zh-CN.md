@@ -485,3 +485,34 @@ TREE_ROW_HEIGHT）；键盘导航（上下键）沿用以 DOM focus 为准，依
 ## UI 扫描第 6 轮修复（第 5 轮复核新发现，2026-09-06）
 
 第 5 轮复核扫描新发现 P2×4 全部修复：P2-22 表头 aria-sort 接线（补单测）、P2-23 LDIF dn 锁定提示实时化（watch）、P2-24 连接切换工作台状态重置（结果表/搜索态/写弹窗）、P2-25 删除/改名后结果表联动重搜。验证：typecheck 0 错、295 用例全绿（+1 aria-sort）；浏览器复验 aria-sort/实时提示/删除联动通过，P2-24 留真机多连接复验。
+
+## 工作台滚动条隐藏：条体不再常驻显示（2026-09-09）
+
+`style.css` 全局滚动条由"6px thin 常驻"改为全部隐藏（`scrollbar-width: none` +
+`::-webkit-scrollbar { display: none }`），滚动仍由滚轮/触控板/键盘驱动。原先对
+webkit 伪元素定制宽高会把滚动条从悬浮态固化为占位常驻态，与宿主观感不符。
+改动仅 `ldap/frontend/src/style.css`；验证：`pnpm typecheck` 0 错、`pnpm test`
+29 文件 401 用例全绿。
+
+## 插件数据目录 fallback 改为持久化路径（2026-09-09）
+
+根因：宿主拉起 sidecar 时从未注入 `DBX_PLUGIN_DATA_DIR`，插件一直走
+`os.TempDir()/dbx-plugin-data/io.dbx.ldap` 兜底；macOS `$TMPDIR` 在重启时清空，
+prefs.json / presets.json / audit.jsonl 全部丢失（ssh 插件先发现，ldap 同构）。
+
+修复（`internal/store`）：新增纯函数 `ResolveDataDir(getenv func(string) string,
+goos string) string`，按四插件统一顺序解析——① `DBX_PLUGIN_DATA_DIR` 原样；
+② `DBX_DATA_DIR` → `<root>/plugin-data/io.dbx.ldap`；③ 平台持久用户数据目录
+下 `dbx-plugin-data/io.dbx.ldap`（darwin `$HOME/Library/Application Support/...`、
+其余 unix `${XDG_DATA_HOME:-$HOME/.local/share}/...`、windows `%APPDATA%\...`）；
+④ 全缺时才回落 `os.TempDir()`，永不失败。`Open()` 传 `os.Getenv` 与
+`runtime.GOOS`；不用 `os.UserConfigDir()`（Linux 语义是 config 不是 data）。
+附带统一 `internal/ldapconn` 的 `krb5TempDir()`：复用同一解析函数落
+`<数据目录>/krb5/`（store 仅依赖标准库，无循环依赖；临时 krb5.conf 连接结束即删）。
+
+验证：`go test ./internal/store/... -run . -v` 12 例全绿（新增 `TestResolveDataDir`
+表驱动 8 例：优先级/空白未设/DBX_DATA_DIR/darwin/XDG 两种/windows/TempDir 兜底；
+原 TempDir 兜底用例改为断言不再落 TempDir）；`go test ./...` 全绿；
+`go vet`、`go build` 干净。本机实测解析到
+`/Users/Jinpy/Library/Application Support/dbx-plugin-data/io.dbx.ldap`。
+未提交 git。

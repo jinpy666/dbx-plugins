@@ -1,15 +1,20 @@
-// Package store 管理 DBX_PLUGIN_DATA_DIR 下的本地数据与审计
+// Package store 管理插件数据目录下的本地数据与审计
 // （shared/IMPL_PLAN_M0_COMMON.zh-CN.md §4）。
 //
-//	$DBX_PLUGIN_DATA_DIR/            缺省 fallback: $TMPDIR/dbx-plugin-data/io.dbx.kafka
+//	<数据目录>/                       解析顺序见 resolveDataDir
 //	├── prefs.json                   UI 偏好（非敏感）
 //	├── presets.json                 Kafka 消费/过滤预设（明文，不含凭据）
 //	└── audit.jsonl                  写操作审计（append-only）
 //
+// 数据目录必须是持久化路径（保存重启后仍在的偏好/审计）：macOS 的
+// $TMPDIR 重启即清空，因此 fallback 走平台标准用户数据目录，os.TempDir()
+// 仅作为环境全缺的最后兜底。
+//
 // 凭据红线：任何文件不落密码/私钥/token；审计记录 target 只记 topic/group
 // 等资源名，不记消息值。
 //
-// 本包照抄 ldap/internal/store，仅 DefaultDirName 改为 io.dbx.kafka。
+// 目录解析顺序是 ssh/files/ldap/kafka 四插件统一规范（M0 §4），各插件
+// 实现同构，仅 DefaultDirName 不同。
 package store
 
 import (
@@ -19,29 +24,73 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
-// DefaultDirName 是无 DBX_PLUGIN_DATA_DIR 时的缺省目录名（对齐 M0 §4 fallback）。
+// DefaultDirName 是解析出的数据目录的末级目录名。
 const DefaultDirName = "io.dbx.kafka"
 
-// EnvDataDir 是宿主注入的数据目录环境变量。
+// EnvDataDir 是宿主注入的插件数据目录环境变量。
 const EnvDataDir = "DBX_PLUGIN_DATA_DIR"
+
+// EnvDataRoot 是宿主便携/web 模式注入的数据根环境变量（子进程继承）。
+const EnvDataRoot = "DBX_DATA_DIR"
 
 // Store 绑定一个数据目录。
 type Store struct {
 	dir string
 }
 
-// Open 打开插件数据目录：优先 DBX_PLUGIN_DATA_DIR，否则
-// $TMPDIR/dbx-plugin-data/io.dbx.kafka；目录不存在则创建。
-func Open() (*Store, error) {
-	dir := strings.TrimSpace(os.Getenv(EnvDataDir))
-	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "dbx-plugin-data", DefaultDirName)
+// resolveDataDir 解析插件数据目录，按顺序取第一个可用项
+// （"可用" = 环境变量存在且 TrimSpace 后非空）：
+//
+//  1. DBX_PLUGIN_DATA_DIR → 原样使用（宿主显式注入，未来方案 A 接入点）。
+//  2. DBX_DATA_DIR → <DBX_DATA_DIR>/plugin-data/io.dbx.kafka
+//     （宿主便携/web 模式；用 plugin-data/ 而非 plugins/ 避开安装器注册树）。
+//  3. 平台标准用户数据目录下 dbx-plugin-data/io.dbx.kafka：
+//     darwin：$HOME/Library/Application Support/...；
+//     其他 unix：${XDG_DATA_HOME:-$HOME/.local/share}/...；
+//     windows：%APPDATA%\...。
+//  4. 以上全缺（HOME 未设等）→ $TMPDIR/dbx-plugin-data/io.dbx.kafka
+//     最后兜底，永不失败。
+//
+// 纯函数：getenv 与 goos 注入，便于单测平台分支（不依赖全局环境）。
+// 注意不用 os.UserConfigDir()（Linux 上对应 XDG_CONFIG_HOME，语义是
+// config 不是 data），保证四插件路径一致。
+func resolveDataDir(getenv func(string) string, goos string) string {
+	if v := strings.TrimSpace(getenv(EnvDataDir)); v != "" {
+		return v
 	}
-	return OpenAt(dir)
+	if v := strings.TrimSpace(getenv(EnvDataRoot)); v != "" {
+		return filepath.Join(v, "plugin-data", DefaultDirName)
+	}
+	switch goos {
+	case "darwin":
+		if home := strings.TrimSpace(getenv("HOME")); home != "" {
+			return filepath.Join(home, "Library", "Application Support", "dbx-plugin-data", DefaultDirName)
+		}
+	case "windows":
+		if appdata := strings.TrimSpace(getenv("APPDATA")); appdata != "" {
+			return filepath.Join(appdata, "dbx-plugin-data", DefaultDirName)
+		}
+	default:
+		if xdg := strings.TrimSpace(getenv("XDG_DATA_HOME")); xdg != "" {
+			return filepath.Join(xdg, "dbx-plugin-data", DefaultDirName)
+		}
+		if home := strings.TrimSpace(getenv("HOME")); home != "" {
+			return filepath.Join(home, ".local", "share", "dbx-plugin-data", DefaultDirName)
+		}
+	}
+	return filepath.Join(os.TempDir(), "dbx-plugin-data", DefaultDirName)
+}
+
+// Open 打开插件数据目录：按 resolveDataDir 顺序解析（宿主注入变量 →
+// DBX_DATA_DIR → 平台标准用户数据目录 → TempDir 最后兜底）；
+// 目录不存在则创建。
+func Open() (*Store, error) {
+	return OpenAt(resolveDataDir(os.Getenv, runtime.GOOS))
 }
 
 // OpenAt 显式指定数据目录（测试/工具用）。

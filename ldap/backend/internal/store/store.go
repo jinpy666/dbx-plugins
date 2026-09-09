@@ -1,10 +1,13 @@
-// Package store 管理 DBX_PLUGIN_DATA_DIR 下的本地数据与审计
-// （shared/IMPL_PLAN_M0_COMMON.zh-CN.md §4）。
+// Package store 管理插件数据目录（store.ResolveDataDir 统一解析）下的
+// 本地数据与审计（shared/IMPL_PLAN_M0_COMMON.zh-CN.md §4）。
 //
-//	$DBX_PLUGIN_DATA_DIR/            缺省 fallback: $TMPDIR/dbx-plugin-data/io.dbx.ldap
+//	<解析出的数据目录>/              优先级见 ResolveDataDir 注释
 //	├── prefs.json                   UI 偏好（非敏感）
 //	├── presets.json                 LDAP 搜索预设（明文，不含凭据）
 //	└── audit.jsonl                  写操作审计（append-only）
+//
+// 缺省 fallback 已改为平台持久用户数据目录（宿主从未注入
+// DBX_PLUGIN_DATA_DIR，旧 $TMPDIR 兜底在 macOS 重启时清空导致丢数据）。
 //
 // 凭据红线：任何文件不落密码/私钥/token；审计记录 target 只记 DN，不记值。
 package store
@@ -16,29 +19,80 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
-// DefaultDirName 是无 DBX_PLUGIN_DATA_DIR 时的缺省目录名（对齐 M0 §4 fallback）。
+// DefaultDirName 是数据目录路径末段的插件目录名。
 const DefaultDirName = "io.dbx.ldap"
 
 // EnvDataDir 是宿主注入的数据目录环境变量。
 const EnvDataDir = "DBX_PLUGIN_DATA_DIR"
+
+// EnvDataRoot 是宿主便携/web 模式的数据根目录环境变量（子进程继承）。
+const EnvDataRoot = "DBX_DATA_DIR"
 
 // Store 绑定一个数据目录。
 type Store struct {
 	dir string
 }
 
-// Open 打开插件数据目录：优先 DBX_PLUGIN_DATA_DIR，否则
-// $TMPDIR/dbx-plugin-data/io.dbx.ldap；目录不存在则创建。
-func Open() (*Store, error) {
-	dir := strings.TrimSpace(os.Getenv(EnvDataDir))
-	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "dbx-plugin-data", DefaultDirName)
+// ResolveDataDir 按四插件统一顺序解析插件数据目录（取第一个可用项，
+// "可用" = 环境变量存在且 TrimSpace 后非空）：
+//
+//  1. DBX_PLUGIN_DATA_DIR → 原样使用（宿主显式注入，未来方案 A 接入点）；
+//  2. DBX_DATA_DIR → <DBX_DATA_DIR>/plugin-data/io.dbx.ldap
+//     （便携/web 模式；用 plugin-data/ 避开安装器注册树）；
+//  3. 平台标准用户数据目录下 dbx-plugin-data/io.dbx.ldap：
+//     darwin → $HOME/Library/Application Support/...；
+//     其余 unix → ${XDG_DATA_HOME:-$HOME/.local/share}/...；
+//     windows → %APPDATA%\...；
+//  4. 以上全缺（HOME 未设等）→ os.TempDir()/dbx-plugin-data/io.dbx.ldap
+//     最后兜底，永不失败。
+//
+// 纯函数：环境查找与 GOOS 由参数注入，便于单测不依赖真实环境。
+// 不使用 os.UserConfigDir()（Linux 上语义是 config 不是 data）。
+func ResolveDataDir(getenv func(string) string, goos string) string {
+	if v := strings.TrimSpace(getenv(EnvDataDir)); v != "" {
+		return v
 	}
-	return OpenAt(dir)
+	if v := strings.TrimSpace(getenv(EnvDataRoot)); v != "" {
+		return filepath.Join(v, "plugin-data", DefaultDirName)
+	}
+	if home := platformDataHome(getenv, goos); home != "" {
+		return filepath.Join(home, "dbx-plugin-data", DefaultDirName)
+	}
+	return filepath.Join(os.TempDir(), "dbx-plugin-data", DefaultDirName)
+}
+
+// platformDataHome 返回当前平台的用户数据根目录；不可用时返回空串。
+func platformDataHome(getenv func(string) string, goos string) string {
+	switch goos {
+	case "darwin":
+		home := strings.TrimSpace(getenv("HOME"))
+		if home == "" {
+			return ""
+		}
+		return filepath.Join(home, "Library", "Application Support")
+	case "windows":
+		return strings.TrimSpace(getenv("APPDATA"))
+	default:
+		if v := strings.TrimSpace(getenv("XDG_DATA_HOME")); v != "" {
+			return v
+		}
+		home := strings.TrimSpace(getenv("HOME"))
+		if home == "" {
+			return ""
+		}
+		return filepath.Join(home, ".local", "share")
+	}
+}
+
+// Open 打开插件数据目录（ResolveDataDir 统一解析，持久目录兜底）；
+// 目录不存在则创建。
+func Open() (*Store, error) {
+	return OpenAt(ResolveDataDir(os.Getenv, runtime.GOOS))
 }
 
 // OpenAt 显式指定数据目录（测试/工具用）。

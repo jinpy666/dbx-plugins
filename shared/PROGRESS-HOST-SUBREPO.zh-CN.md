@@ -779,3 +779,35 @@ files PROGRESS-P-FILES §14。
   前由插件侧方案 B 兜底。本补丁**尚未提交**到 host 分支（同批还有终端 MCP
   模式的 `useTauriEvents.ts`/`mcp_bridge.rs` 未提交改动），待用户确认后一并
   落分支并回填 §3 保留清单 commit 号。
+
+## 26. manual 合并 main 84 提交：Cassandra TLS 密钥 + 前端 tab 架构跟进（2026-09-10）
+
+- **同步**：`scripts/host-sync.sh sync` 合并 `origin/main`（6f6abf1d3 → be966a846，
+  84 提交），8 文件 25 冲突块全部双保留解决：
+  - `EditorGroup.vue`/`AppToolbar.vue`/`App.vue`：上游 `tabBarTarget` active
+    守卫、`activateOpenSpecialPageFallback`、per-tab 选区恢复/`uiState`
+    持久化 + 本地插件中心行并集；上游已删除 watch 中强制
+    `activeOutputView = "result"`（改为 uiState 持久化模型），随上游。
+  - `openTabsPersistence.ts`：本地 `pluginWorkbench`/`pluginFilesystem`
+    持久化字段 + 上游 `uiState`/`sanitizeTabPageUiState` 并集。
+  - `queryStore.ts`：上游 `beginClosing*` 清理 + 本地 `closingTabs` 变量
+    （后续 `releasePluginConnectionsAfterClose` 依赖）。
+  - `storage.rs`/`connection_secrets.rs`/`cloud_sync.rs`：上游 Cassandra
+    TLS 密钥族（`CASSANDRA_*`、`scrub/persist/hydrate_cassandra_tls_*`）
+    与本地插件连接密钥族（`plugin_connection_secret_key`、
+    `PLUGIN_CONNECTION_SECRET_PREFIX`、scrub/persist/hydrate）全量并集，
+    同一模式两族共存。
+- **存量回归修复**：`EditorGroupTabBar.groups.spec.ts` 断言的
+  `pluginWorkbenchTabVisual` 内联实现在早前同步合并中被丢（实现删、测试留，
+  §16 的遗产）。上游本轮把 tab 图标链重构进 `TabModeIcon.vue` 且已原生含
+  plugin-workbench 分支，测试改为断言 `TabModeIcon` 源码中的插件分支 +
+  tab 条使用 `<TabModeIcon>`，回归保护意图保留。
+- **验证**：`cargo +1.97.1 check -p dbx --lib --bins --tests` 绿；
+  `pnpm typecheck` 绿；`pnpm test` 1409 文件 / 14010 测试全绿
+  （exportSmoke 需 PATH 前置 `~/.cargo/bin`，本机 `/usr/local/bin/cargo`
+  是 1.69 会挂）；`cargo test -- moves_plugin_secrets moves_cassandra` 双绿。
+- **契约**：contract 快照 BRIDGE_VERSION=1、binary 事件形状不变；
+  `git diff 40e25b845..cf053e492` 对 6 个契约路径**零变化**，
+  `shared/frontend/` 无需适配。
+- **工具链注意**：上游 Cargo.lock 的 AWS SDK 依赖要求 rustc ≥ 1.94.1，
+  本机需 `rustup run 1.97.1`（1.88 已不够；上游 main 无 rust-toolchain.toml）。

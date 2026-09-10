@@ -41,3 +41,6 @@ scroll-stress-result.json
 
 # git worktree 隔离工作区（skill 约定，不入库）
 .worktrees/
+
+# copilot-pool 运行时状态（凭据 token 永不入库，只存服务器）
+deploy/copilot-pool/state.json

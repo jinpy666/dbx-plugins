@@ -17,6 +17,29 @@ vi.mock("../lib/api", () => ({
 
 import EntryEditorDialog from "./EntryEditorDialog.vue";
 
+// AssociationPanel 由并行任务实现（集成期文件可能尚未落盘），这里用工厂
+// mock 做编译/运行期隔离：测试只断言集成层的 props 传递与事件冒泡，不依赖
+// panel 内部实现。stub 用 render 函数（运行时 vue 为 runtime-only，无模板编译器）。
+vi.mock("./AssociationPanel.vue", async () => {
+  const { defineComponent, h } = await import("vue");
+  return {
+    default: defineComponent({
+      name: "AssociationPanel",
+      props: {
+        dn: { type: String, required: true },
+        attributes: { type: Object, required: true },
+        baseDn: { type: String, default: "" },
+        // schema 驱动的 DN 值属性名（关联视图泛化）：与真实 panel 的可选 prop
+        // 契约对齐，缺省为 undefined，便于断言透传与降级两态。
+        dnAttributes: { type: Array, default: undefined },
+        active: { type: Boolean, default: false },
+      },
+      emits: ["openEntry", "error", "notify"],
+      setup: () => () => h("div", { class: "assoc-panel-stub" }),
+    }),
+  };
+});
+
 const entryAddMock = vi.mocked(ldapApi.entryAdd);
 const entryModifyMock = vi.mocked(ldapApi.entryModify);
 
@@ -35,7 +58,15 @@ const demoEntry: LdapEntry = {
   },
 };
 
-function mountEditor(props: { canWrite: boolean; open: boolean; entry?: LdapEntry; parentDn?: string }) {
+function mountEditor(props: {
+  canWrite: boolean;
+  open: boolean;
+  entry?: LdapEntry;
+  parentDn?: string;
+  baseDn?: string;
+  initialTab?: "form" | "ldif" | "assoc";
+  dnAttributes?: string[];
+}) {
   return mount(EntryEditorDialog, { props });
 }
 
@@ -297,6 +328,31 @@ describe("EntryEditorDialog", () => {
     expect(wrapper.find(".ldif-editor").exists()).toBe(true);
   });
 
+  it("carries an edited LDIF through the assoc tab back into the form rows", async () => {
+    // round-4 修复：LDIF 编辑 → 直接切「关联」（不经表单）→ 切回表单，编辑
+    // 必须保留；否则 rows→LDIF 重同步会用旧值覆盖用户的 LDIF 文本。
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const editor = wrapper.find(".ldif-editor");
+    await editor.setValue((editor.element as HTMLTextAreaElement).value.replace("cn: alice", "cn: alice2"));
+    await wrapper.findAll(".mode-switch button")[2].trigger("click");
+    expect(wrapper.find(".ldif-editor").exists()).toBe(false);
+    await wrapper.findAll(".mode-switch button")[0].trigger("click");
+    expect(wrapper.find(".form-error").exists()).toBe(false);
+    expect((attrRows(wrapper)[0].find("textarea").element as HTMLTextAreaElement).value).toBe("alice2");
+  });
+
+  it("blocks the LDIF → assoc switch on a parse error and keeps LDIF mode", async () => {
+    // 与切表单同守卫：LDIF 语法错误时不允许切走（防止误以为编辑已被丢弃）。
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    await wrapper.find(".ldif-editor").setValue("cn: attribute before any dn");
+    await wrapper.findAll(".mode-switch button")[2].trigger("click");
+    expect(wrapper.find(".form-error").text()).toContain("LDIF 解析错误");
+    expect(wrapper.find(".ldif-editor").exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "AssociationPanel" }).exists()).toBe(false);
+  });
+
   it("veto Esc while dirty but still allows explicit ✕ / cancel discard", async () => {
     const wrapper = trackEditor({ canWrite: true, open: false, entry: demoEntry });
     await wrapper.setProps({ open: true });
@@ -376,5 +432,76 @@ describe("EntryEditorDialog", () => {
     await flushPromises();
     expect(entryModifyMock).not.toHaveBeenCalled();
     expect(wrapper.emitted("notify")?.[0][0]).toBe("没有需要保存的修改");
+  });
+
+  // -- 关联模式（AssociationPanel 集成层）：view 态开放、props 透传、事件冒泡 --
+
+  it("offers the assoc tab only when viewing an existing entry, not in add mode", () => {
+    const viewWrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    const viewTabs = viewWrapper.findAll(".mode-switch button");
+    expect(viewTabs).toHaveLength(3);
+    expect(viewTabs[0].text()).toBe("表单");
+    expect(viewTabs[1].text()).toBe("LDIF");
+    const addWrapper = trackEditor({ canWrite: true, open: true, parentDn: "ou=people,dc=demo,dc=dbx" });
+    // 新增态没有条目上下文，关联页签不出现（保持表单/LDIF 两项）。
+    expect(addWrapper.findAll(".mode-switch button")).toHaveLength(2);
+  });
+
+  it("renders the AssociationPanel with entry context after switching to the assoc tab", async () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry, baseDn: "dc=demo,dc=dbx" });
+    expect(wrapper.findComponent({ name: "AssociationPanel" }).exists()).toBe(false);
+    await wrapper.findAll(".mode-switch button")[2].trigger("click");
+    const panel = wrapper.findComponent({ name: "AssociationPanel" });
+    expect(panel.exists()).toBe(true);
+    expect(panel.props("dn")).toBe("cn=alice,dc=demo,dc=dbx");
+    expect(panel.props("attributes")).toEqual(demoEntry.attributes);
+    expect(panel.props("baseDn")).toBe("dc=demo,dc=dbx");
+    expect(panel.props("active")).toBe(true);
+    // 关联是只读视图：表单行 / LDIF 编辑器 / 保存按钮都不可见。
+    expect(wrapper.find(".attr-editor").exists()).toBe(false);
+    expect(wrapper.find(".ldif-editor").exists()).toBe(false);
+    expect(wrapper.find("footer .primary-button").exists()).toBe(false);
+    expect(wrapper.find("footer .toolbar-button").exists()).toBe(false);
+  });
+
+  it("bubbles openEntry emitted by the AssociationPanel", async () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    await wrapper.findAll(".mode-switch button")[2].trigger("click");
+    const panel = wrapper.findComponent({ name: "AssociationPanel" });
+    panel.vm.$emit("openEntry", "uid=x,dc=demo,dc=dbx");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("openEntry")?.[0]).toEqual(["uid=x,dc=demo,dc=dbx"]);
+    // error / notify 同样透传（集成契约）。
+    panel.vm.$emit("error", "boom");
+    panel.vm.$emit("notify", "hi");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("error")?.[0]).toEqual(["boom"]);
+    expect(wrapper.emitted("notify")?.at(-1)).toEqual(["hi"]);
+  });
+
+  it("opens directly on the association panel when initialTab is assoc", () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry, baseDn: "dc=demo,dc=dbx", initialTab: "assoc" });
+    const panel = wrapper.findComponent({ name: "AssociationPanel" });
+    expect(panel.exists()).toBe(true);
+    expect(panel.props("active")).toBe(true);
+    expect(wrapper.find(".attr-editor").exists()).toBe(false);
+    // 保存按钮在关联态隐藏；关闭弹窗再开（无 initialTab 变更）仍尊重 initialTab。
+    expect(wrapper.find("footer .primary-button").exists()).toBe(false);
+  });
+
+  it("passes dn-attributes through to the AssociationPanel and stays undefined when omitted", async () => {
+    // 传入时原样透传（集成层只做管道，不做过滤/去重——schema 推导在 App 层完成）。
+    const withDn = trackEditor({
+      canWrite: true,
+      open: true,
+      entry: demoEntry,
+      dnAttributes: ["member", "uniqueMember"],
+    });
+    await withDn.findAll(".mode-switch button")[2].trigger("click");
+    expect(withDn.findComponent({ name: "AssociationPanel" }).props("dnAttributes")).toEqual(["member", "uniqueMember"]);
+    // 不传时保持缺省 undefined：panel 收到空/缺省走内置兜底表（降级契约）。
+    const withoutDn = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    await withoutDn.findAll(".mode-switch button")[2].trigger("click");
+    expect(withoutDn.findComponent({ name: "AssociationPanel" }).props("dnAttributes")).toBeUndefined();
   });
 });

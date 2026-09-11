@@ -29,6 +29,10 @@ const emit = defineEmits<{
 }>();
 
 const sessionId = ref("");
+// 会话发起时的 topic：运行中显示在会话 ID 旁——用户此后在树里切走 topic 时，
+// 输入框会跟随新选中项，但旧会话仍消费原 topic（事件按 sessionId 过滤），
+// 不标注易把统计误读成新 topic 的数据（P1-7 同类「看错 topic」在流式的形态）。
+const sessionTopic = ref("");
 const paused = ref(false);
 const totalScanned = ref(0);
 const totalMatched = ref(0);
@@ -124,6 +128,7 @@ async function start() {
       ...(buildSchemaAttach() ? { schema: buildSchemaAttach() } : {}),
     });
     sessionId.value = response.sessionId;
+    sessionTopic.value = props.topic;
     rows.value = [];
     rebuildMessageRows();
     droppedRows.value = 0;
@@ -344,6 +349,8 @@ defineExpose({ pushEvent });
     <div class="stream-meta">
       <span class="badge" :class="{ 'badge-ok': sessionActive && !paused, 'badge-warn': sessionActive && paused }">{{ stateLabel }}</span>
       <span class="mono-s">{{ sessionId || "—" }}</span>
+      <!-- 运行中会话的实际 topic（start 时定格）：切走 topic 后防误读会话归属 -->
+      <span v-if="sessionActive && sessionTopic" class="mono-s" :title="`${t('messages.topic')}: ${sessionTopic}`">{{ sessionTopic }}</span>
       <span>{{ t("stream.scanned", { count: totalScanned }) }}</span>
       <span>{{ t("stream.matched", { count: totalMatched }) }}</span>
       <span>{{ t("stream.buffer", { count: bufferSize }) }}</span>

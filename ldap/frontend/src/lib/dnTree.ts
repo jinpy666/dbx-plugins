@@ -110,3 +110,22 @@ export function compareDnByLabel(left: string, right: string): number {
     .rdn.localeCompare(splitFirstDnRdn(right).rdn, undefined, { sensitivity: "base", numeric: true });
   return byLabel !== 0 ? byLabel : left.localeCompare(right, undefined, { numeric: true });
 }
+
+/**
+ * 树同级子条目排序比较器：容器优先于叶子——按首个 RDN 属性类型分组，
+ * ou 组最前、cn 组其次、其余类型（dc/o/uid 及未识别类型）排最后；组内沿用
+ * 原全 DN 字典序（numeric 感知），相对次序不变。服务器返回序无保障，
+ * 组织单元先于普通条目更贴合"先看结构、再查成员"的树浏览习惯。
+ */
+export function compareDnForTree(left: string, right: string): number {
+  const groupRank = (dn: string): number => {
+    const rdn = splitFirstDnRdn(dn).rdn;
+    const separatorIndex = rdn.indexOf("=");
+    const type = separatorIndex > 0 ? rdn.slice(0, separatorIndex).trim().toLowerCase() : "";
+    if (type === "ou") return 0;
+    if (type === "cn") return 1;
+    return 2;
+  };
+  const byGroup = groupRank(left) - groupRank(right);
+  return byGroup !== 0 ? byGroup : left.localeCompare(right, undefined, { numeric: true });
+}

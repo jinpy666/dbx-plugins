@@ -10,7 +10,7 @@ import { friendlyLdapError } from "../lib/ldapErrors";
 import { splitFirstDnRdn } from "../lib/dn";
 import { nextFocusIndex } from "../lib/modal";
 import { t } from "../lib/i18n";
-import { compareDnByLabel, flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "../lib/dnTree";
+import { compareDnByLabel, compareDnForTree, flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "../lib/dnTree";
 import VirtualList from "./VirtualList.vue";
 import TreeBranch from "./TreeBranch.vue";
 import TreeNodeIcon from "./TreeNodeIcon.vue";
@@ -25,6 +25,7 @@ const emit = defineEmits<{
   (e: "select", dn: string): void;
   (e: "searchHere", dn: string): void;
   (e: "view", dn: string): void;
+  (e: "members", dn: string): void;
   (e: "add", dn: string): void;
   (e: "rename", dn: string): void;
   (e: "remove", dn: string): void;
@@ -151,7 +152,8 @@ async function fetchChildren(dn: string, limit: number = TREE_FETCH_PAGE): Promi
   const children = result.entries
     .map((entry) => entry.dn)
     .filter((child) => child && child !== dn)
-    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
+    // 同级容器优先：ou 组在前、cn 组居中、其余类型殿后，组内沿用原字典序。
+    .sort(compareDnForTree)
     .map(makeNode);
   return { children, truncated: isFetchTruncated(result.entries.length, limit) };
 }
@@ -392,6 +394,7 @@ function menuAction(action: string) {
   if (!dn) return;
   if (action === "search") emit("searchHere", dn);
   else if (action === "view") emit("view", dn);
+  else if (action === "members") emit("members", dn);
   else if (action === "add") emit("add", dn);
   else if (action === "rename") emit("rename", dn);
   else if (action === "delete") emit("remove", dn);
@@ -537,6 +540,7 @@ onBeforeUnmount(onMountedCleanup);
       >
         <button role="menuitem" @click="menuAction('search')">{{ t("tree.searchHere") }}</button>
         <button role="menuitem" @click="menuAction('view')">{{ t("tree.viewEntry") }}</button>
+        <button role="menuitem" @click="menuAction('members')">{{ t("associations.members") }}</button>
         <button role="menuitem" :disabled="!canWrite" @click="menuAction('add')">{{ t("tree.addEntry") }}</button>
         <button role="menuitem" :disabled="!canWrite" @click="menuAction('rename')">{{ t("tree.renameEntry") }}</button>
         <button role="menuitem" :disabled="!canWrite" class="danger" @click="menuAction('delete')">{{ t("tree.deleteEntry") }}</button>

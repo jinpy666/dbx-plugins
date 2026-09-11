@@ -3,7 +3,7 @@
 // 过滤框本地过滤，选中态由父级持有（selectedTopic 单一来源）。
 // 侧栏收空间：右缘 resizer 拖拽调宽（180–480px，localStorage 记忆，双击重置）、
 // 折叠成 40px 竖条（折叠时不渲染树内容），过滤框 / 快捷键聚焦 + 匹配/总数徽章。
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronsLeft, ChevronsRight, HardDrive, RefreshCw, Search, X } from "@lucide/vue";
 import type { KafkaTopic } from "../lib/api";
 import { filterTopics, sortTopics } from "../lib/kafkaModel";
@@ -147,6 +147,73 @@ function onGlobalKeydown(event: KeyboardEvent) {
   requestAnimationFrame(() => filterInput.value?.focus());
 }
 
+// -- 键盘导航（roving tabindex / listbox，round3 收口 P2-22）---------------------
+// 树收敛为单 tab stop：仅 active 行 tabindex=0，其余行 -1（big 模式数百行不再
+// 逐行停靠）；方向键 / Home / End 移动 active 并 emit select（选中态单一来源
+// 仍在父级，经 props.selectedTopic 回流同步）；鼠标点击路径与视觉不变。
+
+const activeKey = ref("");
+const rowsEl = ref<HTMLElement | null>(null);
+
+// active 取首选名（仍可见时），否则回落首行——覆盖初始、过滤、刷新三类场景。
+function syncActive(preferred: string) {
+  activeKey.value = visible.value.some((topic) => topic.name === preferred)
+    ? preferred
+    : visible.value[0]?.name ?? "";
+}
+
+syncActive(props.selectedTopic);
+
+watch(
+  () => props.selectedTopic,
+  (selected) => syncActive(selected),
+);
+
+// 过滤 / 刷新后 active 失联回落首行；仍可见则保持原地。
+watch(visible, () => {
+  if (!visible.value.some((topic) => topic.name === activeKey.value)) {
+    activeKey.value = visible.value[0]?.name ?? "";
+  }
+});
+
+function focusActiveRow() {
+  const index = visible.value.findIndex((topic) => topic.name === activeKey.value);
+  const row = rowsEl.value?.querySelectorAll<HTMLButtonElement>(".tree-row")[index];
+  row?.focus();
+  row?.scrollIntoView?.({ block: "nearest" });
+}
+
+function moveActive(step: number | "first" | "last") {
+  const names = visible.value.map((topic) => topic.name);
+  if (names.length === 0) return;
+  const current = names.indexOf(activeKey.value);
+  const next = step === "first"
+    ? names[0]!
+    : step === "last"
+      ? names[names.length - 1]!
+      : names[Math.min(names.length - 1, Math.max(0, (current < 0 ? 0 : current) + step))]!;
+  if (next === activeKey.value) return; // 边界不再移动，避免重复 emit
+  activeKey.value = next;
+  emit("select", next);
+  void nextTick(focusActiveRow);
+}
+
+function onRowKeydown(event: KeyboardEvent) {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveActive(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveActive(-1);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    moveActive("first");
+  } else if (event.key === "End") {
+    event.preventDefault();
+    moveActive("last");
+  }
+}
+
 onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
 onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
 </script>
@@ -199,15 +266,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
         {{ keyword ? t("tree.noMatch", { keyword }) : t("tree.empty") }}
       </div>
       <div v-else class="tree-rows">
-        <div class="tree-node">
+        <!-- round3：listbox 语义 + roving tabindex——容器单 tab stop，方向键导航 -->
+        <div ref="rowsEl" class="tree-node" role="listbox" :aria-label="t('tree.title')">
           <button
             v-for="topic in visible"
             :key="topic.name"
             type="button"
+            role="option"
             class="tree-row"
             :class="{ selected: topic.name === selectedTopic }"
+            :aria-selected="topic.name === selectedTopic"
+            :tabindex="topic.name === activeKey ? 0 : -1"
             :title="topic.error ? `${topic.name}: ${topic.error}` : topic.name"
             @click="emit('select', topic.name)"
+            @keydown="onRowKeydown"
           >
             <span class="tree-label">
               <HardDrive aria-hidden="true" class="icon-13" :class="isInternal(topic) ? 'icon-neutral' : 'icon-violet'" />

@@ -137,7 +137,10 @@ const dbxEditorTheme = EditorView.theme({
   ".cm-placeholder": { color: "var(--muted-foreground)" },
 });
 
-// JSON token 色：VS Code Light+/Dark+ 同源，经 --cm-* 变量适配明暗两套。
+// JSON token 色：VS Code Light+ 同源，经 --cm-* 变量适配明暗两套；暗色取值与
+// shared/frontend/editorTheme.ts 的 EDITOR_TOKEN_COLORS.dark 同源（kafka 为
+// CSS 变量驱动无法 import 色值进样式表，属已说明的镜像，由
+// src/lib/editorTheme.spec.ts 源码断言防漂移）。
 const jsonHighlightStyle = HighlightStyle.define([
   { tag: lezerTags.propertyName, color: "var(--cm-prop)" },
   { tag: lezerTags.string, color: "var(--cm-string)" },
@@ -330,11 +333,13 @@ defineExpose({
 }
 :root[data-theme="dark"] .dbx-code-editor,
 :root[data-dbx-theme="dark"] .dbx-code-editor {
-  --cm-key: #569cd6;
-  --cm-string: #ce9178;
-  --cm-number: #b5cea8;
-  --cm-null: #dcdcaa;
-  --cm-punct: #d4d4d4;
-  --cm-prop: #9cdcfe;
+  /* 与 shared/frontend/editorTheme.ts 的 EDITOR_TOKEN_COLORS.dark 镜像同步
+     （提亮后的 GitHub Dark 系，替代原标准 VS Code Dark+ 的偏暗取值）。 */
+  --cm-key: #4fc1ff;
+  --cm-string: #ffb86c;
+  --cm-number: #c3e88d;
+  --cm-null: #e5c07b;
+  --cm-punct: #dcdcdc;
+  --cm-prop: #7cc7ff;
 }
 </style>

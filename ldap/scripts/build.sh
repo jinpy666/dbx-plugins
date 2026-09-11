@@ -52,12 +52,13 @@ fi
 
 # The npm CLI wrapper injects DBX_PLUGIN_SDK_ROOT (bundled SDK ships a go.work
 # pinned to go 1.22, which breaks modules requiring >=1.24). Call the native
-# binary directly without SDK_ROOT so the local Go toolchain is used.
-CLI_PKG="$(npm root -g 2>/dev/null)/@dbx-app/plugin-cli"
-NATIVE_CLI="$CLI_PKG/node_modules/@dbx-app/plugin-cli-darwin-arm64/bin/dbx-plugin"
-if [ -x "$NATIVE_CLI" ]; then
+# binary directly without SDK_ROOT so the local Go toolchain is used. The
+# platform package suffix is resolved per-machine (linux uses a -gnu suffix).
+. scripts/cli-platform.sh
+if NATIVE_CLI="$(resolve_native_plugin_cli)"; then
   env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 GOFLAGS="-ldflags=-X=main.version=${PLUGIN_VERSION}" "$NATIVE_CLI" package .
 else
+  echo "WARN: native plugin-cli for $(uname -s)/$(uname -m) not found; falling back to the npm wrapper (its bundled SDK may conflict with backend go.mod)" >&2
   env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 GOFLAGS="-ldflags=-X=main.version=${PLUGIN_VERSION}" dbx-plugin package .
 fi
 

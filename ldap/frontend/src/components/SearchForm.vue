@@ -138,7 +138,7 @@ function applyBaseDn(next: string, highlight = true) {
 
 onBeforeUnmount(() => window.clearTimeout(baseDnHighlightTimer));
 
-defineExpose({ applyBaseDn, runSubtreeAt });
+defineExpose({ applyBaseDn, runSubtreeAt, runFilterAt });
 
 // 树右键「搜索此子树」直达（此前只改 Base 不执行，用户预期是马上出结果集）：
 // Base 指到该节点、范围强制切到子树并立即运行。过滤器沿用表单当前配置；
@@ -150,6 +150,22 @@ function runSubtreeAt(dn: string) {
   draft.value.scope = "sub";
   const model = toModel();
   emit("run", filterValid.value ? model : { ...model, filter: "(objectClass=*)" });
+}
+
+/** 树右键「成员」直达：立即以指定过滤器在指定 Base 下做子树搜索。
+ * 过滤器由调用方组织（如 (memberOf=<组DN>)）；源码模式承载该过滤器，
+ * 用户可在结果区继续改；Base/范围语义同 runSubtreeAt。 */
+function runFilterAt(baseDn: string, filter: string) {
+  if (props.disabled) return;
+  // 防呆：空过滤器视为匹配全部，与 toModel 的兜底语义一致，保证必出结果集。
+  const effectiveFilter = filter.trim() === "" ? "(objectClass=*)" : filter;
+  // 切到源码模式承载调用方过滤器（源码是唯一权威表示，构建器无需逆向解析）。
+  sourceFilter.value = effectiveFilter;
+  sourceParseError.value = false;
+  builderMode.value = false;
+  applyBaseDn(baseDn);
+  draft.value.scope = "sub";
+  emit("run", { ...toModel(), filter: effectiveFilter });
 }
 
 function parseAttributes(): string[] | undefined {

@@ -903,3 +903,114 @@ TopicTree 57.89 / MessagesPanel 61.75 / api 70.17 / ProducePanel 72.86。
 `go build` 通过；本机 darwin 实际解析到
 `~/Library/Application Support/dbx-plugin-data/io.dbx.kafka`（0700）。改动仅
 `kafka/backend/internal/store/{store.go,store_test.go}`。
+
+## CodeEditor 暗色配色提亮 + shared/editorTheme.ts 调色板收敛（2026-09-10）
+
+用户反馈多插件代码编辑器语法高亮"不够明显，有点暗"（暗色主题下）。
+
+- `shared/frontend/editorTheme.ts`（新）：四插件共用调色板 `EDITOR_TOKEN_COLORS`
+  （明暗两套，暗色以 GitHub Dark 系提亮，浅色 VS Code Light+ 同源）与注入式高亮
+  扩展 `dbxSyntaxHighlight(scheme, runtime)`（按 scheme 记忆化；shared 零运行时
+  依赖约定不变，codemirror 系对象由插件注入）。
+- kafka `CodeEditor.vue`：暗色 `--cm-*` 六值替换为提亮色板（key `#4fc1ff`、
+  string `#ffb86c`、number `#c3e88d`、null `#e5c07b`、punct `#dcdcdc`、prop
+  `#7cc7ff`），浅色保持历史值；`lib/editorTheme.spec.ts` 以组件源码断言与
+  shared 调色板一致（CSS 变量驱动无法 import 色值，属已说明的镜像 + 防漂移测试）。
+- ssh/files `TextPreview.vue` 同步接入 `dbxSyntaxHighlight`（basicSetup 之后追加，
+  其内置 defaultHighlightStyle 为 fallback 自动让位，暗色下语法色明显提亮）；
+  两插件 `@lezer/highlight` 由传递依赖显式化为 ^1.2.3（与 kafka 同版本，无新代码）。
+- 验证：kafka `pnpm typecheck` 0 错、`pnpm test` 24 文件 227 用例全绿、build 通过；
+  ssh/files 合并态 typecheck + test（289/185 用例）+ build 全绿。
+
+## 持续优化轮·1（2026-09-11：review + 流丢弃可见化 / 会话 topic 标注 + 后端空闲回收调度修复）
+
+> 第 1 轮 review + 持续优化（cron 巡检派发）；完整报告
+> `.goal-state/report-kafka-round1.md`。改动限 `kafka/` 内，零新增依赖。
+
+- **后端 P1 修复（§5.5 契约缺口）**：`StreamRegistry.EvictIdle` 此前无生产
+  调度方（`StreamEvictScanEvery` 仅测试可达），长驻 sidecar 中过期流式会话
+  只累积到 StreamMaxSessions=20 上限。修复：`NewStreamRegistry` 启动
+  `evictLoop`（5min 周期扫描），新增幂等 `Close()` 并接入 `CloseAll`；
+  `stream/stop all:true` 语义不变。测试：`TestRegistryEvictLoop`（tick 注入
+  + 退出断言）、`TestRegistryCloseIdempotent`，`-race` 全绿。
+- **前端 P2 修复（§8.3 遗留「App 层缓冲丢弃为静默计数」收口）**：App.vue
+  `flushStreamEvents` 补发完成后一次性提示丢弃条数；新键
+  `stream.bufferDropped` ×7 语；App.spec +2（丢弃通知出现 / 无丢弃不弹）。
+- **前端防误读**：StreamPanel 运行中在会话 ID 旁显示会话发起时的 topic
+  （start 时定格，切走树选中不再误读会话归属；title 复用 `messages.topic`，
+  零新增文案）。
+- **review 核实记录**：① §9.3「StreamPanel 时区未统一」实际已由
+  `workbenchTimestampTz` 收口；② i18n 全量审计（463 字面键）0 缺失；
+  ③ ACL PatternType `TYPE` 维持豁免（后端 helper 不接受且 CreateAcl 语义
+  非法，联动成本 > 价值）；④ P2-22 roving tabindex、MonitorPanel 隐藏采样
+  维持登记。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 24 文件 **229 用例**全绿（基线
+  227 + 2）；`pnpm build` 通过；`go test ./...` + `go vet` 全绿。**SKIP**：
+  容器 smoke（本环境无集群，协议/请求形状未动；建议发版前补跑
+  `scripts/test.sh`）。浏览器级目验（mock.html `?big=1` 丢弃提示、会话
+  topic chip）待人工/浏览器复核。
+
+## 持续优化轮·2（2026-09-11：容器 smoke 补跑 + TopicsPanel/hostTheme 覆盖补测 + TopicTree 键盘化评估）
+
+> 第 2 轮 review + 持续优化（cron 巡检派发）；完整报告
+> `.goal-state/report-kafka-round2.md`。零生产代码改动，仅测试与文档。
+
+- **容器 smoke 补跑（第 1 轮遗留 1 收口）**：`dev-cluster.sh up`（KRaft
+  PLAINTEXT 9092 + redpanda SR 19081）后 `scripts/test.sh` 全套 exit 0；
+  **S1-S15 PASS=11 / FAIL=0 / SKIP=4**（S3 无消费组提交条件跳过、S12 Glue
+  env 门、S14 redpanda SR 不支持 FDSet、S15 OAUTH env 门，均合法）。第 1
+  轮后端 evictLoop/CloseAll 关键路径 S7（stream 往返）与 S4 PASS，无回归。
+  集群已 `dev-cluster.sh down` 清理。
+- **TopicsPanel 覆盖 44.55% → 89.1% lines**（§10.3 遗留 2 主项）：3 例 →
+  16 例，新增 describe/offsets/create/delete 确认门/config 编辑行路由/
+  只读门禁/选中刷新保持与清空共 13 例，全部行为断言（invoke 参数 + 事件 +
+  可见面）。
+- **hostTheme 30% → 100% lines**（§10.3 遗留 2 次项）：新增
+  `hostTheme.spec.ts` 7 例（类型守卫矩阵 / env detail 归一 / token 映射
+  剔除规则 / 事件订阅过滤与退订）。
+- **测试基建发现（P2）**：teleport stub 下弹窗重渲染会重建 DOM 子树，
+  一次性抓取的 `.modal` DOMWrapper 引用变 detached 死树——旧引用上的
+  disabled 断言与 click 全部落空（假阴性，产品行为实际正确）。本轮用例
+  已全部改为顶层 wrapper 逐次重查（含既有 3 例扩分区用例的隐性同患）；
+  其余面板 spec 的弹窗用例建议下轮统一巡检（已列入报告遗留项）。
+- **TopicTree roving tabindex 评估（第 1 轮遗留 3）**：核心 script ~50 行
+  虽低于 100 行线，但须变更 Tab/ARIA 交互语义 + spec ~80 行，总量超预算 →
+  按边界只做方案设计（行内 roving tabindex 变体，listbox/option +
+  activeKey 回落 + Arrow/Home/End + scrollIntoView，详见 round2 报告），
+  留后续轮实施。其余遗留（MonitorPanel 采样、P2-10 真机、ACL TYPE、
+  Phase 3）原样维持。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` **25 文件 249 用例**全绿（229
+  基线 + 20）；coverage 全项目 lines 79.52%（前值 75.39%）；test.sh 内
+  go vet/test/打包/UI walkthrough 全绿。
+
+## 持续优化轮·3（2026-09-11：TopicTree roving tabindex 实施 + stale 引用巡检 + 收敛判定）
+
+> 第 3 轮 review + 持续优化（cron 巡检派发，收敛评估轮）；完整报告
+> `.goal-state/report-kafka-round3.md`。
+
+- **TopicTree roving tabindex / listbox 化（round2 遗留 1 落地）**：按
+  round2 评审方案实施——`.tree-node` 加 `role="listbox"` + aria-label
+  （复用 `tree.title`，零新增 i18n 键），行 button 加 `role="option"` +
+  `aria-selected` + roving tabindex（仅 active 行 0，其余 -1，big 模式
+  507 行收敛为单 tab stop）；新增 `activeKey`（初始 selectedTopic ?? 首行，
+  watch selectedTopic 同步 / watch visible 失联回落）；ArrowDown/Up/
+  Home/End 移动 active + emit select + 焦点/scrollIntoView 跟随，边界不
+  重复 emit。鼠标点击路径与视觉样式零改动（焦点描边走既有全局
+  `button:focus-visible`）。**Tab 语义变更待真机/读屏确认后关闭 P2-22**。
+- **弹窗 spec stale 引用巡检（round2 遗留 2 收口）**：GroupsPanel 1 例
+  「捕获 `.modal` 后跨 setValue/click 复用旧引用」实证为 detached 死树
+  （`isConnected=false`），且 stale click 可经残留监听触发 handler
+  （幽灵路径，假阳性风险）——已改 `modal = () =>` 逐次重查，断言不变。
+  其余面板 spec 一次性捕获均为「捕获后仅读、无中间交互」安全形态，维持
+  不动；顺带删除 SchemasPanel 一处遗留调试 `console.log`。
+- **复核结论（第 1 轮 evictLoop + 第 2 轮补测面）**：锁序单向无死锁面、
+  Close 幂等/nil 安全有覆盖，round2 真实 broker smoke 仍有效——无新
+  P1/P2。两条观察登记不实施：① 空闲按「消息活动」计（空 topic 挂机
+  30min 会被回收，§5.5 字面实现）；② evict 回收无前端事件通知。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` **25 文件 255 用例**全绿（249
+  基线 + 6 键盘导航例，含 507 节点单 tab stop 防回归断言）；`pnpm build`
+  通过。**SKIP**：容器 smoke（本轮生产改动仅前端键盘导航、Go 零改动，
+  round2 结论仍有效）；浏览器/读屏目验（待真机）。
+- **收敛判定：无剩余可执行项（仅剩人工/真机复核项与维持豁免项）**——
+  MonitorPanel 采样降频、P2-10 真机复核、ACL TYPE 豁免、Phase 3 登记、
+  S3 常绿化均维持原状；插件进入收敛状态。

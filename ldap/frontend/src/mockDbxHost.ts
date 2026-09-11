@@ -85,11 +85,24 @@ function parentOf(dn: string): string {
 put(BASE_DN, { dc: ["demo"], o: ["Demo Organization"], objectClass: ["dcObject", "organization"] });
 put(`ou=people,${BASE_DN}`, { ou: ["people"], objectClass: ["organizationalUnit"] });
 put(`ou=groups,${BASE_DN}`, { ou: ["groups"], objectClass: ["organizationalUnit"] });
-put(`ou=services,${BASE_DN}`, { ou: ["services"], objectClass: ["organizationalUnit"] });
+// managedBy→用户 DN（AD 的 OU 管理者语义）：条目关联视图 DN 引用 / 被引用两区
+// 的 fixture——正查直读本条目 managedBy，反查 (managedBy=<DN>) 通用等值求值可命中。
+put(`ou=services,${BASE_DN}`, { ou: ["services"], managedBy: [`uid=user0000,ou=people,${BASE_DN}`], objectClass: ["organizationalUnit"] });
 put(`cn=ldap,ou=services,${BASE_DN}`, { cn: ["ldap"], objectClass: ["applicationProcess"] });
 put(`cn=web,ou=services,${BASE_DN}`, { cn: ["web"], objectClass: ["applicationProcess"] });
 put(`cn=admins,ou=groups,${BASE_DN}`, { cn: ["admins"], memberUid: ["user1", "user2", "user3"], objectClass: ["groupOfNames"] });
 put(`cn=devs,ou=groups,${BASE_DN}`, { cn: ["devs"], memberUid: ["user4"], objectClass: ["groupOfNames"] });
+// groupOfNames 条目（member 存成员 DN）：条目关联视图 Members/Member Of 的
+// fixture——(member=<DN>) 子树反查无需改过滤器求值即可命中。
+put(`cn=team-a,ou=groups,${BASE_DN}`, {
+  cn: ["team-a"],
+  member: [
+    `uid=user0000,ou=people,${BASE_DN}`,
+    `uid=user0001,ou=people,${BASE_DN}`,
+    `uid=user0002,ou=people,${BASE_DN}`,
+  ],
+  objectClass: ["groupOfNames"],
+});
 
 for (let index = 0; index < 1000; index += 1) {
   const uid = `user${String(index).padStart(4, "0")}`;
@@ -240,6 +253,8 @@ const attributeTypeDefinitions = [
   "( 2.5.4.31 NAME 'member' SUP distinguishedName )",
   "( 2.5.4.49 NAME 'distinguishedName' EQUALITY distinguishedNameMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 )",
   "( 2.5.4.50 NAME 'uniqueMember' EQUALITY nameAndOptionalUID SYNTAX 1.3.6.1.4.1.1466.115.121.1.34 )",
+  // AD managedBy（OID 1.2.840.113556.1.4.218，DN 语法、单值）：DN 引用正查识别 fixture。
+  "( 1.2.840.113556.1.4.218 NAME 'managedBy' EQUALITY distinguishedNameMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE )",
   "( 2.16.840.1.113730.3.1.241 NAME 'displayName' SUP name )",
   "( 2.5.4.18 NAME 'seeAlso' SUP distinguishedName )",
   "( 2.5.4.13 NAME 'description' EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15{1024} )",
@@ -324,7 +339,27 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     if (readOnly) denyWrite(String(input.dn ?? ""));
     const dn = String(input.dn ?? "");
     if (!get(dn)) throw new Error(`entry not found: ${dn}`);
-    directory.delete(dn.toLowerCase());
+    // recursive=true（子树删除，N1）：fixture 简化版——收集目标子树全部 DN
+    // 一次删除，不模拟 Tree Delete 控件/逐条回退分叉，也不设后端 1000 条
+    // 上限（fixture 数据集远小于上限）。成功发一条聚合审计记录，与后端
+    // subtreeDeleteAuditRecord 同形（action "subtree_delete"、deletedCount
+    // 含目标自身）。
+    if (input.recursive === true) {
+      const targets: string[] = [];
+      for (const entry of directory.values()) {
+        if (dnWithinBase(entry.dn, dn)) targets.push(entry.dn);
+      }
+      for (const target of targets) directory.delete(target.toLowerCase());
+      emitEvent("ldap/audit", {
+        connectionId: context.connectionId,
+        action: "subtree_delete",
+        target: dn,
+        result: "ok",
+        deletedCount: targets.length,
+      });
+    } else {
+      directory.delete(dn.toLowerCase());
+    }
   } else if (method === "ldap/entry/modifyDn") {
     if (readOnly) denyWrite(String(input.dn ?? ""));
     const dn = String(input.dn ?? "");

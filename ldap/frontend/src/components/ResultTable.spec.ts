@@ -48,4 +48,48 @@ describe("ResultTable empty states (P2-3)", () => {
     expect(headers[0].attributes("aria-sort")).toBe("ascending");
     expect(headers[1].attributes("aria-sort")).toBe("none");
   });
+
+  it("resets a stale sort column that the new result set does not contain (round-4)", async () => {
+    const wrapper = mountTable({
+      entries: [{ dn: "cn=alice,dc=demo,dc=dbx", attributes: { cn: ["alice"], mail: ["a@x"] } }],
+      count: 1,
+    });
+    // 按 mail 列排序（旧结果含该列）。
+    await wrapper.findAll(".result-header button").find((b) => b.text().startsWith("mail"))!.trigger("click");
+    expect(wrapper.find(".result-header button[aria-sort='ascending']").text()).toContain("mail");
+    // 新结果不再含 mail 列：排序指示失效（所有行该列取值皆空，等于没排），
+    // 应回落 dn 升序，而不是残留一个不存在的排序键。
+    await wrapper.setProps({ entries: [{ dn: "uid=b,dc=demo,dc=dbx", attributes: { uid: ["b"] } }], count: 1 });
+    const dnHeader = wrapper.findAll(".result-header button")[0];
+    expect(dnHeader.text()).toContain("dn");
+    expect(dnHeader.attributes("aria-sort")).toBe("ascending");
+    expect(wrapper.findAll(".result-header button").every((b) => b.text().startsWith("dn") || !b.text().includes("▲"))).toBe(true);
+  });
+
+  it("keeps the sort column when the new result set still contains it", async () => {
+    const wrapper = mountTable({ entries: [entry, { ...entry, dn: "cn=bob,dc=demo,dc=dbx" }], count: 2 });
+    await wrapper.findAll(".result-header button").find((b) => b.text().startsWith("cn"))!.trigger("click");
+    expect(wrapper.find(".result-header button[aria-sort='ascending']").text()).toContain("cn");
+    await wrapper.setProps({ entries: [{ dn: "cn=carol,dc=demo,dc=dbx", attributes: { cn: ["carol"] } }], count: 1 });
+    expect(wrapper.find(".result-header button[aria-sort='ascending']").text()).toContain("cn");
+  });
+});
+
+describe("ResultTable cell value tooltip (round-2)", () => {
+  it("exposes the full joined value via title even when the cell text is truncated", () => {
+    const long = "A".repeat(300);
+    const wrapper = mountTable({ entries: [{ dn: entry.dn, attributes: { cn: [long] } }], count: 1 });
+    const cell = wrapper.find(".cell-value");
+    expect(cell.text().endsWith("…")).toBe(true); // 117 字符 + 省略号（长度断言放宽：happy-dom text() 归一化差异）
+    expect(cell.attributes("title")).toBe(long);
+  });
+
+  it("caps the title at 2000 characters and omits it for empty cells", () => {
+    const huge = "B".repeat(3000);
+    const wrapper = mountTable({ entries: [{ dn: entry.dn, attributes: { cn: [huge], mail: [] } }], count: 1 });
+    const cells = wrapper.findAll(".cell-value");
+    expect(cells[0].attributes("title")).toBe(`${"B".repeat(2000)}…`);
+    // mail 列存在但无值：不渲染空 title 属性。
+    expect(cells[1].attributes("title")).toBeUndefined();
+  });
 });

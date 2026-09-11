@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // 条目编辑器：查看/编辑/新增三形态。
 // 表单模式 = 属性行（属性名 + 多行值）；LDIF 模式 = RFC 2849 文本双向同步
-// （serializeEntriesToLdif / parseLdif）。新增走 ldap/entry/add，修改走
-// ldap/entry/modify（按行 diff 生成 add/replace/delete changes）。
+// （serializeEntriesToLdif / parseLdif）；关联模式 = 只读关联视图
+// （AssociationPanel，仅查看已有条目时开放，不触碰编辑状态）。新增走
+// ldap/entry/add，修改走 ldap/entry/modify（按行 diff 生成 add/replace/delete
+// changes）。
 import { computed, ref, watch } from "vue";
 import { Copy, Plus, Trash2, X } from "@lucide/vue";
 import { ldapApi, type LdapEntry } from "../lib/api";
@@ -15,6 +17,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { t } from "../lib/i18n";
 import PasswordAttributeEditor from "./PasswordAttributeEditor.vue";
 import BinaryValueEditor from "./BinaryValueEditor.vue";
+import AssociationPanel from "./AssociationPanel.vue";
 
 export interface AttrRowDraft extends AttrRowDraftSource {
   /** 源值自身含换行：编辑后按行重切分为多值（歧义提示用）。 */
@@ -22,6 +25,8 @@ export interface AttrRowDraft extends AttrRowDraftSource {
 }
 
 type EditorMode = "view" | "edit" | "add";
+// 页签三态：form/ldif 双向同步沿用原 ldifMode 布尔语义；assoc 为只读关联视图。
+type EditorTab = "form" | "ldif" | "assoc";
 
 const props = defineProps<{
   canWrite: boolean;
@@ -29,6 +34,12 @@ const props = defineProps<{
   /** view/edit: an existing entry; add: the parent DN to create under. */
   entry?: LdapEntry;
   parentDn?: string;
+  /** 关联视图的搜索根（透传给 AssociationPanel）。 */
+  baseDn?: string;
+  /** 打开时的初始页签；仅 view 态的非 form 值生效，默认不影响既有调用方。 */
+  initialTab?: EditorTab;
+  /** schema 推导的 DN 值属性名（透传给 AssociationPanel；缺省/空时 panel 用内置兜底表）。 */
+  dnAttributes?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -36,6 +47,7 @@ const emit = defineEmits<{
   (e: "saved", dn: string, mode: "add" | "edit"): void;
   (e: "error", message: string): void;
   (e: "notify", message: string): void;
+  (e: "openEntry", dn: string): void;
 }>();
 
 const mode = ref<EditorMode>("view");
@@ -43,7 +55,7 @@ const dnDraft = ref("");
 const rdnDraft = ref("");
 const rows = ref<AttrRowDraft[]>([]);
 const ldifText = ref("");
-const ldifMode = ref(false);
+const editorTab = ref<EditorTab>("form");
 const ldifError = ref("");
 // LDIF 模式 DN 行锁定信号（UI 扫描 P2-13）：LDIF 里的 dn 与原条目不一致时提示。
 const ldifDnChanged = ref(false);
@@ -128,9 +140,9 @@ function syncRowsFromLdif() {
 }
 
 // LDIF 模式内实时提示 dn 变更（UI 扫描 P2-23）：无需切回表单即可看到
-// 「dn 行不能用于重命名」。编辑态仅在 ldif 模式下解析比对，add 态 dn 合法可编辑。
-watch([ldifText, ldifMode], ([text, active]) => {
-  if (!active || isAdd.value) return;
+// 「dn 行不能用于重命名」。编辑态仅在 ldif 页签下解析比对，add 态 dn 合法可编辑。
+watch([ldifText, editorTab], ([text, tab]) => {
+  if (tab !== "ldif" || isAdd.value) return;
   const result = parseLdif(text);
   const dn = result.entries[0]?.dn;
   ldifDnChanged.value = dn != null && props.entry != null && dn !== props.entry.dn;
@@ -138,7 +150,10 @@ watch([ldifText, ldifMode], ([text, active]) => {
 
 function initFor(mode_: EditorMode, entry?: LdapEntry, parentDn?: string) {
   mode.value = mode_;
-  ldifMode.value = false;
+  // 页签初始态：view 态尊重 initialTab（树「查看成员」直开关联页），其余
+  // （含 add）一律回落表单——默认值不影响既有调用方的打开行为。
+  const requestedTab = props.initialTab;
+  editorTab.value = mode_ === "view" && (requestedTab === "ldif" || requestedTab === "assoc") ? requestedTab : "form";
   ldifError.value = "";
   ldifDnChanged.value = false;
   saving.value = false;
@@ -167,23 +182,36 @@ watch(
 );
 
 watch([rows, rdnDraft], () => {
-  if (ldifMode.value) return;
+  if (editorTab.value !== "form") return;
   syncLdifFromRows();
 }, { deep: true });
 
 function switchToLdif() {
-  if (!ldifMode.value) syncLdifFromRows();
-  ldifMode.value = true;
+  if (editorTab.value !== "ldif") syncLdifFromRows();
+  editorTab.value = "ldif";
+}
+
+// 离开 LDIF 页签的共用守卫：先把 LDIF 文本解析回 rows，成功才允许切走。
+// 切到关联页同样必须过这里——LDIF 里的编辑若不落回 rows，切回表单时会被
+// rows→LDIF 重同步覆盖（用户编辑静默丢失）。
+function leaveLdif(): boolean {
+  if (editorTab.value !== "ldif") return true;
+  suppressLdifSync = true;
+  const ok = syncRowsFromLdif();
+  suppressLdifSync = false;
+  return ok;
 }
 
 function switchToForm() {
-  if (ldifMode.value) {
-    suppressLdifSync = true;
-    const ok = syncRowsFromLdif();
-    suppressLdifSync = false;
-    if (!ok) return;
-  }
-  ldifMode.value = false;
+  if (!leaveLdif()) return;
+  editorTab.value = "form";
+}
+
+function switchToAssoc() {
+  // 关联本身是只读视图（不触碰 rows/LDIF 状态），但离开 LDIF 仍须先把文本
+  // 解析回 rows；解析失败保持 LDIF 页签（与切表单同语义，错误提示在场）。
+  if (!leaveLdif()) return;
+  editorTab.value = "assoc";
 }
 
 function addRow() {
@@ -224,7 +252,7 @@ function removeRow(index: number) {
 
 async function save() {
   if (!editable.value || rdnInvalid.value) return;
-  if (ldifMode.value && !syncRowsFromLdif()) return;
+  if (editorTab.value === "ldif" && !syncRowsFromLdif()) return;
   saving.value = true;
   try {
     if (isAdd.value) {
@@ -301,15 +329,17 @@ function onBackdropClick() {
       </div>
       <div class="mode-switch-row">
         <div class="mode-switch">
-          <button :class="{ 'is-active': !ldifMode }" @click="switchToForm">{{ t("editor.formMode") }}</button>
-          <button :class="{ 'is-active': ldifMode }" @click="switchToLdif">{{ t("editor.ldifMode") }}</button>
+          <button :class="{ 'is-active': editorTab === 'form' }" @click="switchToForm">{{ t("editor.formMode") }}</button>
+          <button :class="{ 'is-active': editorTab === 'ldif' }" @click="switchToLdif">{{ t("editor.ldifMode") }}</button>
+          <!-- 关联是只读视图，仅查看已有条目（view 态）时可用；新增态没有属性上下文。 -->
+          <button v-if="!isAdd && entry" :class="{ 'is-active': editorTab === 'assoc' }" @click="switchToAssoc">{{ t("editor.assocMode") }}</button>
         </div>
-        <button v-if="ldifMode" class="icon-button" :title="t('editor.copyLdif')" :aria-label="t('editor.copyLdif')" :disabled="ldifText === ''" @click="copyText(ldifText)"><Copy aria-hidden="true" /></button>
+        <button v-if="editorTab === 'ldif'" class="icon-button" :title="t('editor.copyLdif')" :aria-label="t('editor.copyLdif')" :disabled="ldifText === ''" @click="copyText(ldifText)"><Copy aria-hidden="true" /></button>
       </div>
       <p v-if="!canWrite" class="hint">{{ t("editor.readonlyHint") }}</p>
       <p v-if="ldifError" class="form-error">{{ t("editor.ldifParseError", { error: ldifError }) }}</p>
       <p v-if="ldifDnChanged" class="hint">{{ t("editor.ldifDnLocked") }}</p>
-      <template v-if="!ldifMode">
+      <template v-if="editorTab === 'form'">
         <div class="attr-editor">
           <div v-for="(row, index) in rows" :key="index" class="attr-row">
             <input v-model="row.name" type="text" name="attr-name" :placeholder="t('editor.attribute')" :disabled="!editable" spellcheck="false" />
@@ -340,14 +370,26 @@ function onBackdropClick() {
           </div>
         </div>
       </template>
+      <AssociationPanel
+        v-else-if="editorTab === 'assoc'"
+        :dn="dnDraft"
+        :attributes="entry?.attributes ?? {}"
+        :base-dn="baseDn ?? ''"
+        :dn-attributes="dnAttributes"
+        :active="open && editorTab === 'assoc'"
+        @open-entry="(dn: string) => emit('openEntry', dn)"
+        @error="(m: string) => emit('error', m)"
+        @notify="(m: string) => emit('notify', m)"
+      />
       <textarea v-else v-model="ldifText" class="ldif-editor" spellcheck="false" :disabled="!editable" />
       <footer>
         <span v-if="dirty && canWrite" class="muted" style="margin-right: auto">{{ t("editor.changed") }}</span>
-        <button v-if="!ldifMode" class="toolbar-button" style="margin-right: auto" :disabled="!editable" @click="addRow">
+        <button v-if="editorTab === 'form'" class="toolbar-button" style="margin-right: auto" :disabled="!editable" @click="addRow">
           <Plus aria-hidden="true" />{{ t("editor.addAttribute") }}
         </button>
         <button type="button" @click="emit('close')">{{ t("cancel") }}</button>
-        <button v-if="canWrite" type="button" class="primary-button" :disabled="!editable || rdnInvalid" @click="save">
+        <!-- 关联页签是只读视图：保存等编辑动作一并隐藏，仅保留取消（关闭）。 -->
+        <button v-if="canWrite && editorTab !== 'assoc'" type="button" class="primary-button" :disabled="!editable || rdnInvalid" @click="save">
           {{ saving ? "…" : t("save") }}
         </button>
       </footer>

@@ -178,7 +178,6 @@ describe("SchemasPanel template insertion (F5)", () => {
     await flushPromises();
     const modal = wrapper.find(".modal-backdrop .modal, body .modal-backdrop .modal");
     expect(modal.exists()).toBe(true);
-    console.log("MODAL:", modal.html());
     // 每次交互后重新查询（v-if 弹层内元素可能随补丁重建，旧 wrapper 会失联）。
     const body = () => wrapper.find(".modal-backdrop .modal .settings-body");
     // AVRO（缺省）。

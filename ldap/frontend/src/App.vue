@@ -9,6 +9,7 @@ import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/ho
 import { setWorkbenchLocale, t, workbenchLocale } from "./lib/i18n";
 import { getLdapConnectionId, ldapApi, setLdapConnectionId, type LdapEntry } from "./lib/api";
 import { inferBaseDnFromProfile, pickBaseDnFromRootDse } from "./lib/baseDn";
+import { escapeLdapFilterValue } from "./lib/ldapFilter";
 import { friendlyLdapError } from "./lib/ldapErrors";
 import { writeClipboardText } from "./lib/clipboard";
 import { serializeEntriesToCsv, serializeEntriesToJson, serializeEntriesToLdifText } from "./lib/ldapExporter";
@@ -23,6 +24,7 @@ import SchemaPanel from "./components/SchemaPanel.vue";
 import ConnectionsPanel from "./components/ConnectionsPanel.vue";
 import AuditFeedPanel from "./components/AuditFeedPanel.vue";
 import { deriveSchemaMetadata, useLdapSchemaCache } from "./lib/schemaCache";
+import { deriveDnValuedAttributes } from "./lib/dnAttributes";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 
 interface ConnectionSummary {
@@ -83,6 +85,30 @@ const wizardSchemaCache = useLdapSchemaCache({
   loader: () => ldapApi.schema().then((result) => deriveSchemaMetadata(result.attributeTypes, result.objectClasses)),
 });
 const wizardSchema = computed(() => ({ objectClassAttributes: wizardSchemaCache.objectClassAttributes.value }));
+
+// 条目关联视图（泛化）：schema 驱动的 DN 值属性名集合，经 EntryEditorDialog
+// 透传给 AssociationPanel。与 wizardSchemaCache 同款 useLdapSchemaCache 缓存
+// （per-connection TTL + inFlight 去重），但 loader 直接把 ldap/schema 的
+// 原始 attributeTypes 装进 attributeNames 槽（缓存体只保留 attributeNames/
+// objectClassAttributes，故不复用 wizardSchemaCache），供
+// deriveDnValuedAttributes 消费。惰性：条目编辑器首次打开时加载；失败静默
+// 降级为不传（panel 有内置兜底表），不弹错误横幅。
+const dnAttributes = ref<string[]>([]);
+let dnAttributesReady = false;
+const dnSchemaCache = useLdapSchemaCache({
+  loader: () => ldapApi.schema().then((result) => ({ attributeNames: result.attributeTypes })),
+});
+async function ensureDnAttributes() {
+  if (dnAttributesReady) return;
+  try {
+    const payload = await dnSchemaCache.ensureLoaded(connectionId.value);
+    dnAttributes.value = deriveDnValuedAttributes(payload?.attributeNames ?? []);
+    dnAttributesReady = true;
+  } catch {
+    // schema 拉取失败静默降级；不置位 ready，下次打开编辑器可重试
+    // （ensureLoaded 内部有 inFlight 去重与 TTL，不会并发重复请求）。
+  }
+}
 
 // 审计事件流（ldap/audit → 最近操作面板）；横幅/通知仍保留作为即时反馈。
 const auditItems = ref<AuditFeedItem[]>([]);
@@ -258,7 +284,15 @@ function selectEntry(dn: string) {
   searchRef.value?.applyBaseDn(dn);
 }
 
-async function openEntry(dn: string) {
+// 关联页签保持（round-4）：关联视图内点击成员/被引用条目 → openEntry 带
+// "assoc" 打开新条目时保持关联页签，不再回落表单打断浏览流；树/结果表等
+// 常规入口不传参，维持默认表单页签。
+const editorInitialTab = ref<"ldif" | "assoc">();
+
+async function openEntry(dn: string, initialTab?: "ldif" | "assoc") {
+  editorInitialTab.value = initialTab;
+  // 关联视图泛化的 DN 属性名集合：编辑器打开时惰性拉取（失败静默降级）。
+  void ensureDnAttributes();
   ldapError.value = "";
   try {
     const result = await ldapApi.entryGet(dn);
@@ -268,6 +302,13 @@ async function openEntry(dn: string) {
   } catch (cause) {
     showError(cause);
   }
+}
+
+// 树右键「成员」：立即以 (memberOf=<DN>) 在连接 Base 下子树搜索，
+// 右侧结果表承接浏览（分页/排序/导出）；OpenLDAP 无 memberof overlay
+// 时结果为空，组内成员仍可在条目编辑器「关联」页签直读 member 属性。
+function searchMembersAt(dn: string) {
+  searchRef.value?.runFilterAt(baseDn.value, `(memberOf=${escapeLdapFilterValue(dn)})`);
 }
 
 function openAddChild(parentDn: string) {
@@ -388,8 +429,7 @@ async function exportResults(format: "ldif" | "csv" | "json") {
     else downloadText("ldap-search.json", "application/json", serializeEntriesToJson(results.value));
     showNotice(t("result.exportDone", { name: format.toUpperCase() }));
   } catch (cause) {
-    ldapError.value = t("result.exportFailed");
-    void cause;
+    showError(cause);
   }
 }
 
@@ -495,12 +535,18 @@ function syncConnectionContext() {
     deleteOpen.value = false;
     modifyDnOpen.value = false;
     wizardOpen.value = false;
+    // DN 属性名集合属于上一个连接的 schema，随连接切换一并失效重取。
+    dnAttributes.value = [];
+    dnAttributesReady = false;
     results.value = [];
     resultCount.value = 0;
     resultTruncated.value = false;
     resultAtLimit.value = false;
     hasSearched.value = false;
     searchModel.value = undefined;
+    // 最近操作面板同属上一个连接（round-4）：残留会让新连接的写操作反馈
+    // 与旧连接的 denied/ok 事件混在一起，误导排查。
+    auditItems.value = [];
   }
   baseDn.value = contextBaseDn.value;
   void resolveAutoBaseDn();
@@ -589,6 +635,7 @@ onBeforeUnmount(() => {
         @select="selectEntry"
         @search-here="searchHere"
         @view="openEntry"
+        @members="searchMembersAt"
         @add="openAddChild"
         @rename="askRename"
         @remove="askDelete"
@@ -628,10 +675,14 @@ onBeforeUnmount(() => {
       :entry="editorEntry"
       :parent-dn="editorParentDn"
       :can-write="canWrite"
+      :base-dn="baseDn"
+      :dn-attributes="dnAttributes"
+      :initial-tab="editorInitialTab"
       @close="editorOpen = false"
       @saved="onEditorSaved"
       @error="showError"
       @notify="showNotice"
+      @open-entry="(dn: string) => openEntry(dn, 'assoc')"
     />
     <DeleteEntryDialog
       :open="deleteOpen"

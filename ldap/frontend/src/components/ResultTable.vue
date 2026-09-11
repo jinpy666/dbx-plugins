@@ -132,6 +132,18 @@ function cellText(entry: LdapEntry, column: string): string {
   return text.length > 120 ? `${text.slice(0, 117)}…` : text;
 }
 
+// 单元格完整值 tooltip（原生 title，与行级 DN title 同机制）：cellText 的
+// 120 字符截断让大值（base64 图片等）无法在行内读全。title 预算截到 2000
+// 字符——原生 tooltip 超长会被浏览器截断且拖慢悬浮渲染，截断尾巴以 … 标记。
+const CELL_TITLE_LIMIT = 2000;
+
+function cellTitle(entry: LdapEntry, column: string): string | undefined {
+  const values = entry.attributes[column];
+  if (!Array.isArray(values) || values.length === 0) return undefined;
+  const text = values.join(" | ");
+  return text.length > CELL_TITLE_LIMIT ? `${text.slice(0, CELL_TITLE_LIMIT)}…` : text;
+}
+
 function rowClick(entry: LdapEntry) {
   selectedDn.value = entry.dn;
 }
@@ -180,9 +192,16 @@ function onRowsKeydown(event: KeyboardEvent) {
 
 watch(
   () => props.entries,
-  () => {
+  (next) => {
     page.value = 0;
     selectedDn.value = "";
+    // round-4：新结果不含旧排序列时排序已失去意义（该列所有行取值都是空、
+    // 等价于不排序），残留的列头排序指示会误导"正按某列排序"；此时重置回
+    // dn 升序。列集 = 全部条目属性并集（与渲染列同源）。
+    if (sortColumn.value !== "dn" && !extractEntryAttributeNames(next).includes(sortColumn.value)) {
+      sortColumn.value = "dn";
+      sortDirection.value = "asc";
+    }
   },
 );
 
@@ -236,7 +255,7 @@ const hasEntries = computed(() => props.entries.length > 0);
           @dblclick="rowActivate(entry)"
         >
           <span class="cell-dn">{{ entry.dn }}</span>
-          <span v-for="column in columns" :key="column" class="cell-value">{{ cellText(entry, column) }}</span>
+          <span v-for="column in columns" :key="column" class="cell-value" :title="cellTitle(entry, column)">{{ cellText(entry, column) }}</span>
         </button>
       </div>
     </div>

@@ -5,6 +5,7 @@ package kafkaconn
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestRingBufferOverwriteOldest(t *testing.T) {
@@ -94,6 +95,63 @@ func TestRegistryEvictIdle(t *testing.T) {
 	if registry.lookup("s1") != nil {
 		t.Error("session should be removed from registry")
 	}
+}
+
+// TestRegistryEvictLoop 覆盖空闲回收调度端（此前 EvictIdle 无生产调度方，
+// §5.5「空闲 30 分钟回收」只在测试里生效）：注入 tick 驱动回收，Close 后循环
+// 必须退出。
+func TestRegistryEvictLoop(t *testing.T) {
+	registry := &StreamRegistry{sessions: map[string]*streamSession{}, evictStop: make(chan struct{})}
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		registry.evictLoop(tick)
+		close(done)
+	}()
+
+	session := &streamSession{
+		sessionID:          "idle-loop-1",
+		closeClient:        func() {},
+		lastActivityUnixMs: time.Now().UnixMilli() - (31 * 60 * 1000), // 已空闲 >30min
+	}
+	registry.mu.Lock()
+	registry.sessions["idle-loop-1"] = session
+	registry.mu.Unlock()
+
+	tick <- time.Now()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		registry.mu.Lock()
+		remaining := len(registry.sessions)
+		registry.mu.Unlock()
+		if remaining == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("evictLoop did not reclaim idle session")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Close（close evictStop）后循环退出。
+	registry.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("evictLoop did not stop after Close")
+	}
+}
+
+func TestRegistryCloseIdempotent(t *testing.T) {
+	registry := NewStreamRegistry()
+	registry.Close()
+	registry.Close() // 幂等不 panic
+	// Close 只停后台循环，不动会话表：手动回收仍可用。
+	if got := registry.EvictIdle(time.Now().UnixMilli()); len(got) != 0 {
+		t.Fatalf("EvictIdle after Close: unexpected evictions %v", got)
+	}
+	// evictStop 为 nil 的直构夹具（不经 NewStreamRegistry）Close 为 no-op。
+	(&StreamRegistry{sessions: map[string]*streamSession{}}).Close()
 }
 
 func TestRegistryMaxSessions(t *testing.T) {

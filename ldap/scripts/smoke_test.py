@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test for the dbx-ldap-plugin sidecar (scenarios S1-S14).
+"""Smoke test for the dbx-ldap-plugin sidecar (scenarios S1-S16).
 
 Covers the IMPL_PLAN_DBX_LDAP §8 table over a live OpenLDAP container:
 
@@ -17,6 +17,8 @@ Covers the IMPL_PLAN_DBX_LDAP §8 table over a live OpenLDAP container:
     S12 {SSHA} password write + simple bind      -> bind ok; audit has no values
     S13 childrenCount + recursive subtree delete -> children gone; 1 aggregate audit
     S14 jpegPhoto binary round-trip              -> base64 identical
+    S15 member/memberOf association round-trip   -> group found; gone after delete
+    S16 generic DN reference (managedBy)         -> temp ou found; gone after delete
 
 SKIP semantics (M0 §5.2):
   * a method not registered / not implemented yet  -> SKIP (backend under
@@ -57,6 +59,7 @@ REQUIRE = os.environ.get("LDAP_TEST_REQUIRE", "") == "1"
 DATA_DIR = os.environ.get("LDAP_TEST_DATA_DIR", "")
 
 PEOPLE_OU = f"ou=people,{ROOT}"
+GROUPS_OU = f"ou=Groups,{ROOT}"
 
 # connection.host: since v0.1.19 the manifest binds a bare hostname here
 # (fields host/port/tls_mode), while full ldap/ldaps URLs from older saved
@@ -95,7 +98,10 @@ def scenario(no: str, name: str):
             except Exception as cause:  # unexpected crash counts as FAIL
                 RESULTS.append(ScenarioResult(no, name, "FAIL", f"unexpected: {cause}"))
             else:
-                RESULTS.append(ScenarioResult(no, name, "PASS"))
+                # a scenario may return a note string (recorded on PASS) for
+                # soft-skipped sub-assertions (optional server features)
+                note = fn(*args, **kwargs)
+                RESULTS.append(ScenarioResult(no, name, "PASS", note or ""))
         return run
     return decorate
 
@@ -173,6 +179,37 @@ def ensure_people_ou(client: SidecarClient) -> None:
             "attributes": {"objectClass": ["organizationalUnit"], "ou": ["people"]},
         },
     )
+
+
+def ensure_groups_ou(client: SidecarClient) -> None:
+    # The seed LDIF ships no groups OU (bitnami skips its default tree when
+    # LDAP_CUSTOM_LDIF_DIR is set), so S15 bootstraps one, same as the
+    # ensure_people_ou precedent.
+    if entry_exists(client, GROUPS_OU):
+        return
+    domain(client,
+        "ldap/entry/add",
+        {
+            "dn": GROUPS_OU,
+            "attributes": {"objectClass": ["organizationalUnit"], "ou": ["Groups"]},
+        },
+    )
+
+
+def escape_filter_value(value: str) -> str:
+    """RFC 4515 escaping, mirroring the frontend escapeLdapFilterValue."""
+    return "".join(
+        "\\" + format(ord(ch), "02x") if ch in "\\*()\x00" else ch
+        for ch in value
+    )
+
+
+def search_dns(client: SidecarClient, filter_expr: str) -> list[str]:
+    """Member Of reverse-lookup shape (IMPL_PLAN §5.4): connection Base DN as
+    base, scope=sub, DN-only attributes, sizeLimit=1000."""
+    result = search(client, baseDn=ROOT, scope="sub", filter=filter_expr,
+                    attributes=["1.1"], sizeLimit=1000)
+    return [entry.get("dn", "") for entry in result.get("entries", [])]
 
 
 # -- scenarios -----------------------------------------------------------------
@@ -540,6 +577,116 @@ def run_s14(client: SidecarClient) -> None:
             pass
 
 
+@scenario("S15", "member/memberOf association round-trip")
+def run_s15(client: SidecarClient) -> str | None:
+    """S15 条目关联视图 backend primitive (IMPL_PLAN §5.4): a temp groupOfNames
+    listing a seeded user is found by the (member=<userDN>) reverse lookup, the
+    optional memberOf overlay probe is soft-SKIPped (PASS note) when the server
+    does not answer it, and deleting the group removes it from the result set.
+    Blocked-attributes policy is untouched: member/memberOf are only ever used
+    as filter values, never read back."""
+    connect(client, make_connection("smoke-assoc"))
+    member_dn = f"uid=jane,{PEOPLE_OU}"
+    if not entry_exists(client, member_dn):
+        raise SkipScenario(f"seed user missing: {member_dn}")
+    ensure_groups_ou(client)
+    suffix = uuid.uuid4().hex[:8]  # unique suffix: no stale-residue clashes
+    group_cn = f"dbx-assoc-smoke-{suffix}"
+    group_dn = f"cn={group_cn},{GROUPS_OU}"
+    member_filter = f"(member={escape_filter_value(member_dn)})"
+    note = None
+    try:
+        domain(client,
+            "ldap/entry/add",
+            {
+                "dn": group_dn,
+                "attributes": {
+                    "objectClass": ["groupOfNames", "top"],
+                    "cn": [group_cn],
+                    "member": [member_dn],
+                },
+            },
+        )
+        dns = search_dns(client, filter_expr=member_filter)
+        if group_dn not in dns:
+            raise AssertionError(f"(member=...) reverse lookup missed {group_dn}; got {dns}")
+        # memberOf is an optional overlay (bitnami OpenLDAP ships it disabled):
+        # a probe error or empty result is not a failure, just a SKIP note.
+        probed_dns = None
+        try:
+            probed = search(client, baseDn=ROOT, scope="sub", attributes=["1.1"],
+                            filter=f"(memberOf={escape_filter_value(group_dn)})")
+            probed_dns = [entry.get("dn", "") for entry in probed.get("entries", [])]
+        except SidecarError as cause:
+            note = f"memberOf probe errored ({cause}) — memberOf assertion skipped"
+        if probed_dns is not None:
+            if not probed_dns:
+                note = "memberOf probe empty (overlay not enabled) — memberOf assertion skipped"
+            elif member_dn not in probed_dns:
+                raise AssertionError(f"(memberOf={group_dn}) did not return {member_dn}: {probed_dns}")
+        domain(client, "ldap/entry/delete", {"dn": group_dn})
+        dns = search_dns(client, filter_expr=member_filter)
+        if group_dn in dns:
+            raise AssertionError(f"temp group {group_dn} still returned by (member=...) after delete")
+        return note
+    finally:
+        try:
+            domain(client, "ldap/entry/delete", {"dn": group_dn})
+        except SidecarError:
+            pass
+
+
+@scenario("S16", "generic DN reference (managedBy) round-trip")
+def run_s16(client: SidecarClient) -> str | None:
+    """S16 generic DN reference primitive (IMPL_PLAN §5.4.1): a temp
+    organizationalUnit carrying managedBy pointing at a seeded user is found by
+    the (managedBy=<userDN>) reverse lookup — the DN_REFERENCE_CORE filter shape
+    the DN-reference panel builds (Base DN sub, DN-only attributes,
+    sizeLimit=1000) — and deleting the OU removes it from the result set. Stock
+    OpenLDAP schemas do not define managedBy: when the server rejects the add as
+    an undefined attribute type, the round-trip is soft-SKIPped (PASS note),
+    same as the S15 memberOf overlay probe."""
+    connect(client, make_connection("smoke-assoc-mb"))
+    member_dn = f"uid=jane,{PEOPLE_OU}"
+    if not entry_exists(client, member_dn):
+        raise SkipScenario(f"seed user missing: {member_dn}")
+    suffix = uuid.uuid4().hex[:8]  # unique suffix: no stale-residue clashes
+    ou_dn = f"ou=dbx-assoc-mb-{suffix},{ROOT}"
+    managed_by_filter = f"(managedBy={escape_filter_value(member_dn)})"
+    try:
+        try:
+            domain(client,
+                "ldap/entry/add",
+                {
+                    "dn": ou_dn,
+                    "attributes": {
+                        "objectClass": ["organizationalUnit"],
+                        "ou": [f"dbx-assoc-mb-{suffix}"],
+                        "managedBy": [member_dn],
+                    },
+                },
+            )
+        except SidecarError as cause:
+            lowered = str(cause).lower()
+            if any(marker in lowered for marker in
+                   ("undefinedattributetype", "attribute type undefined", "no such attribute")):
+                return f"managedBy not defined by the server schema ({cause}) — generic DN reference round-trip skipped"
+            raise
+        dns = search_dns(client, filter_expr=managed_by_filter)
+        if ou_dn not in dns:
+            raise AssertionError(f"(managedBy=...) reverse lookup missed {ou_dn}; got {dns}")
+        domain(client, "ldap/entry/delete", {"dn": ou_dn})
+        dns = search_dns(client, filter_expr=managed_by_filter)
+        if ou_dn in dns:
+            raise AssertionError(f"temp ou {ou_dn} still returned by (managedBy=...) after delete")
+        return None
+    finally:
+        try:
+            domain(client, "ldap/entry/delete", {"dn": ou_dn})
+        except SidecarError:
+            pass
+
+
 # -- driver --------------------------------------------------------------------
 
 def ldap_reachable() -> tuple[bool, str]:
@@ -566,6 +713,8 @@ def main() -> int:
         ("S12", "password hash write + bind verification", run_s12),
         ("S13", "childrenCount + recursive subtree delete", run_s13),
         ("S14", "jpegPhoto binary round-trip", run_s14),
+        ("S15", "member/memberOf association round-trip", run_s15),
+        ("S16", "generic DN reference (managedBy) round-trip", run_s16),
         ("S9", "disconnect then call", run_s9),
     ]
 
@@ -602,7 +751,7 @@ def main() -> int:
         for _, _, fn in steps:
             fn(client)
     finally:
-        for connection_id in ("smoke-main", "smoke-ro", "smoke-pw", "smoke-wl", "smoke-filter", "smoke-dc", "smoke-pwhash", "smoke-photo"):
+        for connection_id in ("smoke-main", "smoke-ro", "smoke-pw", "smoke-wl", "smoke-filter", "smoke-dc", "smoke-pwhash", "smoke-photo", "smoke-assoc", "smoke-assoc-mb"):
             try:
                 client.request("connection/disconnect", {"connection": {"id": connection_id}})
             except Exception:

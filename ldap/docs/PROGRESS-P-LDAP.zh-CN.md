@@ -516,3 +516,251 @@ goos string) string`，按四插件统一顺序解析——① `DBX_PLUGIN_DATA_
 `go vet`、`go build` 干净。本机实测解析到
 `/Users/Jinpy/Library/Application Support/dbx-plugin-data/io.dbx.ldap`。
 未提交 git。
+
+## DN 树同级排序：OU 先于 CN（2026-09-10）
+
+用户诉求：左侧 DN 树 `ou=` 条目排在 `cn=` 前（字典序下 "cn"<"ou" 会反着排）。
+
+- 改动：`lib/dnTree.ts` 新增纯函数比较器 `compareDnForTree`——主键按首个 RDN
+  属性类型分组（ou→0，cn→1，其余类型/异常 DN→2 排最后，大小写不敏感），次键
+  保持原全 DN `localeCompare(undefined, {numeric:true})`，组内次序不变；
+  `DnTree.vue` `fetchChildren` 的排序替换为该比较器（懒加载/加载更多/invalidate
+  全走此路径）。过滤命中列表（compareDnByLabel）与 Go 后端未动。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 29 文件 406 用例全绿（dnTree.spec
+  新增 5 例）；`pnpm build` 通过。
+
+## 条目关联视图：对标 ADUC Members / Member Of（2026-09-11，并发 agent 轮）
+
+用户诉求：AD 组（如 `CN=CORP_C_GG_GITHUB_User,...`）在树里展开永远为空、
+组成员/所属关系无处可看，确认为 PLA_GAP_ANALYSIS 有意放弃项，本轮补齐。
+"对标 active role" 按 ADUC（Active Directory 用户和计算机）的
+Members / Member Of 双向语义实现。设计定稿与任务条目见 IMPL_PLAN §5.4
+（L5-1～L5-4）：**无新增协议方法、无后端改动**——Members 直读条目自身
+`member`（回退 `uniqueMember`）属性；Member Of 前端组合既有 `ldap/search`
+（连接 Base DN / scope=sub / `(member=<本条目DN>)` / attributes=["1.1"] /
+sizeLimit=1000），过滤器不受屏蔽属性策略影响（`memberOf` 在默认屏蔽表也不
+碍事），且不依赖 memberof overlay。
+
+### 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/components/AssociationPanel.vue` | 新增：Members/Member Of 双 section 只读面板——member/uniqueMember 大小写不敏感直读、VirtualList 虚拟化（rowHeight 26）、行点击 emit `openEntry`、复制 DN；Member Of 惰性搜索（`active` 门控）含 loading/空态/截断/失败重试，请求序号防竞态 |
+| `frontend/src/components/AssociationPanel.spec.ts` | 新增 10 例：member 渲染/点击、空态、uniqueMember 回退、搜索参数与转义（RFC 4515）、active 门控、失败重试、截断、dn 变化重缓存 |
+| `frontend/src/components/EntryEditorDialog.vue` | `ldifMode` 布尔重构为 `editorTab: form/ldif/assoc` 三态（form↔ldif 行为等价迁移）；mode-switch 第三页签（仅 view 态）；assoc 态挂 AssociationPanel 并透传 openEntry/error/notify；新 props `baseDn`/`initialTab`；关联页签隐藏编辑/保存动作（只读视图） |
+| `frontend/src/components/EntryEditorDialog.spec.ts` | +4 例：view/add 页签可见性、panel props 断言、openEntry 冒泡、initialTab 直开关联页（对 panel 用 vi.mock 隔离） |
+| `frontend/src/components/DnTree.vue` | 右键菜单 view 后新增「成员」项 → emit `members` |
+| `frontend/src/App.vue` | `openEntry` 增可选 `initialTab`（默认 form，既有调用方不变）；`openEntryAsMembers` 以关联页直开；DnTree `@members` 接线；编辑器传 `base-dn`/`initial-tab`、监听 `@open-entry`（关联内点条目复用换内容） |
+| `frontend/src/lib/i18n.ts` | 七语 +12 key：`editor.assocMode` + `associations.*`（members/memberOf/count/emptyMembers/emptyMemberOf/loading/truncated/loadFailed/retry/copyDn） |
+| `frontend/src/mockDbxHost.ts` | 种子新增 `cn=team-a,ou=groups`（groupOfNames，member→3 个既有用户） |
+| `scripts/smoke_test.py` | 新增 S15「member/memberOf association round-trip」：自建临时 groupOfNames → `(member=)` 反查断言 → `(memberOf=)` 探测（overlay 未启用记 PASS 说明）→ 删除后复查 → finally 清理；配套 `escape_filter_value`/`search_dns`/`ensure_groups_ou` |
+| `docs/IMPL_PLAN_DBX_LDAP.zh-CN.md` | §5.4 特性章节 + 任务 L5-1～L5-4（含已知限制：AD 主组不解析、嵌套组 1.2.840.113556.1.4.1941 不支持、反查限于 Base DN 子树） |
+
+### 验证
+
+| 套件 | 结果 |
+|---|---|
+| `pnpm typecheck` | 0 错 |
+| `pnpm test` | **30 文件 420 用例全绿**（406 → 420：AssociationPanel 10 + EntryEditorDialog 4） |
+| `pnpm build` + `scripts/test.sh` 全套 | 过；UI walkthrough（headless Chrome）**7/7** |
+| backend `go vet` / `go test`（四包） | 全绿（本轮后端零改动） |
+| smoke（真实 OpenLDAP 容器） | **16/16 PASS**，含 S15（member 反查往返断言全过；memberOf 探测因容器未启用 overlay 记 PASS 说明，组件按 SKIP 语义设计），残留 0 条 |
+| smoke（无容器） | test.sh 内 16 场景按设计全 SKIP |
+
+### 说明与遗留
+
+- 关联内点击成员/所属条目 → `openEntry(dn)` 换内容并回落表单页签（继续浏览
+  需再点「关联」；如需"关联跳转保持关联页"可后续加参数透传）。
+- `dbx-plugin package` 出包当前失败：go.work 列 1.22 而后端 module 要求
+  ≥1.24（`go vet/test` 直跑不受影响）——既有环境问题，与本轮无关（后端零
+  改动可证），待单独修 go.work。
+- 真实 AD（KN-LDAP）上的实际效果未真机复验（需有效凭据，沿袭 §10.3 阻塞）；
+  AD 对 `(member=DN)` 等值过滤为原生能力，风险低。
+- 未提交 git。
+
+## 通用 DN 引用泛化：managedBy 等 DN 值属性可点击 + 反查（2026-09-11 第二轮，并发 agent 轮）
+
+上轮关联视图只覆盖 member/memberOf；本轮按用户诉求泛化到**所有 DN 值属性**
+（managedBy/owner/secretary/seeAlso 等，如 OU 上 managedBy→某用户）：正查
+可点击打开目标条目，反查可看"谁引用了我"。设计定稿与任务见 IMPL_PLAN
+§5.4.1（L5-5～L5-7）。仍**无新增协议方法、无后端改动**。
+
+### 设计要点
+
+- **DN 属性识别 schema 驱动**：解析 `ldap/schema` attributeTypes，SYNTAX=
+  1.3.6.1.4.1.1466.115.121.1.12（DN）/ 1.3.6.1.4.1.1466.115.121.1.34
+  （nameAndOptionalUID）或定义含 `SUP distinguishedName`/`nameAndOptionalUID`
+  （单层启发，`\b` 边界防误判 matching rule 名）；schema 不可用回退内置
+  `DN_REFERENCE_CORE` 七项（managedBy/owner/secretary/assistant/manager/
+  seeAlso/altRecipient）。
+- **反查限定核心表**：schema 全量 DN 属性可能数百个，不做全量 OR；被引用区
+  固定用核心表生成单次 `(|(managedBy=DN)(owner=DN)...)` 过滤器（RFC 4515
+  转义、单属性退化、scope=sub、attributes=["1.1"]、sizeLimit=1000）。
+- schema 经 App 惰性加载（编辑器首开触发，独立 `dnSchemaCache`，失败静默
+  降级兜底表；连接切换时重置），App→EntryEditorDialog→panel 贯通
+  `dnAttributes` prop。
+
+### 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/lib/dnAttributes.ts` | 新增：`deriveDnValuedAttributes`（schema 解析）/`buildReferencedByFilter`（OR 过滤器）/`DN_REFERENCE_CORE` 等纯函数 |
+| `frontend/src/lib/dnAttributes.spec.ts` | 新增 14 例（SYNTAX/SUP/NAME 双形态/去重/转义/退化/空表） |
+| `frontend/src/components/AssociationPanel.vue` | 新增 prop `dnAttributes`；「DN 引用」区（按属性分组、行渲染与成员区同款、member/uniqueMember 不重复）；「被引用」区（active 惰性 + 请求序号防竞态，OR 过滤器反查）；`loadFailed` 语义随共用泛化 |
+| `frontend/src/components/AssociationPanel.spec.ts` | 10→21 例（双搜索按 filter 分派断言、引用区分组/兜底、被引用 OR/转义/失败重试/截断/空态/dn 重搜） |
+| `frontend/src/App.vue` | `dnSchemaCache` + `ensureDnAttributes()`（openEntry 惰性触发，失败静默降级）+ 连接切换重置；`:dn-attributes` 下传 |
+| `frontend/src/components/EntryEditorDialog.vue` | 新 prop `dnAttributes` 透传 panel |
+| `frontend/src/lib/i18n.ts` | 七语 +4 key：`references`/`emptyReferences`/`referencedBy`/`emptyReferencedBy`；`loadFailed` 七语文案泛化为「关联搜索失败」 |
+| `frontend/src/mockDbxHost.ts` | schema 加 managedBy 定义（AD OID 1.2.840.113556.1.4.218）；`ou=services` 种子加 managedBy→uid=user0000 |
+| `scripts/smoke_test.py` | 新增 S16「generic DN reference (managedBy) round-trip」：临时 OU 带 managedBy→反查→清理；服务器 schema 未定义 managedBy 时软跳过（PASS 说明，沿袭 S15 memberOf 先例与规则 5） |
+| `docs/IMPL_PLAN_DBX_LDAP.zh-CN.md` | §5.4.1 特性章节 + 任务 L5-5～L5-7 |
+
+### 验证
+
+| 套件 | 结果 |
+|---|---|
+| `pnpm typecheck` | 0 错 |
+| `pnpm test` | **31 文件 446 用例全绿**（420 → 446：dnAttributes 14 + AssociationPanel +11 + EntryEditorDialog +1） |
+| smoke（真实容器，恢复上轮随机密码直通方式） | **17/17 PASS**；S16 因 bitnami 容器 schema 未定义 managedBy 软跳过（断言路径：临时 OU + managedBy 写入 → `(managedBy=)` 反查，单测/mock 侧全覆盖；AD 原生定义 managedBy，真实域不触发该跳过）；S15 memberOf overlay 说明沿袭 |
+| 容器状态 | 验后 `docker stop` 恢复原 Exited 态；密码全程未打印/未落库 |
+
+### 说明与遗留
+
+- 反查覆盖面限定核心表（schema 中其余 DN 属性只正查可见）；如需按 schema
+  全量反查需分批 OR/服务端索引评估，暂无诉求。
+- `dnSchemaCache` 复用 `useLdapSchemaCache` 的 attributeNames 槽存原始
+  attributeTypes（该 hook 缓存不保留原文，另起缓存的最小实现），后续如
+  schema 消费方增多可考虑 hook 层暴露 raw 槽位。
+- 出包 go.work 问题、KN-LDAP 真机凭据阻塞沿袭上轮；未提交 git。
+
+## 关联视图 UX 复审：子页签去拥挤 + 树「成员」右侧搜索联动（2026-09-11 第三轮，并发 agent 轮）
+
+用户反馈：关联页签四区纵向堆叠太拥挤、列表无搜索、不像表格；提议树右键
+「成员」直接组织过滤器在右侧搜索。两条都落地（设计定稿补记 IMPL_PLAN
+§5.4.1「交互形态」段）：
+
+### 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/components/AssociationPanel.vue` | 重构：四 section 堆叠 → 「成员/所属/DN 引用/被引用」**互斥子页签**（`.mode-switch` 样式 + `.tree-badge` 计数徽标，搜索类加载完才出数字）；顶部常驻**本地过滤框**（激活列表 DN 大小写不敏感子串过滤，dn 变化清空，过滤无匹配显示 `associations.noMatch`）；行统一两行式固定行高 44（首行 RDN+来源属性小字、次行完整 DN ellipsis），VirtualList resetKey 纳入 dn/页签/过滤词；DN 引用区取消分组小标题改行内属性小字（等高行约束）。搜索/防竞态/重试/截断逻辑原样保留，props/emits 契约未动 |
+| `frontend/src/components/AssociationPanel.spec.ts` | 21→25 例：子页签渲染/互斥/徽标计数（含受控 promise 未完成不出数字）、本地过滤（收敛/大小写/noMatch/清空/作用反查列表/dn 清空），既有用例全部迁移页签内断言 |
+| `frontend/src/lib/i18n.ts` | 七语 +2 key：`filterPlaceholder`、`noMatch` |
+| `frontend/src/components/SearchForm.vue` | 新暴露 `runFilterAt(baseDn, filter)`：源码模式承载调用方过滤器 + applyBaseDn + scope=sub + 立即 emit run；空过滤器防呆回退 (objectClass=*)；disabled 直接 return |
+| `frontend/src/components/SearchForm.spec.ts` | +3 例：runFilterAt 过滤器/Base/scope/payload 断言、disabled 不 emit、空白过滤器回退 |
+| `frontend/src/App.vue` | `@members` 改接 `searchMembersAt(dn)` = `runFilterAt(连接Base, (memberOf=<DN>))`（escapeLdapFilterValue 转义）；清理死接线（editorInitialTab/openEntryAsMembers/:initial-tab；EntryEditorDialog 组件 initialTab prop 保留） |
+
+### 验证
+
+| 套件 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm test` | 0 错 / **31 文件 453 用例全绿**（446→453：AssociationPanel +4、SearchForm +3） |
+| 浏览器实机（vite 5299 + playwright-core + 系统 Chrome headless，mock.html，1440×900；一次性脚本不入库，截图 `/tmp/dbx-assoc-ui/`） | ① team-a 关联页签：过滤框 + 四子页签徽标（成员 3）+ 两行式行渲染；② 本地过滤输 user0001 仅剩该行、清空恢复；③ ou=services 的 DN 引用页签显示 managedBy→user0000；④ 树右键 team-a → 成员：右侧立即以源码模式 `(memberOf=cn=team-a,ou=groups,dc=demo,dc=dbx)`、Base=连接根、scope=sub 自动执行（mock 用户无 memberOf 属性故 0 条，AD 原生支持） |
+
+### 说明与遗留
+
+- 分页诉求以 VirtualList 虚拟滚动 + 计数徽标承载（千级行直接滚动，无需翻页）；
+  右侧结果表路径（树「成员」）自带分页/排序/导出，两条路径互补。
+- 服务器无 memberof overlay 时树「成员」搜索为空——关联页签成员区
+  （member 属性直读）是全服务器通用路径，文案已按此语义设计。
+- 未提交 git。
+
+## review 第 1 轮：编辑器 LDIF 数据丢失修复 + 关联页签保持 + 两处 P2（2026-09-11，goal-state round1）
+
+review + 持续优化第 1 轮（状态与报告存
+`.goal-state/report-ldap-round1.md`）。改动全部限 `ldap/frontend/`，
+后端零改动（service/operations 只读 review 未发现需修项）。无新 i18n key。
+
+### 发现并修复（4 项）
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P1 | 编辑器 LDIF 页签编辑 → 直接切「关联」（不经表单）→ 切回表单：LDIF 编辑不落 rows 且被 rows→LDIF 重同步**静默覆盖**（数据丢失） | `EntryEditorDialog.vue` 新增 `leaveLdif()` 共用守卫（解析失败保持 LDIF 页签），switchToForm/switchToAssoc 走同一路径；+2 单测（assoc 路径保留编辑、解析错误阻止切走） |
+| P2 | 连接切换不清空「最近操作」审计面板（旧连接 denied/ok 与新连接反馈混排） | `App.vue` syncConnectionContext 切换分支清空 `auditItems` |
+| P2 | 关联视图内点击条目跳转回落表单页签打断浏览（§14 记录的遗留候选） | `App.vue` openEntry 增可选 `initialTab` + `editorInitialTab` ref，`@open-entry` 传 `'assoc'`；常规入口行为不变 |
+| P2 | 新结果不含旧排序列时排序指示残留（该列全空=没排，▲/▼ 却还在） | `ResultTable.vue` watch(entries) 重置失效排序键回 dn 升序；+2 单测（消失重置/仍存在保持） |
+
+记录未修（低影响）：`exportResults` catch 不走 showError 统一通道；mock 桥
+entry/delete 不支持 recursive；AssociationPanel inline style 可维护性；
+pagedSearchEntries 恰好等于上限也置 truncated（前端 atLimit 徽章已对冲）。
+
+### 验证
+
+| 套件 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm test` | 0 错 / **31 文件 457 用例全绿**（453 + 4 新增；首跑 1 例失败为本用例夹具错误，修正后过，非产品代码问题） |
+| `pnpm build` | 过（ui/index.html） |
+| `go vet` / `go test -count=1 ./...` | 全绿（后端零改动回归确认） |
+| `scripts/test.sh` 全套 | 前端三件套 + go 过；smoke 无容器 17 SKIP（设计内）；打包失败为既有 go.work（1.22 vs module ≥1.24）问题，沿袭 §14 遗留，与本轮无关 |
+| `scripts/smoke_container.py`（真实容器，随机密码仅经环境变量） | **17/17 PASS**（S15/S16 沿袭 PASS 说明），down -v 清理 |
+
+浏览器复核留人工：① LDIF→关联→表单编辑保留；② 关联内跳转保持关联页签；
+③ 多连接切换清空审计面板（mock 单连接无法复现）。未提交 git。
+
+## review 第 2 轮：打包链路修复 + 遗留项清零（2026-09-11，goal-state round2）
+
+review + 持续优化第 2 轮（报告存 `.goal-state/report-ldap-round2.md`）。主线
+为第 1 轮遗留项；Go 后端零改动（仅回归）。
+
+### 关键澄清：打包失败根因修正（round1 归因不完整）
+
+工作区内并无 go.work 文件。真实链路：npm wrapper `bin/dbx-plugin.js` 在
+`DBX_PLUGIN_SDK_ROOT` 未设置时**自动注入 bundled sdk-root**，CLI 带该变量
+以 workspace 方式构建 Go 后端且 workspace 钉 go 1.22，与 backend go.mod
+`go 1.24.0` 冲突。round1 `scripts/test.sh` 打包分支走 wrapper 故失败；
+`build.sh` 直调 native CLI 早已绕开。本轮把 test.sh 打包分支改为与
+build.sh 同款直调，出包恢复（dist/*.dbxp，已 ignore 不入库）。
+
+### 改动（5 文件 + 2 spec）
+
+| 项 | 内容 |
+|---|---|
+| P1 打包 | `scripts/test.sh` 打包分支 `env -u DBX_PLUGIN_SDK_ROOT` 直调 native CLI（同 build.sh），全套 test.sh 实测出包成功 |
+| P2 遗留3 | `App.vue` exportResults catch 改 `showError(cause)`；`result.exportFailed` 七语 i18n 同删（全 src 无引用） |
+| P2 遗留4 | `mockDbxHost.ts` entry/delete 支持 recursive（fixture 简化版：子树全删 + 聚合审计 subtree_delete/deletedCount，镜像后端形状）；+4 单测 |
+| 打磨① | `ResultTable.vue` 单元格 `cellTitle()`（全量值，2000 封顶）+ `:title`；+2 单测 |
+| 打磨②③ | 评估不做：DnTree 命中 makeNode"丢展开"前提不成立（selectNode 只消费 dn）；AssociationPanel 40 处 inline style 超小修边界，沿袭 |
+
+### 验证
+
+| 套件 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm test` | 0 错 / **32 文件 463 用例全绿**（457 + mock 4 + tooltip 2；首跑 1 例失败为本用例长度断言过严，放宽后过） |
+| `go vet` / `go test` | 四包全绿（零改动回归） |
+| `scripts/test.sh` 全套 | 全绿含**打包成功**；UI walkthrough 7/7；smoke 无容器 17 SKIP（设计内） |
+| `scripts/smoke_container.py`（随机密码仅经环境变量） | **17/17 PASS**（S15/S16 沿袭 PASS 说明），down -v 清理 |
+
+沿袭/下一轮：宿主 e2e 已具备条件（.dbxp 出包恢复）；KDC/NTLM 真机沿袭；
+build.sh/test.sh native CLI 路径写死 darwin-arm64 的平台解析为下轮候选；
+browser 复核三点沿袭 + mock 子树删除走查。未提交 git。
+
+## review 第 3 轮：收敛评估（2026-09-11，goal-state round3）
+
+review + 持续优化第 3 轮（报告存 `.goal-state/report-ldap-round3.md`）：主线
+为 round2 遗留 1（宿主 e2e）与遗留 5（平台解析），另做四个改动面针对性复核。
+前端产品代码与 Go 后端**零改动**（纯复核）。
+
+### 改动（2 改 + 1 新增，均 scripts/）
+
+| 项 | 内容 |
+|---|---|
+| 遗留5 | 新增 `scripts/cli-platform.sh`：`cli_platform()` 纯映射（Linux 包带 `-gnu` 后缀：`linux-x64-gnu`/`linux-arm64-gnu`）+ `resolve_native_plugin_cli()`；`build.sh`/`test.sh` 接入，解析失败 stderr 明确 WARN 后回退 wrapper（darwin-arm64 行为不变，向后兼容）；9 项干跑断言全过 |
+| e2e | `shared/host-e2e/install.sh ldap` 装 0.1.56 进隔离 app-data（激活记录 sequence 3/previousVersion 0.1.24/camelCase 校验过）；双冒烟以安装副本 sidecar 对容器 **17/17 PASS**（密码仅经 `LDAP_ADMIN_PASSWORD` 环境变量），容器 down -v 清理 |
+| 复核 | 四个改动面（EntryEditorDialog 页签守卫、App.vue 审计/页签接线、ResultTable 排序与 title、mockDbxHost delete）走查**无 P1/P2 新发现**；两条非缺陷观察（App.vue busy 死状态、mock 非 recursive 删非叶不模拟 LDAP 66），仅记录不修 |
+
+### 验证
+
+| 套件 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm test` | 0 错 / 32 文件 463 用例全绿（基线保持） |
+| `go vet` / `go test -count=1` | 四包全绿（强制非缓存） |
+| `scripts/test.sh` 全套 | all green：UI walkthrough 7/7、打包走新解析路径出包成功（无 fallback WARN）、smoke 无容器 17 SKIP（设计内） |
+
+### 收敛判定
+
+e2e GUI 拉起为卡点（宿主 debug bundle 未构建，构建 + UI 验收超 subagent
+可脚本化范围，如实记录未绕过）。**无剩余可执行项（仅剩人工/真机复核项与
+维持项）**：GUI e2e 验收（宿主 debug bundle 构建后人工走查插件中心/工作台/
+连接浏览）、browser 复核三点 + mock 子树删除走查、KDC/NTLM 真机沿袭；
+维持项：AssociationPanel inline style（专项分批）、truncated 恰等上限语义
+（前端 atLimit 徽章已对冲）、plugin-cli 上游建议（仅记录）。未提交 git。

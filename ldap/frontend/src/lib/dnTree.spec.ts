@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { childBadgeText, compareDnByLabel, dnNodeKind, flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "./dnTree";
+import { childBadgeText, compareDnByLabel, compareDnForTree, dnNodeKind, flattenDnTree, isFetchTruncated, nextFetchLimit, nextTreeFocusIndex, TREE_FETCH_PAGE, type DnTreeNode } from "./dnTree";
 
 // Node factory kept local so the spec stays free of component imports.
 function node(dn: string, overrides: Partial<DnTreeNode> = {}): DnTreeNode {
@@ -153,6 +153,49 @@ describe("compareDnByLabel (filter-result alphabetical sort)", () => {
     expect(sortDns(["cn=ali,ou=b,dc=x", "cn=ali,ou=a,dc=x"])).toEqual([
       "cn=ali,ou=a,dc=x",
       "cn=ali,ou=b,dc=x",
+    ]);
+  });
+});
+
+describe("compareDnForTree (tree sibling sort: containers before leaves)", () => {
+  const sortDns = (dns: string[]) => [...dns].sort(compareDnForTree);
+
+  it("puts ou entries before cn entries regardless of alphabetical order", () => {
+    // 字典序下 cn 本会排在 ou 前（"c" < "o"）：分组后容器必须整体前移。
+    expect(sortDns(["cn=admins,dc=x", "ou=people,dc=x", "cn=alice,dc=x", "ou=groups,dc=x"])).toEqual([
+      "ou=groups,dc=x",
+      "ou=people,dc=x",
+      "cn=admins,dc=x",
+      "cn=alice,dc=x",
+    ]);
+  });
+
+  it("keeps the existing alphabetical order inside each group", () => {
+    expect(sortDns(["cn=zoe,dc=x", "cn=alice,dc=x", "ou=b,dc=x", "ou=a,dc=x"])).toEqual([
+      "ou=a,dc=x",
+      "ou=b,dc=x",
+      "cn=alice,dc=x",
+      "cn=zoe,dc=x",
+    ]);
+  });
+
+  it("sorts other RDN types (o/uid etc.) after both groups", () => {
+    expect(sortDns(["uid=u1,dc=x", "cn=alice,dc=x", "o=acme", "ou=people,dc=x"])).toEqual([
+      "ou=people,dc=x",
+      "cn=alice,dc=x",
+      "o=acme",
+      "uid=u1,dc=x",
+    ]);
+  });
+
+  it("matches the RDN type case-insensitively", () => {
+    expect(sortDns(["cn=a,dc=x", "OU=people,dc=x"])).toEqual(["OU=people,dc=x", "cn=a,dc=x"]);
+  });
+
+  it("stays numeric-aware inside a group", () => {
+    expect(sortDns(["ou=team10,dc=x", "ou=team2,dc=x"])).toEqual([
+      "ou=team2,dc=x",
+      "ou=team10,dc=x",
     ]);
   });
 });

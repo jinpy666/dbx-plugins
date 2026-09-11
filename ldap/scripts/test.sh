@@ -35,8 +35,20 @@ fi
 
 echo "==> package .dbxp (only when manifest.json exists)"
 if [ -f manifest.json ] && command -v dbx-plugin >/dev/null 2>&1; then
-  unset DBX_PLUGIN_SDK_ROOT
-  NO_COLOR=1 dbx-plugin package . || echo "WARN: dbx-plugin package failed (backend under parallel development)"
+  # The npm `dbx-plugin` wrapper re-injects DBX_PLUGIN_SDK_ROOT (bundled SDK)
+  # whenever it is unset; the CLI then builds the Go backend through a
+  # workspace pinned to go 1.22, which conflicts with backend go 1.24.0
+  # ("module . listed in go.work file requires go >= 1.24.0"). Call the native
+  # CLI binary directly without SDK_ROOT so the local Go toolchain + the
+  # go.mod replace (host worktree SDK) are used — same as scripts/build.sh.
+  # The platform package suffix is resolved per-machine (linux uses -gnu).
+  . scripts/cli-platform.sh
+  if NATIVE_CLI="$(resolve_native_plugin_cli)"; then
+    env -u DBX_PLUGIN_SDK_ROOT NO_COLOR=1 "$NATIVE_CLI" package . || echo "WARN: dbx-plugin package failed (backend under parallel development)"
+  else
+    echo "WARN: native plugin-cli for $(uname -s)/$(uname -m) not found; falling back to the npm wrapper (its bundled SDK may conflict with backend go.mod)" >&2
+    NO_COLOR=1 dbx-plugin package . || echo "WARN: dbx-plugin package failed (backend under parallel development)"
+  fi
 else
   echo "SKIP: manifest.json/dbx-plugin CLI not ready yet; frontend artifacts are in ui/"
 fi

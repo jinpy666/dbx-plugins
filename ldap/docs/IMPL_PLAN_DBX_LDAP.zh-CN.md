@@ -150,6 +150,73 @@ Start/Stop` 的归宿：profile CRUD 删除（宿主连接管理）、TestProfil
 LDAP 无流式场景，仅一个：`ldap/audit`（写操作成功/拒绝后发
 `{connectionId, action, target, result}`，供工作台轻提示；审计落盘同一条）。
 
+### 5.4 条目关联视图（对标 ADUC Members / Member Of，纯前端）
+
+对标 ADUC（Active Directory 用户和计算机）的 Members / Member Of 语义，
+为条目编辑器新增第三个标签页「关联」+ 树右键菜单「成员」（以关联模式
+打开编辑器）。**接口层面：无新增协议方法、无后端改动**——纯前端组合既有
+`ldap/search` + `ldap/entry/get` 数据完成双向关联，协议文档无需变更。
+
+- **成员（Members）**：直读条目自身 `member`（回退 `uniqueMember`）属性值
+  （`ldap/entry/get`；`member` 不在屏蔽属性默认表），渲染为可点击 DN 列表
+  （点击=打开该条目），虚拟滚动（VirtualList）承载大组。
+- **所属（Member Of）**：前端组合既有 `ldap/search`，以连接 Base DN 为
+  base、`scope=sub`、过滤器 `(member=<本条目DN>)`（值经既有
+  `escapeLdapFilterValue` 做 RFC 4515 转义）、`attributes=["1.1"]`（只取
+  DN）、`sizeLimit=1000`，反查引用此 DN 的条目。
+- **规避屏蔽属性策略**：`memberOf` 在默认屏蔽表（policy.go
+  defaultLDAPBlockedAttributes），但本设计只把 member/memberOf 用作
+  **过滤器**（过滤器不做属性过滤），Member Of 反查不需要读出任何条目的
+  `memberOf` 输出，因此不受屏蔽属性影响。
+- **已知限制**（前端提示文案同步）：AD 主组（primaryGroupID）成员关系不走
+  member/memberOf，不解析；嵌套组成员展开需
+  LDAP_MATCHING_RULE_IN_CHAIN（1.2.840.113556.1.4.1941），不支持，仅直接
+  成员；Member Of 反查范围限定在连接 Base DN 子树内；OpenLDAP 未启用
+  memberof overlay 不影响本设计（不依赖 `memberOf` 属性）。
+- **UI/i18n**：新组件 `AssociationPanel.vue`；新增 i18n 键
+  `editor.assocMode` 与 `associations.*`（七语）。
+
+### 5.4.1 通用 DN 引用泛化（正查 DN 引用区 + 反查被引用区，L5-5～L5-7）
+
+§5.4 落地 member/memberOf 专属版后泛化为通用 DN 引用能力：条目上除
+member/uniqueMember 外的任意 DN 值属性（对标 ADUC 中可点击的
+managedBy/owner/seeAlso 等）同样进关联视图。仍无新增协议方法、无后端改动。
+
+- **正查（DN 引用区）**：条目上除 member/uniqueMember 外的 DN 值属性
+  （managedBy/owner/secretary/seeAlso/manager/assistant/altRecipient 等），
+  值按属性分组、可点击打开目标条目（交互语义同 §5.4 Members 列表）。
+- **DN 属性识别（schema 驱动 + 兜底）**：解析 `ldap/schema` 的
+  attributeTypes——SYNTAX=1.3.6.1.4.1.1466.115.121.1.12（DN）或
+  1.3.6.1.4.1.1466.115.121.1.34（nameAndOptionalUID），或定义含
+  `SUP distinguishedName`/`SUP nameAndOptionalUID`（单层启发，不递归父级）；
+  schema 不可用（rootDse/schema 请求失败或解析不出可用结果）时静默降级，
+  回退内置核心表 DN_REFERENCE_CORE=["managedBy","owner","secretary",
+  "assistant","manager","seeAlso","altRecipient"]。
+- **反查（被引用区）**：单次 OR 过滤器
+  `(|(managedBy=<本条目DN>)(owner=<本条目DN>)…)`（值经既有
+  `escapeLdapFilterValue` 做 RFC 4515 转义；核心表收敛到单属性时退化为
+  普通过滤器）。**反查只用内置核心表，不用 schema 全量 DN 属性**——后者
+  可能数百个，避免巨型 OR；scope=sub、base=连接 Base DN、
+  attributes=["1.1"]、sizeLimit=1000，语义同 §5.4 Member Of。
+- **实现落点**：新 `frontend/src/lib/dnAttributes.ts`
+  （deriveDnValuedAttributes / buildReferencedByFilter / DN_REFERENCE_CORE，
+  纯函数 + 单测）；AssociationPanel 扩展 DN 引用/被引用两区；App→
+  EntryEditorDialog→panel 贯通 `dnAttributes` prop（schema 惰性加载，
+  失败静默降级兜底表）。
+- **已知限制**（前端提示文案同步）：反查覆盖面限定核心表——schema 中其余
+  DN 属性正查可见、反查不覆盖；AD 主组/嵌套组限制沿袭 §5.4。
+- **交互形态（UX 复审后定稿）**：关联视图在编辑器内以**子页签**呈现——
+  「成员 / 所属 / DN 引用 / 被引用」四页签互斥（带计数徽标，搜索类加载完
+  才出数字），一次只显示一个列表，不再纵向堆叠；列表顶部常驻**本地过滤框**
+  （对激活列表做 DN 大小写不敏感子串过滤，dn 变化即清空）；行统一两行式
+  （首行 RDN + 来源属性小字，次行完整 DN），VirtualList 虚拟化承载大列表
+  （resetKey 纳入 dn/页签/过滤词）。**树右键「成员」语义 = 立即组织
+  `(memberOf=<节点DN>)` 过滤器并在右侧结果区执行搜索**（SearchForm 新暴露
+  `runFilterAt(baseDn, filter)`，源码模式承载过滤器、Base=连接 Base DN、
+  scope=sub，用户可在结果区继续改条件/分页/导出）；服务器无 memberof
+  （如未启用 overlay 的 OpenLDAP）时该搜索为空，组内成员仍以编辑器关联
+  页签的成员区（member 属性直读）为准。
+
 ## 6. 安全策略移植（policy.go）
 
 1. **DN 白名单**：读操作要求目标 DN ∈ `allowed_base_dns`（空=不限）；
@@ -226,6 +293,11 @@ src/
 | S9 | disconnect → 再调用 | 报连接不存在 |
 | S10 | 非法 filter | 报错文案 |
 
+> S11–S16 为后续追加场景（rootDse namingContexts、{SSHA} 密码写 + bind 校验、
+> childrenCount + 递归子树删除、jpegPhoto 二进制、条目关联 member/memberOf
+> 反查、通用 DN 引用 managedBy 往返），随任务落地，清单以
+> `scripts/smoke_test.py` 头部为准。
+
 **集成**：`docker-compose.ldap-test.yml` + `ldap-seed`（初版改造自参照基线种子）；
 M3 增 `smoke_gssapi_test.py`（`ldap-gssapi-test.yml` + `scripts/ldap-gssapi-integration-test.sh`）。
 
@@ -276,6 +348,21 @@ M6（扩容后）：LDIF 导入、结果批量操作、模板化新建（N4）�
 M7（按需）：mTLS、CRAM-MD5、referral 策略、服务器端排序、digest realm、
 DSML、schema 语法/匹配规则透出、uid 定位 DN、uid/gid 自动编号、属性显示
 排序、datetime 统一格式化（两对账表 P2 汇总）。
+
+### 新特性追加：条目关联视图（对标 ADUC Members / Member Of，任务编号 L5-x）
+
+设计定稿见 §5.4 与 §5.4.1（无新增协议方法、无后端改动，纯前端组合）。任务
+编号沿用 L 系列顺延取 L5（L6-x 已归 PLA 对账表 §7 的 N1–N4）。
+
+| # | 任务 | 依赖 | DoD |
+|---|---|---|---|
+| L5-1 | `AssociationPanel.vue`：Members 直读 member（回退 uniqueMember，VirtualList 可点击 DN）+ Member Of 组合 `ldap/search` 反查（escapeLdapFilterValue、attributes=["1.1"]、sizeLimit=1000） | L1-7 | 组件单测过；容器种子数据下成员/所属互跳正确 |
+| L5-2 | 入口集成：条目编辑器第三个标签页 + 树右键菜单「成员」（以关联模式打开编辑器） | L5-1 | 浏览器走查（截图留档）；大组 VirtualList 渲染正常 |
+| L5-3 | i18n 七语：`editor.assocMode`、`associations.*` + 已知限制提示文案 | L5-1 | `scripts/check_i18n.py` 过（key 集合一致） |
+| L5-4 | smoke S15：临时组 member 反查往返 + memberOf 探测（支持性不足记 SKIP 说明）+ 删除后不复现断言 | L5-1 | 完成定义四件套收口：单测 + smoke S15 + FEATURE_PARITY/任务清单更新 + 七语文案 |
+| L5-5 | `frontend/src/lib/dnAttributes.ts`：deriveDnValuedAttributes（schema attributeTypes 按 SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 / 1.3.6.1.4.1.1466.115.121.1.34 或 SUP distinguishedName / nameAndOptionalUID 单层启发识别 DN 值属性）+ buildReferencedByFilter（核心表 OR 过滤器、RFC 4515 转义、单属性退化）+ DN_REFERENCE_CORE 兜底表 | L5-1 | 纯函数单测过（schema 可用/缺失两态） |
+| L5-6 | AssociationPanel 扩展「DN 引用区 / 被引用区」+ App→EntryEditorDialog→panel 贯通 `dnAttributes` prop（schema 惰性加载、失败静默降级兜底表） | L5-5 | 组件单测过；容器下 managedBy/owner 等正查按属性分组可点击、反查命中；浏览器走查（截图留档） |
+| L5-7 | smoke S16：generic DN reference (managedBy) 往返（临时 OU 挂 managedBy→反查命中→删除后不复现；服务器 schema 无 managedBy 记 SKIP 说明） | L5-5 | 完成定义四件套收口：单测 + smoke S16 + FEATURE_PARITY/任务清单更新 + 七语文案 |
 
 ## 10. 风险与备注
 

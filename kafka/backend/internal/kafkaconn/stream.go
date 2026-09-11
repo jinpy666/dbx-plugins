@@ -155,11 +155,48 @@ type StreamRegistry struct {
 	next     int64
 	sessions map[string]*streamSession
 	Emitter  StreamEmitter // nil 安全
+
+	// evictStop 关闭即令 evictLoop 退出（Close 幂等；nil 安全——直构字面量的
+	// 测试夹具没有该通道时 Close 为 no-op）。只在进程收尾（Service.CloseAll）
+	// 关闭；stream/stop all:true 走 StopAll，不影响回收循环。
+	evictStop chan struct{}
 }
 
-// NewStreamRegistry 创建会话注册表。
+// NewStreamRegistry 创建会话注册表，并启动空闲回收循环（§5.5「空闲 30 分钟
+// 回收」的调度端：此前 EvictIdle 仅测试可达，长驻 sidecar 中过期会话（如
+// topic 被删后只出不进的会话）只累积到 StreamMaxSessions 上限才报错）。
 func NewStreamRegistry() *StreamRegistry {
-	return &StreamRegistry{sessions: map[string]*streamSession{}}
+	r := &StreamRegistry{sessions: map[string]*streamSession{}, evictStop: make(chan struct{})}
+	ticker := time.NewTicker(StreamEvictScanEvery)
+	go func() {
+		defer ticker.Stop()
+		r.evictLoop(ticker.C)
+	}()
+	return r
+}
+
+// evictLoop 周期扫描空闲会话；tick 注入便于测试。
+func (r *StreamRegistry) evictLoop(tick <-chan time.Time) {
+	for {
+		select {
+		case <-r.evictStop:
+			return
+		case <-tick:
+			r.EvictIdle(time.Now().UnixMilli())
+		}
+	}
+}
+
+// Close 停止空闲回收循环（Service.CloseAll 进程收尾调用；幂等）。
+func (r *StreamRegistry) Close() {
+	if r.evictStop == nil {
+		return
+	}
+	select {
+	case <-r.evictStop:
+	default:
+		close(r.evictStop)
+	}
 }
 
 // StartStream 创建并启动流式会话（§5.2 kafka/stream/start）。

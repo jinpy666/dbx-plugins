@@ -76,3 +76,47 @@ describe("App a11y live regions (P2-24)", () => {
     wrapper.unmount();
   });
 });
+
+describe("App stream backpressure visibility (§8.3 遗留收口)", () => {
+  it("notifies dropped buffered stream events after returning to the stream panel", async () => {
+    const wrapper = await mountApp();
+    // 流面板未激活（App 层缓冲生效）：灌满 800 缓冲 + 1 条触发丢最旧。
+    for (let i = 0; i < 801; i++) {
+      eventListener?.({
+        method: "kafka/stream/messages",
+        params: {
+          sessionId: "s1",
+          messages: [{ topic: "t", partition: 0, offset: i, timestamp: 1, valueText: "x", valueBase64: "", headers: {} }],
+          totalScanned: i + 1,
+          totalMatched: i + 1,
+          paused: false,
+          bufferSize: 0,
+        },
+      });
+    }
+    await flushPromises();
+    expect(wrapper.find(".notice").exists()).toBe(false); // 面板隐藏期间静默缓冲
+    // 切到流式面板 → 缓冲按序补发完成后，丢弃计数一次性可见。
+    const streamTab = wrapper.findAll(".tab-bar button").find((b) => b.text().includes("流式"));
+    expect(streamTab).toBeDefined();
+    await streamTab!.trigger("click");
+    await flushPromises();
+    const notice = wrapper.find(".notice");
+    expect(notice.exists()).toBe(true);
+    expect(notice.text()).toContain("1");
+    wrapper.unmount();
+  });
+
+  it("does not notify when no buffered events were dropped", async () => {
+    const wrapper = await mountApp();
+    for (let i = 0; i < 10; i++) {
+      eventListener?.({ method: "kafka/stream/messages", params: { sessionId: "s1", messages: [], totalScanned: i, totalMatched: i, paused: false, bufferSize: 0 } });
+    }
+    await flushPromises();
+    const streamTab = wrapper.findAll(".tab-bar button").find((b) => b.text().includes("流式"));
+    await streamTab!.trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".notice").exists()).toBe(false);
+    wrapper.unmount();
+  });
+});

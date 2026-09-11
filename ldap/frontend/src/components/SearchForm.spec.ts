@@ -134,6 +134,49 @@ describe("SearchForm (filter builder)", () => {
     });
   });
 
+  it("runs a filtered search at a base immediately when the tree requests members (right-click)", async () => {
+    const wrapper = await mountForm();
+    // 先把范围切成 base：成员直达要强制回 sub（语义同 runSubtreeAt）。
+    await wrapper.find("select").setValue("base");
+    (wrapper.vm as unknown as { runFilterAt: (baseDn: string, filter: string) => void }).runFilterAt("dc=x", "(memberOf=cn=g,dc=x)");
+    await wrapper.vm.$nextTick();
+    // 源码模式激活且承载调用方组织的过滤器（构建器不逆向解析）。
+    expect(wrapper.find(".filter-source").exists()).toBe(true);
+    const sourceInput = wrapper.find(".filter-source input");
+    expect((sourceInput.element as HTMLInputElement).value).toBe("(memberOf=cn=g,dc=x)");
+    expect(wrapper.find(".filter-builder").exists()).toBe(false);
+    // Base DN 同步改写（draft.baseDn）并立即发出运行请求。
+    const baseInput = wrapper.find(".field input.mono");
+    expect((baseInput.element as HTMLInputElement).value).toBe("dc=x");
+    expect(wrapper.emitted("run")?.[0][0]).toMatchObject({
+      baseDn: "dc=x",
+      filter: "(memberOf=cn=g,dc=x)",
+      scope: "sub",
+    });
+  });
+
+  it("skips the right-click members run while the form is disabled", async () => {
+    const wrapper = mount(SearchForm, { props: { baseDn: "dc=demo,dc=dbx", disabled: true } });
+    await wrapper.vm.$nextTick();
+    (wrapper.vm as unknown as { runFilterAt: (baseDn: string, filter: string) => void }).runFilterAt("dc=x", "(memberOf=cn=g,dc=x)");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("run")).toBeUndefined();
+  });
+
+  it("falls back to match-all when the right-click members filter arrives empty", async () => {
+    const wrapper = await mountForm();
+    (wrapper.vm as unknown as { runFilterAt: (baseDn: string, filter: string) => void }).runFilterAt("dc=x", "  ");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("run")?.[0][0]).toMatchObject({
+      baseDn: "dc=x",
+      scope: "sub",
+      filter: "(objectClass=*)",
+    });
+    // 源码模式同样回填兜底值，与实际发出的过滤器一致。
+    const sourceInput = wrapper.find(".filter-source input");
+    expect((sourceInput.element as HTMLInputElement).value).toBe("(objectClass=*)");
+  });
+
   it("flags non-numeric size/page inputs instead of silently treating them as unlimited (P2-16)", async () => {
     const wrapper = await mountForm();
     const numeric = wrapper.findAll("input.numeric");

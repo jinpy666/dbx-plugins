@@ -325,9 +325,10 @@ describe("GroupsPanel", () => {
     await flushPromises();
     await selectFirstGroup(wrapper);
     await wrapper.findAll(".result-meta .qb-add")[0].trigger("click");
-    const modal = wrapper.find(".modal-backdrop .modal");
-    await modal.find('input[type="text"]').setValue("orders");
-    await modal.find(".primary-button").trigger("click");
+    // teleport stub 重渲染会替换弹窗元素：断言/交互前一律重查，不用过期 wrapper。
+    const modal = () => wrapper.find(".modal-backdrop .modal");
+    await modal().find('input[type="text"]').setValue("orders");
+    await modal().find(".primary-button").trigger("click");
     await flushPromises();
     expect(wrapper.emitted("error")?.at(-1)).toEqual(["orders-0: broker down"]);
     // 失败后弹窗仍会关闭并刷新详情（组件现行为）

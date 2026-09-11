@@ -162,6 +162,7 @@ func (s *Service) Disconnect(connectionID string) {
 // CloseAll 在进程退出前释放全部连接与流式会话（Serve() 返回后调用，M0 §3.2）。
 func (s *Service) CloseAll() {
 	s.Streams.StopAll()
+	s.Streams.Close() // 停空闲回收循环（§5.5 调度端，见 stream.go）
 	s.consumePoolCloseAll()
 
 	s.mu.Lock()

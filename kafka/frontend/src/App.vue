@@ -283,6 +283,12 @@ function flushStreamEvents() {
   while (pendingStreamEvents.length > 0 && !streamPanelHidden.value) {
     streamRef.value?.pushEvent(pendingStreamEvents.shift()!);
   }
+  // 缓冲丢弃可见化（§8.3 遗留收口）：切走面板期间超出后台缓冲上限的事件此前
+  // 只静默计数，用户回来后无从知晓丢了消息；按序补发完成后一次性提示。
+  if (droppedStreamEvents > 0) {
+    showNotice(t("stream.bufferDropped", { count: droppedStreamEvents }));
+    droppedStreamEvents = 0;
+  }
 }
 
 watch(activePanel, (next) => {

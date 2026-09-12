@@ -144,6 +144,26 @@ describe("validateQueryClause / validateQueryBuilder", () => {
 });
 
 describe("validateLDAPFilter", () => {
+  it.each([
+    "(cn=)", "(cn=a*b*c)", "(cn=研究员)", "(uidNumber<=10)",
+    "(cn;lang-en=Alice)", "(1.2.840.113556.1.4.221>=3)",
+    "(cn:caseExactMatch:=Fred Flintstone)", "(cn:dn:2.5.13.2:=Fred Flintstone)",
+    "(:1.2.3:=Wilma)", "(:dn:2.5.13.2:=Betty)",
+    String.raw`(cn=\e7\a0\94\2a\28\29\5c\00)`,
+  ])("keeps valid source-only assertion forms: %s", (filter) => {
+    expect(validateLDAPFilter(filter)).toBe(true);
+  });
+
+  it.each([
+    "(uid)", "(=x)", "(cn>1)", "(cn?=x)", "(cn =x)", "(cn;=x)",
+    "(cn:dn=x)", "(cn::=x)", "(:=x)", "(:dn:=x)",
+    "(cn:rule:dn:=x)", "(cn:1.2.3;lang-en:=x)",
+    String.raw`(cn=\q)`, String.raw`(cn=\2)`, String.raw`(cn=\2g)`,
+    "(cn=a\u0000b)", "(cn>=a*)", "(cn:dn:=*)", "(|(cn=a)(uid))",
+  ])("rejects malformed assertion syntax despite balanced parentheses: %s", (filter) => {
+    expect(validateLDAPFilter(filter)).toBe(false);
+  });
+
   it("accepts valid RFC 4515 filters", () => {
     expect(validateLDAPFilter("(objectClass=*)")).toBe(true);
     expect(validateLDAPFilter("(cn=John Doe)")).toBe(true);

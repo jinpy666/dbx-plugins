@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test for the dbx-ldap-plugin sidecar (scenarios S1-S16).
+"""Smoke test for the dbx-ldap-plugin sidecar (scenarios S1-S18).
 
 Covers the IMPL_PLAN_DBX_LDAP §8 table over a live OpenLDAP container:
 
@@ -19,6 +19,8 @@ Covers the IMPL_PLAN_DBX_LDAP §8 table over a live OpenLDAP container:
     S14 jpegPhoto binary round-trip              -> base64 identical
     S15 member/memberOf association round-trip   -> group found; gone after delete
     S16 generic DN reference (managedBy)         -> temp ou found; gone after delete
+    S17 UTF-8 filters + integer comparisons      -> escaped stars and numeric order
+    S18 alias mode/scope matrix                 -> base finding vs search dereference
 
 SKIP semantics (M0 §5.2):
   * a method not registered / not implemented yet  -> SKIP (backend under
@@ -416,12 +418,13 @@ def run_s9(client: SidecarClient) -> None:
 def run_s10(client: SidecarClient) -> None:
     """S10 invalid RFC 4515 filter -> filter validation error."""
     connect(client, make_connection("smoke-filter"))
-    cause = expect_error(lambda: search(client, baseDn=ROOT, scope="sub", filter="((( "))
-    if is_method_not_registered(cause):
-        raise AssertionError("filter validation should be a business error")
-    lowered = str(cause).lower()
-    if not any(marker in lowered for marker in ("filter", "过滤")):
-        raise AssertionError(f"error does not mention the filter: {cause}")
+    for filter_ in ("((( ", "(uid)", r"(cn=bad\q)"):
+        cause = expect_error(lambda: search(client, baseDn=ROOT, scope="sub", filter=filter_))
+        if is_method_not_registered(cause):
+            raise AssertionError("filter validation should be a business error")
+        lowered = str(cause).lower()
+        if not any(marker in lowered for marker in ("filter", "过滤")):
+            raise AssertionError(f"error does not mention the filter: {cause}")
 
 
 @scenario("S11", "rootDse namingContexts (auto baseDn primitive)")
@@ -705,6 +708,84 @@ def run_s16(client: SidecarClient) -> str | None:
             pass
 
 
+@scenario("S17", "UTF-8 filters + integer comparisons")
+def run_s17(client: SidecarClient) -> None:
+    connect(client, make_connection("smoke-filter-contract"))
+    name = f"filter-{uuid.uuid4().hex[:8]}"
+    root = f"ou={name},{ROOT}"
+    domain(client, "ldap/entry/add", {"dn": root, "attributes": {"objectClass": ["organizationalUnit"], "ou": [name]}})
+    numbers = [9, 10, 100, 9007199254740992, 9007199254740993]
+    dns = [f"uid=n{number},{root}" for number in numbers]
+    try:
+        for number, dn in zip(numbers, dns):
+            domain(client, "ldap/entry/add", {"dn": dn, "attributes": {
+                "objectClass": ["inetOrgPerson", "posixAccount"], "uid": [f"n{number}"],
+                "cn": ["研究*员" if number == 9 else "研究员" if number == 10 else f"User {number}"],
+                "sn": ["Fixture"], "uidNumber": [str(number)], "gidNumber": ["1000"], "homeDirectory": [f"/home/n{number}"],
+            }})
+        for filter_, expected in [
+            (r"(cn=\e7\a0\94\e7\a9\b6\2a\e5\91\98)", dns[:1]),
+            (r"(cn=*\e7\a0\94*)", dns[:2]),
+            ("(uidNumber>=10)", dns[1:]), ("(uidNumber<=9)", dns[:1]),
+            ("(uidNumber=09)", []), ("(gidNumber>=1000)", dns),
+            ("(uidNumber>=9007199254740993)", dns[-1:]),
+            ("(uidNumber<=9007199254740992)", dns[:-1]),
+        ]:
+            result = search(client, baseDn=root, filter=filter_)
+            actual = sorted(entry["dn"] for entry in result["entries"])
+            assert actual == sorted(expected), f"{filter_}: {actual} != {sorted(expected)}"
+        count = domain(client, "ldap/count", {"baseDn": root, "filter": r"(cn=*\e7\a0\94*)"})
+        assert count["count"] == 2 and not count["truncated"], count
+        comma_dn = f"cn=comma\\,name,{root}"
+        domain(client, "ldap/entry/add", {"dn": comma_dn, "attributes": {"objectClass": ["person"], "cn": ["comma,name"], "sn": ["Fixture"]}})
+        count = domain(client, "ldap/count", {"baseDn": root, "filter": "(cn=comma,name)"})
+        assert count["count"] == 1, count
+    finally:
+        domain(client, "ldap/entry/delete", {"dn": root, "recursive": True})
+
+
+@scenario("S18", "alias mode/scope matrix")
+def run_s18(client: SidecarClient) -> None:
+    connect(client, make_connection("smoke-alias-contract"))
+    name = f"aliases-{uuid.uuid4().hex[:8]}"
+    root = f"ou={name},{ROOT}"
+    source, target = f"ou=source,{root}", f"ou=target,{root}"
+    alias, alias2, child = f"cn=alias,{source}", f"cn=alias2,{source}", f"cn=child,{target}"
+    domain(client, "ldap/entry/add", {"dn": root, "attributes": {"objectClass": ["organizationalUnit"], "ou": [name]}})
+    try:
+        for dn, ou in [(source, "source"), (target, "target")]:
+            domain(client, "ldap/entry/add", {"dn": dn, "attributes": {"objectClass": ["organizationalUnit"], "ou": [ou]}})
+        domain(client, "ldap/entry/add", {"dn": child, "attributes": {"objectClass": ["person"], "cn": ["child"], "sn": ["Fixture"]}})
+        for dn, cn in [(alias, "alias"), (alias2, "alias2")]:
+            domain(client, "ldap/entry/add", {"dn": dn, "attributes": {"objectClass": ["top", "alias", "extensibleObject"], "cn": [cn], "aliasedObjectName": [target]}})
+        for mode in ("never", "searching", "finding", "always"):
+            finding, searching = mode in ("finding", "always"), mode in ("searching", "always")
+            for base, scope, expected in [
+                (source, "base", [source]),
+                (source, "one", [target] if searching else [alias, alias2]),
+                (source, "sub", [source, target, child] if searching else [source, alias, alias2]),
+                (alias, "base", [target] if finding else [alias]),
+                (alias, "one", [child] if finding else []),
+                (alias, "sub", [target, child] if finding else [alias]),
+            ]:
+                result = search(client, baseDn=base, scope=scope, derefAliases=mode)
+                actual = sorted(entry["dn"] for entry in result["entries"])
+                assert actual == sorted(expected), f"{mode}/{scope}/{base}: {actual} != {sorted(expected)}"
+            ancestor_base = f"cn=child,{alias}"
+            if finding:
+                result = search(client, baseDn=ancestor_base, scope="base", derefAliases=mode)
+                assert [entry["dn"] for entry in result["entries"]] == [child], result
+            else:
+                expect_error(lambda: search(client, baseDn=ancestor_base, scope="base", derefAliases=mode), ("no such object",))
+        for cn, other in [("cycle-a", "cycle-b"), ("cycle-b", "cycle-a")]:
+            domain(client, "ldap/entry/add", {"dn": f"cn={cn},{source}", "attributes": {
+                "objectClass": ["top", "alias", "extensibleObject"], "cn": [cn], "aliasedObjectName": [f"cn={other},{source}"],
+            }})
+        expect_error(lambda: search(client, baseDn=f"cn=cycle-a,{source}", scope="base", derefAliases="always"), ("alias",))
+    finally:
+        domain(client, "ldap/entry/delete", {"dn": root, "recursive": True})
+
+
 # -- driver --------------------------------------------------------------------
 
 def ldap_reachable() -> tuple[bool, str]:
@@ -733,6 +814,8 @@ def main() -> int:
         ("S14", "jpegPhoto binary round-trip", run_s14),
         ("S15", "member/memberOf association round-trip", run_s15),
         ("S16", "generic DN reference (managedBy) round-trip", run_s16),
+        ("S17", "UTF-8 filters + integer comparisons", run_s17),
+        ("S18", "alias mode/scope matrix", run_s18),
         ("S9", "disconnect then call", run_s9),
     ]
 
@@ -769,7 +852,7 @@ def main() -> int:
         for _, _, fn in steps:
             fn(client)
     finally:
-        for connection_id in ("smoke-main", "smoke-ro", "smoke-pw", "smoke-wl", "smoke-filter", "smoke-dc", "smoke-pwhash", "smoke-photo", "smoke-assoc", "smoke-assoc-mb"):
+        for connection_id in ("smoke-main", "smoke-ro", "smoke-pw", "smoke-wl", "smoke-filter", "smoke-dc", "smoke-pwhash", "smoke-photo", "smoke-assoc", "smoke-assoc-mb", "smoke-filter-contract", "smoke-alias-contract"):
             try:
                 client.request("connection/disconnect", {"connection": {"id": connection_id}})
             except Exception:

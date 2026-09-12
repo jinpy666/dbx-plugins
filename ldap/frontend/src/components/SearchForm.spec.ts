@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import SearchForm from "./SearchForm.vue";
+import { setWorkbenchLocale, workbenchLocale, workbenchMessage } from "../lib/i18n";
 
 async function mountForm() {
   const wrapper = mount(SearchForm, { props: { baseDn: "dc=demo,dc=dbx" } });
@@ -193,6 +194,36 @@ describe("SearchForm (filter builder)", () => {
 });
 
 describe("SearchForm validation feedback (fresh review)", () => {
+  it.each(["en", "es", "it", "ja", "pt-BR", "zh-CN", "zh-TW"])("localizes malformed source assertions and recovers in %s", async (locale) => {
+    const previousLocale = workbenchLocale.value;
+    setWorkbenchLocale(locale);
+    const wrapper = await mountForm();
+    try {
+      await wrapper.findAll(".mode-switch button")[1].trigger("click");
+      const input = wrapper.find(".filter-source input");
+      for (const filter of ["(uid)", "(=x)", String.raw`(cn=bad\q)`]) {
+        await input.setValue(filter);
+        expect(input.attributes("aria-invalid")).toBe("true");
+        const error = wrapper.find('[id="' + input.attributes("aria-describedby") + '"]');
+        expect(error.text()).toBe(workbenchMessage(locale, "search.filterInvalid"));
+        expect(error.attributes("role")).toBe("alert");
+        expect(wrapper.find("button[type='submit']").attributes("disabled")).toBeDefined();
+        await wrapper.find("form").trigger("submit");
+        expect(wrapper.emitted("run")).toBeUndefined();
+      }
+      const corrected = String.raw`(cn=\e7\a0\94\e7\a9\b6)`;
+      await input.setValue(corrected);
+      expect(input.attributes("aria-invalid")).toBe("false");
+      expect(input.attributes("aria-describedby")).toBeUndefined();
+      expect(wrapper.find("button[type='submit']").attributes("disabled")).toBeUndefined();
+      await wrapper.find("form").trigger("submit");
+      expect(wrapper.emitted("run")?.[0][0]).toMatchObject({ filter: corrected });
+    } finally {
+      wrapper.unmount();
+      setWorkbenchLocale(previousLocale);
+    }
+  });
+
   it.each(["abc", "12px", "1.5", "1e3", "-1", "9007199254740992"])("blocks all search entry points for an invalid numeric value: %s", async (value) => {
     const wrapper = await mountForm();
     await wrapper.findAll(".mode-switch button")[1].trigger("click");

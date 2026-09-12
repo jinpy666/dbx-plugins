@@ -131,14 +131,14 @@ DN 白名单约束（§6）。方法未注册返回 -32601。
 | `ldap/count` | —（A-LDAP 新增：树徽章精确计数） | `baseDn?`、`filter?` | `{count, truncated?}`（scope=one，上限 5000） |
 | `ldap/search` | Search(:356) | `baseDn?`（缺省 profile.base_dn）、`filter`（RFC 4515 校验）、`scope`（base/one/sub）、`attributes?[]`、`sizeLimit?`、`pageSize?`、`typesOnly?`、`derefAliases?`（never/searching/finding/always） | `{entries:[{dn,attributes:{attr:[v…]}}], count, truncated}`（pageSize 走 SearchWithPaging 聚合） |
 | `ldap/entry/get` | GetEntry(:426) | `dn`、`attributes?[]` | `{entry:{dn,attributes}}`；屏蔽属性过滤后返回 |
-| `ldap/rootDse` | RootDSE(:452) | — | `{attributes:{…}}`；`allowed_base_dns` 非空时禁用（沿袭） |
+| `ldap/rootDse` | RootDSE(:452) | `attributes?[]`；前端导出默认显式请求 `["*", "+"]`，含操作属性 | `{attributes:{…}}`；`allowed_base_dns` 非空时禁用（沿袭） |
 | `ldap/schema` | GetSchemaMetadata(:472) | `refresh?`（默认走缓存） | `{attributeTypes:[…], objectClasses:[…]}`；缓存落 `cache/schema-<hash>.json` |
 | `ldap/entry/add` | AddEntry(:508) | `dn`、`attributes:{attr:[v…]}` | `{success:true}`；写白名单 + 值转义 |
 | `ldap/entry/modify` | ModifyEntry(:553) | `dn`、`changes:[{operation:add/replace/delete, attribute, values[]}]` | `{success:true}`；屏蔽属性拒绝修改 |
 | `ldap/entry/delete` | DeleteEntry(:606) | `dn`、`recursive?`（缺省 false 单条语义；true 删整棵子树：优先 Tree Delete 控件 `1.2.840.113556.1.4.805`，服务端不支持（unavailableCriticalExtension/unavailable/unwillingToPerform）回退自底向上逐条删除，条目上限 1000 超限报错不删；写白名单只校验目标 DN） | `{success:true}`；recursive 审计聚合为一条 `subtree_delete`（含 `deletedCount`） |
 | `ldap/entry/childrenCount` | —（N1 新增：删除确认子条目计数） | `dn` | `{count, truncated?}`（scope=one、filter `(objectClass=*)`、上限 5000，风格同 `ldap/count`）；白名单约束同读操作 |
-| `ldap/entry/modifyDn` | ModifyDN(:641) | `dn`、`newRdn`、`newParentDn?`、`deleteOldRdn` | `{success:true}`；新旧 DN 均过写白名单 |
-| `ldap/connections/statuses` | ConnectionStatuses(:695) | — | `{statuses:[{connectionId, state:connected/idle/error, lastError?, lastUsedAt}]}` |
+| `ldap/entry/modifyDn` | ModifyDN(:641) | `dn`、`newRdn`、`newSuperior?`（界面“新父 DN”）、`deleteOldRdn` | `{success:true}`；新旧 DN 均过写白名单 |
+| `ldap/connections/statuses` | ConnectionStatuses(:695) | — | `{statuses:[{connectionId, status:connected/idle/error, readOnly?, lastError?, lastUsedAt}]}` |
 | `ldap/presets/list` | LDAPSearchPreset（sidecar store） | — | `{presets:[...]}`；本地 `presets.json`，不含凭据 |
 | `ldap/presets/save` | LDAPSearchPreset | `preset:{id,name,baseDn?,filter?,scope?,attributes?,sizeLimit?}`；id 空则生成，name 必填 | `{success:true,preset}`；按 id 更新。仅持久化过滤器串，前端应用时重建条件树；不存 `conditions` |
 | `ldap/presets/remove` | LDAPSearchPreset | `id` | `{success:true}`；id 不存在报业务错误，不返回整表 |
@@ -288,7 +288,7 @@ src/
 | S2 | connect → search base scope root | entries 非空 |
 | S3 | search `(objectClass=*)` sub + pageSize | 分页聚合 = 全量 |
 | S4 | entry add/modify/get/delete 往返 | 读回一致 |
-| S5 | modifyDn 改 RDN | 新 DN 可查、旧 DN 不存在 |
+| S5 | modifyDn 改 RDN + 子树移动 | 新 DN 可查、旧 DN 不存在；`newSuperior` 移动子树，`deleteOldRdn` 两态的命名属性值正确 |
 | S6 | read_only 连接写操作 | -32000 拒绝 |
 | S7 | blocked_attributes（userPassword） | 结果中不含 |
 | S8 | 白名单外 DN 读 | 拒绝 |
@@ -400,6 +400,29 @@ R4-09 大目录保持仅评估；R4-10 树剩余键盘操作、R4-11 mock 搜索
 额外记录 P2：`scripts/smoke_test.py` 的 scenario 装饰器在成功时执行场景两次，
 本轮用纯计数器复现后保留待修。完整验证与收敛判定见工作区
 `.goal-state/report-ldap-round5.md`。
+
+### Review 第 6 轮（2026-09-12，剩余 P2 跟进）
+
+用户继续后，从 R4-10、R4-11、R5-05 出发实施四组小修；无后端产品代码、
+公共层或宿主改动，复用既有七语文案，无新增依赖。
+
+| 任务 | 内容 | 状态与验收 |
+|---|---|---|
+| R6-1 / R4-10 | 树 Home/End、父子导航、跨虚拟窗口的上下键；原生“加载更多”按钮可 Tab/Enter 操作并保持加载期焦点 | [x] 真实 VirtualList 组件回归与浏览器按键通过；保留分页/虚拟化策略 |
+| R6-2 / R4-11 读取 | mock 属性选择、typesOnly、成功分页聚合、未知方法失败；RootDSE 操作属性请求/投影一致 | [x] mock 与浏览器导出通过；真实容器属性投影/类型值形状已对照。修复 RootDSE 默认导出遗漏操作属性 |
+| R6-3 / R4-11 写入 | 前端移动字段对齐 Go 的 newSuperior；mock 按值增删、修改失败原子性、RDN 值与子树迁移 | [x] API→mock 回归、浏览器移动与真实容器 S5 通过；修复新发现的“新父 DN 被静默忽略” |
+| R6-4 / R5-05 | smoke 装饰器成功场景只执行一次；离线回归进入 test.sh，扩展 S5 | [x] Python 3 测试（含 6 个异常/SKIP 子例）、容器 17/17 通过 |
+
+全套 `scripts/test.sh` 通过：前端 **37 文件 / 554 用例**、UI **20/20**、Go、
+打包成功（当前并发更新后的 manifest 为 0.1.58，本轮未修改它）。
+独立 `go vet ./... && go test -count=1 ./...` 通过。
+
+仍未收敛：真实 OpenLDAP 的 pageSize/sizeLimit 组合可返回 LDAP Code 4，例如
+7 条目录下 2/3、3/3、10/3 失败，而 1/3、2/4 可聚合返回。后端与 truncated
+语义保持不动；mock 只镜像成功聚合，不模拟这些服务器控制错误。alias 解引用
+遇到 alias fixture 时明确不支持；完整 matching rules、扩展控制/认证矩阵等
+仍需专项契约夹具。R4-09 大目录继续只评估，前轮人工/真机与维持项不变。
+完整报告与失败原始日志见 `.goal-state/report-ldap-round6.md`。
 
 ## 10. 风险与备注
 

@@ -109,9 +109,10 @@ export const ldapApi = {
   },
 
   rootDse(attributes?: string[]) {
+    // RootDSE metadata is operational; '*' alone only requests user attributes.
     return callLdap<{ attributes: Record<string, string[]> }>(
       "ldap/rootDse",
-      attributes?.length ? { attributes } : {},
+      { attributes: attributes?.length ? attributes : ["*", "+"] },
     );
   },
 

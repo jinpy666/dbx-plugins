@@ -138,12 +138,17 @@ test("builder → source mode carries the generated filter", async (page) => {
 
 test("source syntax feedback is linked to the field and recovers", async (page) => {
   const input = page.locator(".filter-source input");
-  await input.fill("(uid");
-  expectEqual(await input.getAttribute("aria-invalid"), "true", "invalid source field");
-  const description = await input.getAttribute("aria-describedby");
-  expectEqual(await page.locator('[id="' + description + '"]').innerText(), "LDAP 过滤器不合法", "source error");
+  for (const filter of ["(uid", "(uid)", "(=x)", String.raw`(cn=bad\q)`]) {
+    await input.fill(filter);
+    expectEqual(await input.getAttribute("aria-invalid"), "true", "invalid source field");
+    const description = await input.getAttribute("aria-describedby");
+    expectEqual(await page.locator('[id="' + description + '"]').innerText(), "LDAP 过滤器不合法", "source error");
+    expectEqual(await page.locator(".search-form button[type='submit']").isDisabled(), true, "invalid assertion blocks submit");
+  }
+  await captureReview(page, "ldap-round7-filter-feedback");
   await input.fill("(objectClass=*)");
   expectEqual(await input.getAttribute("aria-invalid"), "false", "corrected source field");
+  expectEqual(await page.locator(".search-form button[type='submit']").isDisabled(), false, "correction releases submit");
 });
 
 test("invalid numeric inputs block search until corrected", async (page) => {
@@ -354,6 +359,51 @@ test("rename dialog moves an entry through the real newSuperior field", async (p
     dn: "uid=round6-moved,ou=services,dc=demo,dc=dbx", attributes: ["uid"],
   }));
   expectEqual(moved.entry.attributes.uid.join(","), "round6-moved", "new parent and naming attribute persisted");
+});
+
+test("RootDSE export includes explicitly requested operational metadata", async (page) => {
+  const pending = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Root\s*DSE/ }).click();
+  const download = await pending;
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const contents = Buffer.concat(chunks).toString("utf8");
+  if (!contents.includes("namingContexts: dc=demo,dc=dbx") || !contents.includes("supportedLDAPVersion: 3")) {
+    throw new Error("RootDSE operational metadata missing from export");
+  }
+  await download.delete();
+});
+
+test("source searches preserve escaped UTF-8 and order integer attributes numerically", async (page) => {
+  const baseDn = "ou=round7-filter,dc=demo,dc=dbx";
+  await page.evaluate(async (root) => {
+    const add = (dn, attributes) => window.dbxPlugin.invoke("ldap/entry/add", { dn, attributes });
+    await add(root, { objectClass: ["organizationalUnit"], ou: ["round7-filter"] });
+    for (const number of [9, 10, 100]) {
+      await add(`uid=n${number},${root}`, { objectClass: ["inetOrgPerson", "posixAccount"],
+        cn: [number === 9 ? "研究*员" : `User ${number}`], sn: ["Fixture"], uid: [`n${number}`],
+        uidNumber: [String(number)], gidNumber: ["1000"], homeDirectory: [`/home/n${number}`] });
+    }
+  }, baseDn);
+  try {
+    await page.locator(".search-form > label.field input").first().fill(baseDn);
+    await page.locator(".search-form > label.field select").first().selectOption("sub");
+    await page.locator(".search-form .mode-switch button").nth(1).click();
+    for (const [filter, numbers] of [
+      [String.raw`(cn=\e7\a0\94\e7\a9\b6\2a\e5\91\98)`, [9]],
+      ["(uidNumber>=10)", [10, 100]],
+      ["(uidNumber<=9)", [9]],
+    ]) {
+      await page.locator(".filter-source input").fill(filter);
+      await page.locator(".search-form button[type='submit']").click();
+      const expected = numbers.map((number) => `uid=n${number},${baseDn}`).sort();
+      await page.waitForFunction((dns) => JSON.stringify([...document.querySelectorAll(".result-row")].map((row) => row.title).sort()) === JSON.stringify(dns), expected);
+    }
+    await captureReview(page, "ldap-round7-filter-results");
+  } finally {
+    await page.evaluate((dn) => window.dbxPlugin.invoke("ldap/entry/delete", { dn, recursive: true }), baseDn);
+  }
 });
 
 // -- main ----------------------------------------------------------------------

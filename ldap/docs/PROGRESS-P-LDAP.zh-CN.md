@@ -821,3 +821,33 @@ e2e GUI 拉起为卡点（宿主 debug bundle 未构建，构建 + UI 验收超 
 **未达成无剩余可执行项**：R4-10 树剩余键盘操作、R4-11 mock 保真度待后续；
 另确认现有 smoke scenario 成功时调用场景两次（R5-05，纯计数器复现，仅记录）。
 大目录保持仅评估，指定维持项与人工/真机验证继续保留；未提交 git。
+
+## review 第 6 轮：树键盘、mock 契约与 smoke 收口（2026-09-12，goal-state round6）
+
+完整报告：`.goal-state/report-ldap-round6.md`；任务清单 IMPL_PLAN R6-1～R6-4。
+本轮四组小修，无 Go 产品代码/宿主/公共层改动，无新依赖，复用既有七语：
+
+- **R4-10**：父子/Home/End 与跨虚拟窗口导航，原生加载更多按钮可 Tab/Enter
+  操作；续载期间保留节点焦点，分页和虚拟化策略不变。
+- **R4-11 读取**：mock 属性选择、typesOnly、成功分页聚合、未知方法失败；
+  真实 RootDSE 默认只给 objectClass，前端导出改为显式请求 `["*", "+"]`。
+- **R4-11 写入**：按值增删、失败原子性、RDN 属性与子树迁移。另修复 P1：
+  前端的 newParentDn 被 Go 忽略，现发送真实字段 newSuperior；容器 S5 验证
+  子树移动与 deleteOldRdn 两态。
+- **R5-05**：smoke 场景只执行一次并保留 note；新增标准库离线测试入全套。
+
+验证：前端 typecheck/test/build **37 文件 / 554 用例**（+26），UI **20/20**，
+Python **3 个测试方法**（含 6 个异常/SKIP 子例）；独立 Go vet / count=1 四包
+通过；容器两次 **17/17 PASS**（S15/S16 部分断言条件跳过沿袭，已 down -v）。
+`scripts/test.sh` 全套与 0.1.58 打包通过。manifest 在执行期间由本轮之外的
+操作从 0.1.57 变为 0.1.58，本轮保留该变化，没有修改或还原此文件。
+
+如实记录：首次树新增测试 3 例失败为假时钟事件派发/测试 DOM 默认属性差异，
+修正测试后浏览器实按键通过；额外分页协议探测曾因 LDAP Code 4 失败。7 条
+目录下 pageSize/sizeLimit 为 2/3、3/3、10/3 会报 Size Limit Exceeded，1/3、
+2/4 可返回；该后端/服务器控制交互未修，原始日志在报告中。
+
+**未达成无剩余可执行项**：高级过滤器/匹配规则、别名与服务器控制错误的
+mock 保真度仍待分批推进；分页问题单列后端专项。大目录仅评估、truncated、
+AssociationPanel inline style、真机认证、GUI e2e 与 plugin-cli 建议继续维持。
+未执行 commit/push/PR/stash/reset/checkout。

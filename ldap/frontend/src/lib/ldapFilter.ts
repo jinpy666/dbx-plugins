@@ -550,6 +550,35 @@ export const buildTreeKeywordFilter = (keyword: string): string => {
  * the sidecar performs the authoritative parse). Validates parenthesised
  * structure, filter operators and item shape.
  */
+const isValidFilterAssertion = (body: string): boolean => {
+    const match = /^([^=]*?)(>=|<=|~=|:=|=)([\s\S]*)$/u.exec(body);
+    if (!match) return false;
+    const [, prefix, operator, value] = match;
+    if (operator === ':=') {
+        // attr[:dn][:rule]:=value or [:dn]:rule:=value. Matching rules are
+        // OIDs/descriptors, not attribute descriptions with language options.
+        const [attribute, ...options] = prefix.split(':');
+        if (attribute && !LDAP_ATTRIBUTE_DESCRIPTION_RE.test(attribute)) return false;
+        if (options[0]?.toLowerCase() === 'dn') options.shift();
+        if (options.length > 1 || (options.length === 1 &&
+            !/^(?:[A-Za-z][A-Za-z0-9-]*|[0-9]+(?:\.[0-9]+)+)$/u.test(options[0]))) return false;
+        if (!attribute && options.length !== 1) return false;
+    } else if (!LDAP_ATTRIBUTE_DESCRIPTION_RE.test(prefix)) return false;
+
+    // Empty assertion values are legal; only equality/substring items allow
+    // raw stars. Each backslash must encode exactly one byte as two hex digits.
+    for (let i = 0; i < value.length; i += 1) {
+        const char = value[i];
+        if (char === '\\') {
+            if (!/^[0-9a-f]{2}$/iu.test(value.slice(i + 1, i + 3))) return false;
+            i += 2;
+        } else if (char === '\0' || char === '(' || char === ')' || (char === '*' && operator !== '=')) {
+            return false;
+        }
+    }
+    return true;
+};
+
 export const validateLDAPFilter = (filter: string): boolean => {
     const text = String(filter ?? '').trim();
     if (!text) return false;
@@ -576,15 +605,14 @@ export const validateLDAPFilter = (filter: string): boolean => {
         } else {
             // simple item: attr filtertype value — raw parens inside the value
             // are invalid (RFC 4515 requires \28/\29 escaping).
-            let sawValue = false;
+            const start = position;
             while (position < text.length) {
                 const char = peek();
                 if (char === ')') break;
                 if (char === '(') return false;
-                sawValue = true;
                 position += 1;
             }
-            if (!sawValue) return false;
+            if (!isValidFilterAssertion(text.slice(start, position))) return false;
         }
         if (peek() !== ')') return false;
         position += 1;

@@ -14,7 +14,7 @@
  */
 import "./style.css";
 import { parseRdnAttributes, splitFirstDnRdn } from "./lib/dn";
-import { validateLDAPFilter } from "./lib/ldapFilter";
+import { unescapeLdapFilterValue, validateLDAPFilter } from "./lib/ldapFilter";
 
 const eventListeners = new Set<(event: DbxPluginEvent) => void>();
 const appearanceListeners = new Set<(appearance: DbxPluginAppearance) => void>();
@@ -78,12 +78,13 @@ function attributeKey(attributes: MockEntry["attributes"], name: string): string
   return Object.keys(attributes).find((key) => key.toLowerCase() === name.toLowerCase()) ?? name;
 }
 
-function selectAttributes(attributes: MockEntry["attributes"], requested: unknown, typesOnly = false): MockEntry["attributes"] {
+function selectAttributes(attributes: MockEntry["attributes"], requested: unknown, typesOnly = false, rootDse = false): MockEntry["attributes"] {
   const names = Array.isArray(requested) ? requested.map((name) => String(name).trim().toLowerCase()).filter(Boolean) : [];
-  // All stored directory attributes are user attributes; dn is entry metadata,
-  // not an alias for '*'. A 1.1-only request returns just entry DNs.
+  // Directory fixtures contain user attributes; RootDSE metadata is operational
+  // except objectClass. dn is entry metadata, not an alias for '*'.
   return Object.fromEntries(Object.entries(attributes)
-    .filter(([name]) => names.length === 0 || names.includes("*") || names.includes(name.toLowerCase()))
+    .filter(([name]) => names.includes(name.toLowerCase()) ||
+      (rootDse && name.toLowerCase() !== "objectclass" ? names.includes("+") : names.length === 0 || names.includes("*")))
     .map(([name, values]) => [name, typesOnly ? [] : [...values]]));
 }
 
@@ -123,18 +124,29 @@ for (let index = 0; index < 1000; index += 1) {
 
 // -- RFC 4515 filter evaluation (fixture-grade) -------------------------------
 
-function decodeFilterValue(value: string): string {
-  return value.replace(/\\([0-9a-f]{2})/giu, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
-}
+type EntryMatcher = (entry: MockEntry) => boolean;
+const integerValue = (value: string): bigint | null => /^(?:0|-?[1-9][0-9]*)$/u.test(value) ? BigInt(value) : null;
 
-function matchItem(entry: MockEntry, attribute: string, rawValue: string): boolean {
-  const values = entry.attributes[attributeKey(entry.attributes, attribute)] ?? [];
-  if (rawValue === "*") return values.length > 0;
-  if (!rawValue.includes("*")) {
-    return values.some((value) => value.toLowerCase() === decodeFilterValue(rawValue).toLowerCase());
+function compileFilterItem(attribute: string, operator: string, rawValue: string): EntryMatcher {
+  const values = (entry: MockEntry) => entry.attributes[attributeKey(entry.attributes, attribute)] ?? [];
+  if (operator === "~=" || operator === ":=" ||
+      (operator !== "=" && !["uidnumber", "gidnumber"].includes(attribute.toLowerCase()))) {
+    throw new Error("LDAP filter matching rule is not implemented in the fixture");
   }
-  const parts = rawValue.split("*").map(decodeFilterValue).map((part) => part.toLowerCase());
-  return values.some((value) => {
+  if (operator === ">=" || operator === "<=") {
+    const expected = integerValue(unescapeLdapFilterValue(rawValue));
+    return (entry) => expected !== null && values(entry).some((value) => {
+      const actual = integerValue(value);
+      return actual !== null && (operator === ">=" ? actual >= expected : actual <= expected);
+    });
+  }
+  if (rawValue === "*") return (entry) => values(entry).length > 0;
+  if (!rawValue.includes("*")) {
+    const expected = unescapeLdapFilterValue(rawValue).toLowerCase();
+    return (entry) => values(entry).some((value) => value.toLowerCase() === expected);
+  }
+  const parts = rawValue.split("*").map(unescapeLdapFilterValue).map((part) => part.toLowerCase());
+  return (entry) => values(entry).some((value) => {
     const text = value.toLowerCase();
     let cursor = 0;
     for (let index = 0; index < parts.length; index += 1) {
@@ -150,36 +162,59 @@ function matchItem(entry: MockEntry, attribute: string, rawValue: string): boole
   });
 }
 
-function matchFilter(entry: MockEntry, filter: string): boolean {
+function compileFilter(filter: string): EntryMatcher {
   const text = filter.trim();
-  if (!text.startsWith("(") || !text.endsWith(")")) return false;
-  const operator = text[1];
-  if (operator === "&" || operator === "|") {
-    let position = 2;
-    const children: string[] = [];
-    while (text[position] === "(") {
-      let depth = 0;
-      const start = position;
-      for (; position < text.length; position += 1) {
-        if (text[position] === "(") depth += 1;
-        else if (text[position] === ")") {
-          depth -= 1;
-          if (depth === 0) break;
-        }
-      }
-      children.push(text.slice(start, position + 1));
+  if (!validateLDAPFilter(text)) throw new Error("invalid LDAP filter");
+  let position = 0;
+  // Compile every leaf before scanning entries. A matching OR branch or an
+  // empty directory must not hide a matching rule the fixture cannot emulate.
+  const parse = (): EntryMatcher => {
+    position += 1; // opening parenthesis; structure was validated above
+    const operator = text[position];
+    if (operator === "&" || operator === "|") {
       position += 1;
+      const children: EntryMatcher[] = [];
+      while (text[position] === "(") children.push(parse());
+      position += 1;
+      return (entry) => operator === "&" ? children.every((child) => child(entry)) : children.some((child) => child(entry));
     }
-    return operator === "&" ? children.every((child) => matchFilter(entry, child)) : children.some((child) => matchFilter(entry, child));
+    if (operator === "!") {
+      position += 1;
+      const child = parse();
+      position += 1;
+      return (entry) => !child(entry);
+    }
+    const close = text.indexOf(")", position);
+    const item = /^([^=]*?)(>=|<=|~=|:=|=)([\s\S]*)$/u.exec(text.slice(position, close));
+    if (!item) throw new Error("invalid LDAP filter");
+    position = close + 1;
+    return compileFilterItem(item[1], item[2], item[3]);
+  };
+  return parse();
+}
+
+function dnInSearchScope(dn: string, baseDn: string, scope: string): boolean {
+  if (scope === "base") return dn.toLowerCase() === baseDn.toLowerCase();
+  if (scope === "one") return splitFirstDnRdn(dn).parentDn.toLowerCase() === baseDn.toLowerCase();
+  return dnWithinBase(dn, baseDn);
+}
+
+function needsAliasDereference(baseDn: string, scope: string, mode: string): boolean {
+  const finding = mode === "finding" || mode === "always";
+  const searching = mode === "searching" || mode === "always";
+  if (!finding && !searching) return false;
+  for (const entry of directory.values()) {
+    const classes = entry.attributes[attributeKey(entry.attributes, "objectClass")] ?? [];
+    if (classes.some((value) => value.toLowerCase() === "alias")) {
+      // Finding may encounter an alias anywhere in the base's ancestor path.
+      // Searching only dereferences aliases below the base, within the scope.
+      if ((finding && dnWithinBase(baseDn, entry.dn)) ||
+          (searching && entry.dn.toLowerCase() !== baseDn.toLowerCase() && dnInSearchScope(entry.dn, baseDn, scope))) {
+        return true;
+      }
+    }
   }
-  if (operator === "!") return !matchFilter(entry, text.slice(2, -1));
-  const item = text.slice(1, -1);
-  const equals = item.indexOf("=");
-  if (equals < 0) return false;
-  const attribute = item.slice(0, equals).replace(/~$|>=$|<=$/, "");
-  const value = item.slice(equals + 1);
-  // fixture 属性名大小写不敏感（cn/uid 等真实目录同理）。
-  return [attribute, attribute.toLowerCase()].some((candidate) => matchItem(entry, candidate, value));
+  return false;
 }
 
 function dnWithinBase(dn: string, baseDn: string): boolean {
@@ -192,25 +227,19 @@ function search(params_: Record<string, unknown>) {
   if (params.get("err") === "1") throw new Error("connection lost (fixture error injection)");
   const baseDn = String(params_.baseDn ?? "").trim() || BASE_DN;
   const filter = String(params_.filter ?? "").trim() || "(objectClass=*)";
-  if (!validateLDAPFilter(filter)) throw new Error("invalid LDAP filter");
-  const scope = String(params_.scope ?? "sub");
+  const matches = compileFilter(filter);
+  const scope = String(params_.scope ?? "sub").trim().toLowerCase();
   const paged = Number(params_.pageSize) > 0;
   const sizeLimit = Math.max(0, Number(params_.sizeLimit) || 0);
   const limit = paged ? sizeLimit || 500 : sizeLimit;
-  // No alias engine is simulated: make an effective dereference request fail
-  // explicitly rather than passing a test with silently different results.
-  if (["searching", "finding", "always"].includes(String(params_.derefAliases)) &&
-      [...directory.values()].some((entry) => entry.attributes[attributeKey(entry.attributes, "aliasedObjectName")])) {
+  // Resolution remains unsupported; unrelated aliases must not reject a query.
+  if (needsAliasDereference(baseDn, scope, String(params_.derefAliases ?? "never").trim().toLowerCase())) {
     throw new Error("alias dereferencing is not implemented in the fixture");
   }
   const matched: MockEntry[] = [];
   for (const entry of directory.values()) {
-    if (!dnWithinBase(entry.dn, baseDn)) continue;
-    if (scope === "base" && entry.dn.toLowerCase() !== baseDn.toLowerCase()) continue;
-    if (scope === "one") {
-      if (splitFirstDnRdn(entry.dn).parentDn.toLowerCase() !== baseDn.toLowerCase()) continue;
-    }
-    if (!matchFilter(entry, filter)) continue;
+    if (!dnInSearchScope(entry.dn, baseDn, scope)) continue;
+    if (!matches(entry)) continue;
     matched.push(entry);
     if (limit > 0 && matched.length >= limit && paged) break;
     if (limit > 0 && matched.length > limit) throw new Error('LDAP Result Code 4 "Size Limit Exceeded"');
@@ -219,8 +248,9 @@ function search(params_: Record<string, unknown>) {
     dn: entry.dn,
     attributes: selectAttributes(entry.attributes, params_.attributes, params_.typesOnly === true),
   }));
-  // Mirror the current Go aggregator, including its exact-limit flag. pageSize
-  // is a transport page size, not a request for one UI page.
+  // Mirror successful Go aggregation, including its exact-limit flag. pageSize
+  // is a transport page size, not a UI page. Server-specific paging-control
+  // failures (e.g. OpenLDAP sizeLimit interactions) are not simulated.
   return { entries, count: entries.length, truncated: paged && entries.length >= limit, baseDn, filter };
 }
 
@@ -228,17 +258,15 @@ function search(params_: Record<string, unknown>) {
 // 不受 search sizeLimit 截断影响；超上限折算为 truncated:true。
 function countChildren(params_: Record<string, unknown>): { count: number; truncated: boolean } {
   if (params.get("err") === "1") throw new Error("connection lost (fixture error injection)");
-  const baseDn = String(params_.baseDn ?? BASE_DN);
-  const filter = String(params_.filter ?? "(objectClass=*)");
+  const baseDn = String(params_.baseDn ?? "").trim() || BASE_DN;
+  const filter = String(params_.filter ?? "").trim() || "(objectClass=*)";
+  const matches = compileFilter(filter);
   const limit = 5000;
   let count = 0;
   let truncated = false;
   for (const entry of directory.values()) {
-    if (!dnWithinBase(entry.dn, baseDn)) continue;
-    if (entry.dn.toLowerCase() === baseDn.toLowerCase()) continue;
-    const relative = entry.dn.slice(0, entry.dn.length - baseDn.length - 1);
-    if (relative.includes(",")) continue;
-    if (!matchFilter(entry, filter)) continue;
+    if (!dnInSearchScope(entry.dn, baseDn, "one")) continue;
+    if (!matches(entry)) continue;
     count += 1;
     if (count >= limit) {
       truncated = true;
@@ -257,6 +285,8 @@ const attributeTypeDefinitions = [
   "( 2.5.4.41 NAME 'name' EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15{32768} )",
   "( 2.5.4.42 NAME ( 'givenName' 'gn' ) SUP name )",
   "( 0.9.2342.19200300.100.1.1 NAME ( 'uid' 'userid' ) EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15{256} )",
+  "( 1.3.6.1.1.1.1.0 NAME 'uidNumber' EQUALITY integerMatch ORDERING integerOrderingMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )",
+  "( 1.3.6.1.1.1.1.1 NAME 'gidNumber' EQUALITY integerMatch ORDERING integerOrderingMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )",
   "( 0.9.2342.19200300.100.1.3 NAME ( 'mail' 'rfc822Mailbox' ) EQUALITY caseIgnoreIA5Match SUBSTR caseIgnoreIA5SubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.26{256} )",
   "( 2.5.4.0 NAME 'objectClass' EQUALITY objectIdentifierMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.38 )",
   "( 2.5.4.10 NAME ( 'o' 'organizationName' ) EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15{64} )",
@@ -323,12 +353,13 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   } else if (method === "ldap/rootDse") {
     result = {
       attributes: selectAttributes({
+        objectClass: ["top"],
         namingContexts: [BASE_DN],
         supportedLDAPVersion: ["3"],
         supportedSASLMechanisms: ["SIMPLE", "EXTERNAL"],
         subschemaSubentry: ["cn=Subschema"],
         vendorName: ["FixtureLDAP"],
-      }, input.attributes),
+      }, input.attributes, false, true),
     };
   } else if (method === "ldap/schema") result = { attributeTypes: attributeTypeDefinitions, objectClasses: objectClassDefinitions };
   else if (method === "ldap/count") result = countChildren(input);

@@ -74,3 +74,9 @@ dbx-plugins/
 - **服务器 web 访问**：`scripts/release-docker.sh`（构建含四插件 Linux .dbxp 的
   dbx-web 镜像，容器首启自动安装；机制与部署见 skill `dbx-web-docker` 与
   `deploy/web/`）。
+
+## 仓库发布
+
+- GitHub 私有仓库 `jinpy666/dbx-plugins`；敏感信息清理决策与转公开前
+  复查清单见 `docs/REPO_PUBLISH.zh-CN.md`（copilot-pool 与无关调研文档
+  已移出发布，本地备份在仓库外）。

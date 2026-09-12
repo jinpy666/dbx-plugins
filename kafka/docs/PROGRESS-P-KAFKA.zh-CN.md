@@ -1014,3 +1014,23 @@ TopicTree 57.89 / MessagesPanel 61.75 / api 70.17 / ProducePanel 72.86。
 - **收敛判定：无剩余可执行项（仅剩人工/真机复核项与维持豁免项）**——
   MonitorPanel 采样降频、P2-10 真机复核、ACL TYPE 豁免、Phase 3 登记、
   S3 常绿化均维持原状；插件进入收敛状态。
+
+## 持续优化轮·4（2026-09-12：fresh review 未扫面五轴 + 授权错误映射 + 状态一致性收敛）
+
+> 第 4 轮 review + 持续优化（换视角轮，不复现 round1-3 已修项）；完整报告
+> `.goal-state/report-kafka-round4.md`。
+
+- **五个未扫面结论**：①状态一致性——TopicsPanel 管理表空态/加载态/错误态
+  混淆（P2 已修：新增 `error` prop + 三态收敛 error→loading→empty，App
+  下发 `topicsError`），MessagesPanel 消费在途整块空白（P2 已修：在途态
+  显示 `messages.running`）；②错误可操作性——`friendlyKafkaError` 缺授权
+  类映射（P1 已修：新增 `err.forbidden` 规则 + 七语文案，覆盖 franz-go
+  TOPIC/GROUP/CLUSTER_AUTHORIZATION_FAILED 原文案，SASL/x509 不误吞）；
+  ③大数据边界无发现（capRows 10000 + 预览 120 字符 + CodeMirror 虚拟渲染
+  + quickFilter 防抖均在案）；④i18n 七语占位符脚本审计 issues 0；⑤mock↔
+  真实桥契约 41 方法 + 3 事件逐条对照无发现。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` **25 文件 260 用例**全绿（255
+  基线 + 5）；`pnpm build` 通过。SKIP：容器 smoke（仅前端文案/渲染改动，
+  Go 与协议零改动）。观察登记：showFullBase64 裸 pre 无上限、
+  truncatedValuePreview 生产死代码（有护栏）。
+- 收敛判定不变：无剩余 subagent 可执行项，仅剩真机复核/维持豁免项。

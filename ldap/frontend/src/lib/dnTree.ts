@@ -89,13 +89,14 @@ export function flattenDnTree(root?: DnTreeNode): DnTreeRow[] {
 }
 
 /**
- * 目录树 ↑/↓ 键盘导航的目标行下标（UI 扫描 P2-10：树此前只能 Tab 逐节点走，
- * 虚拟滚动下未挂载行永远不可达）。在"当前可见的 .tree-node 行"集合上做
- * roving 移动：ArrowDown/ArrowUp 返回相邻行下标（无焦点时从首/尾行进入），
- * 越界钳制在当前可见范围；非方向键返回 -1（不接管）。
+ * Keyboard target in the full flattened row set, including unmounted rows.
+ * Arrow keys clamp at the ends; Home/End jump to the first/last row.
  */
 export function nextTreeFocusIndex(count: number, currentIndex: number, key: string): number {
-  if (count <= 0 || (key !== "ArrowDown" && key !== "ArrowUp")) return -1;
+  if (count <= 0) return -1;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key !== "ArrowDown" && key !== "ArrowUp") return -1;
   if (currentIndex < 0 || currentIndex >= count) return key === "ArrowDown" ? 0 : count - 1;
   return Math.min(Math.max(currentIndex + (key === "ArrowDown" ? 1 : -1), 0), count - 1);
 }

@@ -2,11 +2,11 @@
 // 搜索表单：可视化条件构建器（FilterGroup 递归树，AND/OR 嵌套 ≤2 层）+
 // 源码模式（RFC 4515 串直接编辑，双向：串→结构尽力解析，失败保持源码模式）
 // + scope/attributes/sizeLimit/pageSize/typesOnly/derefAliases
-// + 预设（结构化条件与过滤器串一并保存，sidecar ldap/presets/* 方法）。
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+// + 预设（持久化过滤器串，应用时重建构建器；sidecar 不存 conditions）。
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { Play, Save, Trash2 } from "@lucide/vue";
 import { getLdapConnectionId, ldapApi, type LdapSearchPreset, type LdapScope } from "../lib/api";
-import { validateLDAPFilter, buildNodeFilter, collectBuilderErrors, parseFilterStructure, toBuilderRoot, reviveBuilderNode, createBuilderClause, createBuilderGroup, type BuilderGroup } from "../lib/ldapFilter";
+import { validateLDAPFilter, buildNodeFilter, collectBuilderErrors, parseFilterStructure, toBuilderRoot, createBuilderClause, createBuilderGroup, type BuilderGroup } from "../lib/ldapFilter";
 import { deriveSchemaMetadata, useLdapSchemaCache } from "../lib/schemaCache";
 import { t } from "../lib/i18n";
 import FilterGroup from "./FilterGroup.vue";
@@ -25,6 +25,7 @@ export interface SearchFormModel {
 const props = defineProps<{
   baseDn: string;
   disabled?: boolean;
+  running?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -50,7 +51,9 @@ const builderMode = ref(true);
 const builderRoot = ref<BuilderGroup>(createBuilderGroup({ children: [createBuilderClause()] }));
 const sourceFilter = ref("");
 const sourceParseError = ref(false);
-const running = ref(false);
+const filterErrorId = useId();
+const sizeLimitErrorId = useId();
+const pageSizeErrorId = useId();
 
 const ATTR_LIST_ID = "ldap-builder-attr-options";
 // schema 不可用时的常用属性兜底（tiny-rdm 常用集）。
@@ -145,7 +148,7 @@ defineExpose({ applyBaseDn, runSubtreeAt, runFilterAt });
 // 构建器存在半填/未填子句（表单本身不可运行）时回退匹配全部
 // (objectClass=*)——右键动作是浏览意图，必须保证出结果集而不是静默失败。
 function runSubtreeAt(dn: string) {
-  if (props.disabled) return;
+  if (props.disabled || !numericValid.value) return;
   applyBaseDn(dn);
   draft.value.scope = "sub";
   const model = toModel();
@@ -156,7 +159,7 @@ function runSubtreeAt(dn: string) {
  * 过滤器由调用方组织（如 (memberOf=<组DN>)）；源码模式承载该过滤器，
  * 用户可在结果区继续改；Base/范围语义同 runSubtreeAt。 */
 function runFilterAt(baseDn: string, filter: string) {
-  if (props.disabled) return;
+  if (props.disabled || !numericValid.value) return;
   // 防呆：空过滤器视为匹配全部，与 toModel 的兜底语义一致，保证必出结果集。
   const effectiveFilter = filter.trim() === "" ? "(objectClass=*)" : filter;
   // 切到源码模式承载调用方过滤器（源码是唯一权威表示，构建器无需逆向解析）。
@@ -185,10 +188,11 @@ function positiveNumber(value: string): number | undefined {
 // 留空或 0 合法（= 不限制），负数/非数字给行内红字。
 function numericInvalid(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed !== "" && trimmed !== "0" && positiveNumber(trimmed) === undefined;
+  return trimmed !== "" && (!/^\d+$/u.test(trimmed) || !Number.isSafeInteger(Number(trimmed)));
 }
 const sizeLimitInvalid = computed(() => numericInvalid(draft.value.sizeLimit));
 const pageSizeInvalid = computed(() => numericInvalid(draft.value.pageSize));
+const numericValid = computed(() => !sizeLimitInvalid.value && !pageSizeInvalid.value);
 
 function activeFilter(): string {
   return builderMode.value ? generatedFilter.value : sourceFilter.value.trim();
@@ -199,7 +203,7 @@ function toModel(): SearchFormModel {
 }
 
 function run() {
-  if (props.disabled || running.value || !filterValid.value) return;
+  if (props.disabled || props.running || !filterValid.value || !numericValid.value) return;
   emit("run", toModel());
 }
 
@@ -208,6 +212,7 @@ function run() {
 const presets = ref<LdapSearchPreset[]>([]);
 const selectedPresetId = ref("");
 const presetNameDraft = ref("");
+const presetPending = ref(false);
 
 async function loadPresets() {
   if (props.disabled) return;
@@ -224,17 +229,17 @@ async function loadPresets() {
 function applyPreset() {
   const preset = presets.value.find((entry) => entry.id === selectedPresetId.value);
   if (!preset) return;
+  presetNameDraft.value = preset.name;
   draft.value = {
     ...draft.value,
-    baseDn: preset.baseDn || draft.value.baseDn,
-    filter: preset.filter || draft.value.filter,
-    scope: preset.scope || draft.value.scope,
+    baseDn: preset.baseDn || "",
+    filter: preset.filter || "(objectClass=*)",
+    scope: preset.scope || "sub",
     attributes: Array.isArray(preset.attributes) ? preset.attributes.join(", ") : "",
-    sizeLimit: preset.sizeLimit != null ? String(preset.sizeLimit) : draft.value.sizeLimit,
+    sizeLimit: String(preset.sizeLimit ?? 0),
   };
-  // 结构化条件优先；无结构时尽力把过滤器串解析回构建器。
-  const revived = toBuilderRoot(reviveBuilderNode(preset.conditions));
-  const fromFilter = revived ?? toBuilderRoot(parseFilterStructure(preset.filter));
+  // 过滤器串是后端持久化的权威值；旧 mock 的 conditions 不参与恢复。
+  const fromFilter = toBuilderRoot(parseFilterStructure(preset.filter || "(objectClass=*)"));
   if (fromFilter) {
     builderRoot.value = fromFilter;
     builderMode.value = true;
@@ -247,7 +252,7 @@ function applyPreset() {
 }
 
 async function savePreset() {
-  if (props.disabled) return;
+  if (props.disabled || presetPending.value || !filterValid.value || !numericValid.value) return;
   const name = presetNameDraft.value.trim();
   if (!name) return;
   const filter = activeFilter() || "(objectClass=*)";
@@ -255,39 +260,45 @@ async function savePreset() {
   // 不产生同名双条目；选中状态下保存仍按所选 id 覆盖（含改名）。
   const existingByName = selectedPresetId.value ? undefined : presets.value.find((entry) => entry.name === name);
   const preset: LdapSearchPreset = {
-    id: selectedPresetId.value || existingByName?.id || `${Date.now()}`,
+    id: selectedPresetId.value || existingByName?.id || "",
     name,
     baseDn: draft.value.baseDn.trim(),
     filter,
     scope: draft.value.scope,
     attributes: parseAttributes(),
     sizeLimit: positiveNumber(draft.value.sizeLimit),
-    // 构建器模式存结构化条件（串由其派生），源码模式只存串。
-    ...(builderMode.value ? { conditions: JSON.parse(JSON.stringify(builderRoot.value)) as unknown } : {}),
   };
+  presetPending.value = true;
   try {
     const result = await ldapApi.presetsSave(preset);
-    presets.value = Array.isArray(result.presets) ? result.presets : [...presets.value, preset];
-    selectedPresetId.value = preset.id;
-    presetNameDraft.value = name;
+    const saved = result.preset;
+    presets.value = [...presets.value.filter((entry) => entry.id !== saved.id), saved];
+    selectedPresetId.value = saved.id;
+    presetNameDraft.value = saved.name;
     emit("notify", t("search.presetSaved"));
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
+  } finally {
+    presetPending.value = false;
   }
 }
 
 async function removePreset() {
-  if (props.disabled || !selectedPresetId.value) return;
+  if (props.disabled || presetPending.value || !selectedPresetId.value) return;
+  const id = selectedPresetId.value;
   // 预设是持久化数据（UI 扫描 P2-21）：删除前确认，误删不可恢复。
   const name = presets.value.find((preset) => preset.id === selectedPresetId.value)?.name ?? "";
   if (!window.confirm(t("search.presetRemoveConfirm", { name }))) return;
+  presetPending.value = true;
   try {
-    const result = await ldapApi.presetsRemove(selectedPresetId.value);
-    presets.value = Array.isArray(result.presets) ? result.presets : presets.value.filter((entry) => entry.id !== selectedPresetId.value);
+    await ldapApi.presetsRemove(id);
+    presets.value = presets.value.filter((entry) => entry.id !== id);
     selectedPresetId.value = "";
     emit("notify", t("search.presetRemoved"));
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
+  } finally {
+    presetPending.value = false;
   }
 }
 
@@ -343,12 +354,12 @@ const derefOptions = computed(() => [
       <button
         class="primary-button compact"
         type="submit"
-        :disabled="disabled || running || !filterValid"
-        :title="!filterValid ? t('search.filterInvalid') : activeFilter() || t('search.filterAll')"
+        :disabled="disabled || running || !filterValid || !numericValid"
+        :title="!numericValid ? t('search.invalidNumber') : !filterValid ? t('search.filterInvalid') : activeFilter() || t('search.filterAll')"
       >
         <Play aria-hidden="true" />{{ running ? t("search.running") : t("search.run") }}
       </button>
-      <span v-if="!filterValid" class="form-error">{{ builderMode ? builderErrorMessage : t("search.filterInvalid") }}</span>
+      <span v-if="builderMode && !filterValid" class="form-error">{{ builderErrorMessage }}</span>
     </div>
 
     <div class="filter-block">
@@ -374,10 +385,14 @@ const derefOptions = computed(() => [
           type="text"
           class="mono"
           :placeholder="t('search.filterPlaceholder')"
+          :aria-label="t('search.filter')"
+          :aria-invalid="!sourceValid"
+          :aria-describedby="!sourceValid || sourceParseError ? filterErrorId : undefined"
           :disabled="disabled"
           spellcheck="false"
+          @input="sourceParseError = false"
         />
-        <span v-if="sourceParseError" class="form-error">{{ t("search.builderParseFailed") }}</span>
+        <span v-if="!sourceValid || sourceParseError" :id="filterErrorId" class="form-error" role="alert">{{ !sourceValid ? t("search.filterInvalid") : t("search.builderParseFailed") }}</span>
       </div>
       <datalist :id="ATTR_LIST_ID">
         <option v-for="name in attributeOptions" :key="name" :value="name" />
@@ -392,13 +407,13 @@ const derefOptions = computed(() => [
       </label>
       <label class="field" :title="t('search.numericHint')">
         <span>{{ t("search.sizeLimit") }}</span>
-        <input v-model="draft.sizeLimit" type="text" inputmode="numeric" :disabled="disabled" class="numeric" :aria-invalid="sizeLimitInvalid" />
-        <span v-if="sizeLimitInvalid" class="form-error">{{ t("search.invalidNumber") }}</span>
+        <input v-model="draft.sizeLimit" type="text" inputmode="numeric" :disabled="disabled" class="numeric" :aria-invalid="sizeLimitInvalid" :aria-describedby="sizeLimitInvalid ? sizeLimitErrorId : undefined" />
+        <span v-if="sizeLimitInvalid" :id="sizeLimitErrorId" class="form-error" role="alert">{{ t("search.invalidNumber") }}</span>
       </label>
       <label class="field" :title="t('search.numericHint')">
         <span>{{ t("search.pageSize") }}</span>
-        <input v-model="draft.pageSize" type="text" inputmode="numeric" :disabled="disabled" class="numeric" :aria-invalid="pageSizeInvalid" />
-        <span v-if="pageSizeInvalid" class="form-error">{{ t("search.invalidNumber") }}</span>
+        <input v-model="draft.pageSize" type="text" inputmode="numeric" :disabled="disabled" class="numeric" :aria-invalid="pageSizeInvalid" :aria-describedby="pageSizeInvalid ? pageSizeErrorId : undefined" />
+        <span v-if="pageSizeInvalid" :id="pageSizeErrorId" class="form-error" role="alert">{{ t("search.invalidNumber") }}</span>
       </label>
       <label class="field">
         <span>{{ t("search.typesOnly") }}</span>
@@ -416,15 +431,15 @@ const derefOptions = computed(() => [
     </div>
     <div class="search-presets">
       <span class="muted">{{ t("search.presets") }}</span>
-      <select v-model="selectedPresetId" :disabled="disabled" @change="applyPreset">
+      <select v-model="selectedPresetId" :disabled="disabled || presetPending" @change="applyPreset">
         <option value="">{{ t("search.presetsEmpty") }}</option>
         <option v-for="preset in presets" :key="preset.id" :value="preset.id">{{ preset.name }}</option>
       </select>
-      <input v-model="presetNameDraft" type="text" class="preset-input" :placeholder="t('search.presetName')" :disabled="disabled" />
-      <button type="button" class="toolbar-button" :disabled="disabled || !presetNameDraft.trim()" :title="t('search.presetSave')" @click="savePreset">
+      <input v-model="presetNameDraft" type="text" class="preset-input" :placeholder="t('search.presetName')" :disabled="disabled || presetPending" />
+      <button type="button" class="toolbar-button" :disabled="disabled || presetPending || !presetNameDraft.trim() || !filterValid || !numericValid" :title="t('search.presetSave')" @click="savePreset">
         <Save aria-hidden="true" /><span>{{ t("search.presetSave") }}</span>
       </button>
-      <button type="button" class="toolbar-button" :disabled="disabled || !selectedPresetId" :title="t('search.presetRemove')" :aria-label="t('search.presetRemove')" @click="removePreset">
+      <button type="button" class="toolbar-button" :disabled="disabled || presetPending || !selectedPresetId" :title="t('search.presetRemove')" :aria-label="t('search.presetRemove')" @click="removePreset">
         <Trash2 aria-hidden="true" />
       </button>
     </div>

@@ -195,6 +195,30 @@ describe("MessagesPanel", () => {
     expect(wrapper.find(".empty").text()).toBe(t("messages.noMessages"));
   });
 
+  // round4 面 1：消费在途给出进行中反馈（不再整块空白）——deferred consume 挂起
+  // 期间面板显示 messages.running 文案，响应落地后由结果区接管。
+  it("shows an in-flight consuming state instead of a blank pane (round4)", async () => {
+    let resolveConsume!: (value: ConsumeResult) => void;
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (method: string) => {
+      if (method === "kafka/presets/list") return { presets: [] };
+      if (method === "kafka/messages/consume") {
+        return new Promise<ConsumeResult>((resolve) => {
+          resolveConsume = resolve;
+        });
+      }
+      throw new Error(`unhandled method: ${method}`);
+    });
+    (window as unknown as { dbxPlugin: unknown }).dbxPlugin = { invoke: invokeMock };
+    const wrapper = mountPanel({ topic: "order-events" });
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    expect(wrapper.find(".empty").text()).toBe(t("messages.running"));
+    resolveConsume(consumeResult("order-events", 1));
+    await flushPromises();
+    expect(wrapper.find(".result-meta").exists()).toBe(true);
+  });
+
   // F6-1：即时搜索输入 → 150ms 防抖后喂给 grid 的 quickFilterText。
   it("debounces the quick filter input into the grid quickFilter (F6-1)", async () => {
     vi.useFakeTimers();

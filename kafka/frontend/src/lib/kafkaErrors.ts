@@ -24,6 +24,11 @@ const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
       /oauthbearer|aws[ _-]?msk|msk[ _-]?iam|generate.*auth.?token|unable to load (aws )?credentials|no (aws )?credential|token source|aws-sdk.*credential|expiredtoken/i,
     key: "err.oauthCredential",
   },
+  // 授权类（round4 面 2）：franz-go kerr 的 TOPIC/GROUP/CLUSTER_AUTHORIZATION_FAILED
+  // 文案为 "Not authorized to access topics/group" / "…authorization failed."，
+  // ACL 环境常见且此前裸透传无下一步指引；置于认证类之前（"authorization" 与
+  // "authentication" 无子串交集，不会误吞 SASL 认证失败）。
+  { pattern: /authorization|not authorized|permission denied|forbidden|access denied/i, key: "err.forbidden" },
   // 认证/TLS 类
   { pattern: /sasl|authentication|scram|badcredentials|result code 49/i, key: "err.auth" },
   { pattern: /certificate|x509|unknown authority|tls.*handshake|ssl/i, key: "err.tls" },

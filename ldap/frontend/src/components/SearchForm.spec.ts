@@ -191,3 +191,62 @@ describe("SearchForm (filter builder)", () => {
     expect(wrapper.findAll(".form-error")).toHaveLength(0);
   });
 });
+
+describe("SearchForm validation feedback (fresh review)", () => {
+  it.each(["abc", "12px", "1.5", "1e3", "-1", "9007199254740992"])("blocks all search entry points for an invalid numeric value: %s", async (value) => {
+    const wrapper = await mountForm();
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const numeric = wrapper.findAll("input.numeric");
+    for (const index of [0, 1]) {
+      await numeric[0].setValue("500");
+      await numeric[1].setValue("500");
+      await numeric[index].setValue(value);
+      expect(numeric[index].attributes("aria-invalid")).toBe("true");
+      const description = numeric[index].attributes("aria-describedby");
+      expect(wrapper.find('[id="' + description + '"]').text()).toContain("请输入正整数");
+      expect(wrapper.find("button[type='submit']").attributes("disabled")).toBeDefined();
+      await wrapper.find("form").trigger("submit");
+      const actions = wrapper.vm as unknown as {
+        runSubtreeAt(dn: string): void;
+        runFilterAt(dn: string, filter: string): void;
+      };
+      actions.runSubtreeAt("dc=demo,dc=dbx");
+      actions.runFilterAt("dc=demo,dc=dbx", "(cn=alice)");
+      expect(wrapper.emitted("run")).toBeUndefined();
+    }
+    wrapper.unmount();
+  });
+
+  it("accepts blank, zero and whole numbers, and clears field feedback after correction", async () => {
+    const wrapper = await mountForm();
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const numeric = wrapper.findAll("input.numeric");
+    await numeric[0].setValue("bad");
+    for (const value of ["", "0", "0012", "500"]) {
+      await numeric[0].setValue(value);
+      await numeric[1].setValue(value);
+      expect(numeric[0].attributes("aria-invalid")).toBe("false");
+      expect(numeric[0].attributes("aria-describedby")).toBeUndefined();
+      expect(wrapper.find("button[type='submit']").attributes("disabled")).toBeUndefined();
+      await wrapper.find("form").trigger("submit");
+    }
+    expect(wrapper.emitted("run")).toHaveLength(4);
+    wrapper.unmount();
+  });
+
+  it("links the syntax error to the source field and removes it immediately after correction", async () => {
+    const wrapper = await mountForm();
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const input = wrapper.find(".filter-source input");
+    await input.setValue("(uid");
+    expect(input.attributes("aria-label")).toContain("RFC 4515");
+    expect(input.attributes("aria-invalid")).toBe("true");
+    expect(wrapper.find('[id="' + input.attributes("aria-describedby") + '"]').text()).toBe("LDAP 过滤器不合法");
+    await wrapper.findAll(".mode-switch button")[0].trigger("click");
+    await input.setValue("(uid=alice)");
+    expect(input.attributes("aria-invalid")).toBe("false");
+    expect(input.attributes("aria-describedby")).toBeUndefined();
+    expect(wrapper.find(".filter-source .form-error").exists()).toBe(false);
+    wrapper.unmount();
+  });
+});

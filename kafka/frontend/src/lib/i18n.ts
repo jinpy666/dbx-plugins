@@ -30,6 +30,7 @@ export const messages = {
       timeout: "The brokers did not respond in time (timeout)",
       oauthCredential: "MSK IAM / OAUTHBEARER auth failed: no AWS credentials found — set msk_access_key_id and msk_secret_access_key in the connection, or provide the default-chain credentials",
       oauthRegion: "MSK IAM needs a region: set msk_region to the AWS region of the cluster",
+      forbidden: "Access denied: the broker's authorization (ACL) rules do not allow this operation — check the ACLs tab or ask the cluster admin to grant permissions",
     },
     tabs: {
       messages: "Messages",
@@ -615,6 +616,7 @@ export const messages = {
       timeout: "Broker 未在限定时间内响应（超时）",
       oauthCredential: "MSK IAM / OAUTHBEARER 认证失败：未找到 AWS 凭据——请在连接中配置 msk_access_key_id 与 msk_secret_access_key，或提供默认凭据链",
       oauthRegion: "MSK IAM 需要 region：请把 msk_region 设置为集群所在的 AWS 区域",
+      forbidden: "访问被拒绝：broker 的授权（ACL）规则不允许该操作——请到 ACL 标签页核对权限，或请管理员为当前用户授权",
     },
     tabs: {
       messages: "消息",
@@ -1200,6 +1202,7 @@ export const messages = {
       timeout: "Broker 未在限定時間內回應（逾時）",
       oauthCredential: "MSK IAM / OAUTHBEARER 認證失敗：找不到 AWS 憑證——請在連線中設定 msk_access_key_id 與 msk_secret_access_key，或提供預設憑證鏈",
       oauthRegion: "MSK IAM 需要 region：請將 msk_region 設為叢集所在的 AWS 區域",
+      forbidden: "存取被拒絕：broker 的授權（ACL）規則不允許該操作——請到 ACL 標籤頁核對權限，或請管理員為目前使用者授權",
     },
     tabs: {
       messages: "訊息",
@@ -1785,6 +1788,7 @@ export const messages = {
       timeout: "Los brokers no respondieron a tiempo (timeout)",
       oauthCredential: "Error de autenticación MSK IAM / OAUTHBEARER: no se encontraron credenciales de AWS — configura msk_access_key_id y msk_secret_access_key en la conexión o aporta las credenciales de la cadena por defecto",
       oauthRegion: "MSK IAM necesita una región: define msk_region con la región de AWS del clúster",
+      forbidden: "Acceso denegado: las reglas de autorización (ACL) del broker no permiten esta operación — revise la pestaña de ACLs o pida al administrador que conceda permisos",
     },
     tabs: {
       messages: "Mensajes",
@@ -2370,6 +2374,7 @@ export const messages = {
       timeout: "I broker non hanno risposto in tempo (timeout)",
       oauthCredential: "Autenticazione MSK IAM / OAUTHBEARER non riuscita: credenziali AWS non trovate — configura msk_access_key_id e msk_secret_access_key nella connessione oppure fornisci le credenziali della catena predefinita",
       oauthRegion: "MSK IAM richiede una region: imposta msk_region alla regione AWS del cluster",
+      forbidden: "Accesso negato: le regole di autorizzazione (ACL) del broker non consentono questa operazione — controlla la scheda ACL o chiedi all'amministratore di concedere i permessi",
     },
     tabs: {
       messages: "Messaggi",
@@ -2955,6 +2960,7 @@ export const messages = {
       timeout: "Broker が制限時間内に応答しません（タイムアウト）",
       oauthCredential: "MSK IAM / OAUTHBEARER 認証に失敗しました：AWS 認証情報が見つかりません。接続に msk_access_key_id と msk_secret_access_key を設定するか、デフォルト認証情報チェーンを用意してください",
       oauthRegion: "MSK IAM にはリージョンが必要です：msk_region にクラスターの AWS リージョンを設定してください",
+      forbidden: "アクセスが拒否されました：broker の認可（ACL）ルールがこの操作を許可していません。ACL タブで権限を確認するか、管理者に権限の付与を依頼してください",
     },
     tabs: {
       messages: "メッセージ",
@@ -3540,6 +3546,7 @@ export const messages = {
       timeout: "Os brokers não responderam a tempo (timeout)",
       oauthCredential: "Falha de autenticação MSK IAM / OAUTHBEARER: credenciais da AWS não encontradas — configure msk_access_key_id e msk_secret_access_key na conexão ou forneça as credenciais da cadeia padrão",
       oauthRegion: "O MSK IAM exige uma região: defina msk_region com a região da AWS do cluster",
+      forbidden: "Acesso negado: as regras de autorização (ACL) do broker não permitem esta operação — verifique a guia de ACLs ou peça ao administrador para conceder permissões",
     },
     tabs: {
       messages: "Mensagens",

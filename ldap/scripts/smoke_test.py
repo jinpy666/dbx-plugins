@@ -7,7 +7,7 @@ Covers the IMPL_PLAN_DBX_LDAP §8 table over a live OpenLDAP container:
     S2  connect + search base scope on root      -> entries non-empty
     S3  search sub with pageSize                 -> paged aggregate == full
     S4  entry add/modify/get/delete round-trip   -> read-back matches
-    S5  modifyDn rename                          -> new DN found, old gone
+    S5  modifyDn rename + subtree move           -> newSuperior + RDN values
     S6  read-only connection write               -> rejected (-32000)
     S7  blocked_attributes (userPassword)        -> stripped from results
     S8  search outside allowed_base_dns          -> rejected
@@ -87,7 +87,7 @@ def scenario(no: str, name: str):
     def decorate(fn):
         def run(*args, **kwargs):
             try:
-                fn(*args, **kwargs)
+                note = fn(*args, **kwargs)
             except SkipScenario as cause:
                 RESULTS.append(ScenarioResult(no, name, "SKIP", str(cause)))
             except (SidecarError, AssertionError) as cause:
@@ -100,7 +100,6 @@ def scenario(no: str, name: str):
             else:
                 # a scenario may return a note string (recorded on PASS) for
                 # soft-skipped sub-assertions (optional server features)
-                note = fn(*args, **kwargs)
                 RESULTS.append(ScenarioResult(no, name, "PASS", note or ""))
         return run
     return decorate
@@ -291,13 +290,21 @@ def run_s4(client: SidecarClient) -> None:
 
 @scenario("S5", "modifyDn rename")
 def run_s5(client: SidecarClient) -> None:
-    """S5 modifyDn rename -> new DN searchable, old DN gone."""
-    ensure_people_ou(client)
-    old_dn = f"cn=Smoke RDN {uuid.uuid4().hex[:8]},{PEOPLE_OU}"
+    """S5 rename, preserve/remove naming values, and move a non-leaf entry."""
+    token = uuid.uuid4().hex[:8]
+    source_ou = f"ou=smoke-source-{token},{ROOT}"
+    destination_ou = f"ou=smoke-destination-{token},{ROOT}"
+    moved_ou = f"ou=smoke-moved-{token},{destination_ou}"
+    old_dn = f"cn=Smoke RDN {token},{source_ou}"
     rdn = old_dn.split(",")[0]
     new_rdn = f"cn={rdn.split('=', 1)[1]} renamed"
-    new_dn = f"{new_rdn},{PEOPLE_OU}"
+    new_dn = f"{new_rdn},{source_ou}"
+    moved_dn = f"{new_rdn},{moved_ou}"
     try:
+        for dn, value in [(source_ou, f"smoke-source-{token}"), (destination_ou, f"smoke-destination-{token}")]:
+            domain(client, "ldap/entry/add", {
+                "dn": dn, "attributes": {"objectClass": ["top", "organizationalUnit"], "ou": [value]},
+            })
         domain(client,
             "ldap/entry/add",
             {
@@ -317,8 +324,19 @@ def run_s5(client: SidecarClient) -> None:
             raise AssertionError(f"renamed entry not found at {new_dn}")
         if entry_exists(client, old_dn):
             raise AssertionError(f"old entry still present at {old_dn}")
+        renamed = domain(client, "ldap/entry/get", {"dn": new_dn, "attributes": ["cn"]})["entry"]
+        assert renamed["attributes"]["cn"] == [new_rdn.split("=", 1)[1]], "deleteOldRdn must remove the old naming value"
+
+        domain(client, "ldap/entry/modifyDn", {
+            "dn": source_ou, "newRdn": f"ou=smoke-moved-{token}",
+            "newSuperior": destination_ou, "deleteOldRdn": False,
+        })
+        assert entry_exists(client, moved_dn), "subtree child must move beneath newSuperior"
+        assert not entry_exists(client, new_dn), "child must not remain at its old DN"
+        moved = domain(client, "ldap/entry/get", {"dn": moved_ou, "attributes": ["ou"]})["entry"]
+        assert set(moved["attributes"]["ou"]) == {f"smoke-source-{token}", f"smoke-moved-{token}"}, "deleteOldRdn=false must retain the old naming value"
     finally:
-        for target in (new_dn, old_dn):
+        for target in (moved_dn, new_dn, old_dn, moved_ou, source_ou, destination_ou):
             try:
                 domain(client, "ldap/entry/delete", {"dn": target})
             except SidecarError:

@@ -21,11 +21,15 @@ const props = defineProps<{
   /** 已执行过至少一次搜索：0 条时区分"无匹配"与"未搜索"（UI 扫描 P2-3）。 */
   searched?: boolean;
   disabled?: boolean;
+  loading?: boolean;
+  error?: string;
+  errorDetail?: string;
 }>();
 
 const emit = defineEmits<{
   (e: "open", dn: string): void;
   (e: "export", format: "ldif" | "csv" | "json"): void;
+  (e: "retry"): void;
 }>();
 
 const PAGE_SIZE = 50;
@@ -209,8 +213,8 @@ const hasEntries = computed(() => props.entries.length > 0);
 </script>
 
 <template>
-  <section class="result-pane">
-    <div class="result-meta">
+  <section class="result-pane" :aria-busy="loading || undefined">
+    <div v-if="!loading && !error" class="result-meta">
       <span>{{ t("result.count", { count }) }}<span v-if="truncated" class="truncated-badge" style="margin-left: 8px">{{ t("result.truncated") }}</span><span v-else-if="atLimit" class="truncated-badge" style="margin-left: 8px" :title="t('result.atLimit', { limit: sizeLimit ?? 0 })">{{ t("result.atLimitBadge") }}</span></span>
       <span class="pager">
         <button v-if="hasEntries" :disabled="disabled || page <= 0" :title="t('result.prevPage')" :aria-label="t('result.prevPage')" @click="page -= 1">
@@ -225,7 +229,12 @@ const hasEntries = computed(() => props.entries.length > 0);
         <button v-if="hasEntries" :disabled="disabled" :title="t('result.exportJson')" @click="emit('export', 'json')"><FileJson aria-hidden="true" /></button>
       </span>
     </div>
-    <div v-if="!hasEntries" class="empty">{{ props.searched ? t("result.emptyNoMatch") : t("result.empty") }}</div>
+    <div v-if="loading" class="empty" role="status">{{ t("search.running") }}</div>
+    <div v-else-if="error" class="empty request-error" role="alert">
+      <p :title="errorDetail || error">{{ error }}</p>
+      <button type="button" :disabled="disabled" @click="emit('retry')">{{ t("retry") }}</button>
+    </div>
+    <div v-else-if="!hasEntries" class="empty" role="status">{{ props.searched ? t("result.emptyNoMatch") : t("result.empty") }}</div>
     <div
       v-else
       class="result-table"

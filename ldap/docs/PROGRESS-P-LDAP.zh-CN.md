@@ -764,3 +764,60 @@ e2e GUI 拉起为卡点（宿主 debug bundle 未构建，构建 + UI 验收超 
 连接浏览）、browser 复核三点 + mock 子树删除走查、KDC/NTLM 真机沿袭；
 维持项：AssociationPanel inline style（专项分批）、truncated 恰等上限语义
 （前端 atLimit 徽章已对冲）、plugin-cli 上游建议（仅记录）。未提交 git。
+
+
+## review 第 4 轮：fresh review 四组小修 + 新 P2 清单（2026-09-12，goal-state round4）
+
+按空/加载/错误态、表单校验、a11y、大目录性能、mock/真实桥五个未扫面复核；
+完整报告：`.goal-state/report-ldap-round4.md`，任务清单：IMPL_PLAN R4-1～R4-5。
+本轮四组改动全部位于 ldap/，后端产品代码、宿主与公共层未改，无新依赖：
+
+- **P1 宿主事件接线**：优先当前 SDK 的 `onContext`，旧 `onContextChange`
+  降级；处理 `onEvent` 的 env.locale，类型与 mock 同步。实际宿主 SDK 生成的
+  iframe 验证通过（新 connectionId/baseDn 与语言更新）。
+- **P2 搜索校验**：完整整数/安全整数检查，搜索、树快捷入口、预设保存共用
+  门禁；源码/数值错误与输入框关联，修正即时恢复。
+- **P2 目录树**：过滤失败原地重试、刷新当前视图、等待期旧请求作废与卸载
+  取消；补 loading/error/empty 播报、懒节点/过滤项 aria、左右键展开折叠。
+  `tree.retry` 七语齐全。
+- **P2 mock 计数**：补 `ldap/entry/childrenCount` 的 dn 输入、count/truncated
+  返回及空 DN 拒绝；原 recursive delete 夹具不变。
+
+验证：前端 **34 文件 / 487 用例全绿**（新增 24）+ typecheck/build；后端
+`go vet` / `go test -count=1 ./...` 通过；浏览器 **11/11**；真实容器
+**17/17 PASS**（S15 memberOf / S16 managedBy 的条件跳过沿袭，已 down -v）。
+全套脚本首次因验证 shell 选中 /usr/local npm 导致 native CLI 探测失败；
+显式前置既有 nvm PATH 后重跑通过，出包 `io.dbx.ldap-0.1.57-darwin-arm64.dbxp`。
+未修改前轮打包脚本，起始 manifest 内容哈希保持一致。
+
+大目录仅评估：10000 条 fixture 下树 **39 DOM 行**、结果 **50 行 / 200 页**；
+发现 count 上限 5000 被当成总数后续载入口消失，留独立性能任务。
+**未达成无剩余可执行项**：编辑器 objectClass/MUST 与 DN 预检、搜索/详情
+状态、presets save/remove 真实回包与 mock 偏差、剩余树键盘/夹具保真度待
+下一轮。round1–3 已修项未重复修改，指定维持项不动；未提交 git。
+
+
+## review 第 5 轮：round4 P2 四组跟进（2026-09-12，goal-state round5）
+
+完整报告：`.goal-state/report-ldap-round5.md`；任务清单 IMPL_PLAN R5-1～R5-4。
+本轮继续叠加 LDAP 内小修，后端产品代码/宿主/公共层未改，无新依赖：
+
+- **R4-08 预设契约**：save/remove 对齐真实单项/成功回包，按服务端 ID 更新；
+  过滤器串恢复构建器，重复提交门禁，mock 镜像字段及错误。
+- **R4-05 必填反馈**：objectClass → MUST/SUP 即时提示，缺失项可点击定位；
+  保留原不可读必填属性与隐藏密码容错，不要求普通编辑补写被屏蔽属性。
+- **R4-06 DN 预检**：空 AVA、转义/引号检查，LDIF 解析后完整 DN 再校验；
+  合法转义和新增态父 DN 往返保留，前轮离页守卫未改。
+- **R4-07 请求状态**：搜索/详情 loading/error/empty 与重试，旧读取结果失效，
+  关闭或切换连接后不再被旧响应重新打开；六个新 key 七语齐全。
+
+验证：前端 typecheck/test/build **36 文件 / 528 用例**（+41），Go vet 与
+`go test -count=1 ./...` 四包通过；UI **16/16**（+5）；真实 sidecar 预设
+保存/更新/重启读取/删除四组验证通过；容器 **17/17 PASS**（S15/S16 条件
+跳过沿袭，已 down -v）。`scripts/test.sh` 全套及 0.1.57 打包通过。
+起始 manifest 哈希未变。新增测试曾有 confirm 桩、DN 转义预期和 UI Base DN
+场景设置错误，已修正；原始失败及最终日志入口见报告。
+
+**未达成无剩余可执行项**：R4-10 树剩余键盘操作、R4-11 mock 保真度待后续；
+另确认现有 smoke scenario 成功时调用场景两次（R5-05，纯计数器复现，仅记录）。
+大目录保持仅评估，指定维持项与人工/真机验证继续保留；未提交 git。

@@ -157,6 +157,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tree-rows { min-height: 0; flex: 1; overflow: auto; padding: 4px 2px; }
 
 .tree-node { border: 0; width: 100%; background: transparent; }
+.tree-node:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+.tree-node[aria-disabled="true"] { opacity: .42; }
 .tree-row { display: flex; width: 100%; min-height: 26px; align-items: center; gap: 4px; border: 0; border-radius: 4px; padding: 2px 6px; text-align: left; cursor: default; }
 .tree-row:hover { background: color-mix(in srgb, var(--accent) 65%, transparent); }
 .tree-row.selected, .tree-row.selected:hover { background: var(--accent); color: var(--accent-foreground); }
@@ -186,6 +188,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tree-vlist .tree-node { display: block; height: 28px; padding: 0; }
 .tree-vlist .tree-row { height: 28px; min-height: 0; }
 .tree-error { color: var(--destructive); font-size: 11px; padding: 6px 10px; overflow-wrap: anywhere; }
+.tree-error > button { display: flex; margin-top: 6px; }
 /* 树节点联动改写 Base DN 的一次性高亮（P2-7）：accent 描边渐隐。 */
 .base-dn-flash { outline: 2px solid var(--accent); outline-offset: -1px; transition: outline-color .9s ease; }
 .spinning { animation: spin 1s linear infinite; }
@@ -307,6 +310,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .danger-button:hover { background: color-mix(in srgb, var(--destructive) 20%, transparent) !important; }
 .small-modal { width: min(460px, 100%); }
 .editor-modal { width: min(780px, calc(100vw - 40px)); height: min(680px, calc(100vh - 40px)); }
+.editor-modal > .empty { flex: 1; }
 .panel-modal { width: min(680px, calc(100vw - 40px)); height: min(600px, calc(100vh - 40px)); }
 .destructive-copy { display: flex; min-width: 0; align-items: flex-start; gap: 12px; }
 .destructive-copy > div { min-width: 0; }
@@ -319,6 +323,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry-dn { overflow-wrap: anywhere; font-family: var(--mono-font-family); font-size: 11px; color: var(--muted-foreground); }
 
 .form-error { margin: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
+.required-attributes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.required-attributes button { color: inherit; border: 1px solid currentColor; border-radius: 4px; background: transparent; padding: 2px 6px; cursor: pointer; }
+.request-error { flex-direction: column; gap: 8px; color: var(--destructive); }
+.request-error p { margin: 0; }
+.request-error button { border: 1px solid var(--border); border-radius: 4px; background: var(--background); color: var(--foreground); padding: 4px 12px; cursor: pointer; }
 .hint { margin: 0; color: var(--muted-foreground); font-size: 10px; }
 
 /* Entry editor attribute rows */

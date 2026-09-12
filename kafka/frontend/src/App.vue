@@ -450,6 +450,7 @@ onBeforeUnmount(() => {
             v-show="activePanel === 'topics'"
             :topics="topics"
             :loading="topicsLoading"
+            :error="topicsError"
             :can-write="canWrite"
             :can-delete="canDelete"
             @error="showError"

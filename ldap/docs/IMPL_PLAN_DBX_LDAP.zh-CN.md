@@ -139,7 +139,9 @@ DN 白名单约束（§6）。方法未注册返回 -32601。
 | `ldap/entry/childrenCount` | —（N1 新增：删除确认子条目计数） | `dn` | `{count, truncated?}`（scope=one、filter `(objectClass=*)`、上限 5000，风格同 `ldap/count`）；白名单约束同读操作 |
 | `ldap/entry/modifyDn` | ModifyDN(:641) | `dn`、`newRdn`、`newParentDn?`、`deleteOldRdn` | `{success:true}`；新旧 DN 均过写白名单 |
 | `ldap/connections/statuses` | ConnectionStatuses(:695) | — | `{statuses:[{connectionId, state:connected/idle/error, lastError?, lastUsedAt}]}` |
-| `ldap/presets/list` / `save` / `remove` | SearchPreset（前端 store） | `preset:{id,name,baseDn,filter,scope,attributes,sizeLimit}` 等 | 本地 `presets.json` CRUD |
+| `ldap/presets/list` | LDAPSearchPreset（sidecar store） | — | `{presets:[...]}`；本地 `presets.json`，不含凭据 |
+| `ldap/presets/save` | LDAPSearchPreset | `preset:{id,name,baseDn?,filter?,scope?,attributes?,sizeLimit?}`；id 空则生成，name 必填 | `{success:true,preset}`；按 id 更新。仅持久化过滤器串，前端应用时重建条件树；不存 `conditions` |
+| `ldap/presets/remove` | LDAPSearchPreset | `id` | `{success:true}`；id 不存在报业务错误，不返回整表 |
 
 原 19 方法中 `ListProfiles/SaveProfile/RemoveProfile/ResolveProfile/TestProfile/
 Start/Stop` 的归宿：profile CRUD 删除（宿主连接管理）、TestProfile → 
@@ -363,6 +365,41 @@ DSML、schema 语法/匹配规则透出、uid 定位 DN、uid/gid 自动编号�
 | L5-5 | `frontend/src/lib/dnAttributes.ts`：deriveDnValuedAttributes（schema attributeTypes 按 SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 / 1.3.6.1.4.1.1466.115.121.1.34 或 SUP distinguishedName / nameAndOptionalUID 单层启发识别 DN 值属性）+ buildReferencedByFilter（核心表 OR 过滤器、RFC 4515 转义、单属性退化）+ DN_REFERENCE_CORE 兜底表 | L5-1 | 纯函数单测过（schema 可用/缺失两态） |
 | L5-6 | AssociationPanel 扩展「DN 引用区 / 被引用区」+ App→EntryEditorDialog→panel 贯通 `dnAttributes` prop（schema 惰性加载、失败静默降级兜底表） | L5-5 | 组件单测过；容器下 managedBy/owner 等正查按属性分组可点击、反查命中；浏览器走查（截图留档） |
 | L5-7 | smoke S16：generic DN reference (managedBy) 往返（临时 OU 挂 managedBy→反查命中→删除后不复现；服务器 schema 无 managedBy 记 SKIP 说明） | L5-5 | 完成定义四件套收口：单测 + smoke S16 + FEATURE_PARITY/任务清单更新 + 七语文案 |
+
+### Review 第 4 轮（2026-09-12，fresh review）
+
+本轮按用户指定的空/加载/错误态、输入校验、a11y、大目录性能、mock/真实桥
+五个面复核；实施四组小改动，不改后端或宿主，不重复 round1–3 已修项。
+
+| 任务 | 内容 | 状态与验收 |
+|---|---|---|
+| R4-1 | 对齐当前宿主 `onContext` 与 `onEvent` 的 `env` 消息；保留旧回调降级，类型与 mock 同步 | [x] App 回归 + 从当前宿主源码生成 SDK 的 iframe 消息验证通过 |
+| R4-2 | 搜索数值完整校验、运行/预设/树快捷入口门禁；源码与数值错误关联到输入框 | [x] 组件回归 + 浏览器实际输入/恢复通过；复用七语错误文案 |
+| R4-3 | 树过滤原地重试、刷新当前视图、加载/错误播报；懒节点与过滤项 aria、左右键展开/折叠 | [x] 组件回归 + 浏览器重试/键盘操作通过；新增 `tree.retry` 七语齐全 |
+| R4-4 | mock 补齐 `ldap/entry/childrenCount` 的 `{count,truncated}` 与空 DN 拒绝 | [x] mock 回归通过；真实容器 S13 通过 |
+| R4-5 | 万级 OU 渲染和续载评估（仅评估） | [x] 10000 条 fixture：树 39 个 DOM 行、表格 50 行；确认树到 5000 条后失去续载入口，未改分页/截断语义 |
+
+本轮未收敛：EntryEditor 的 objectClass/MUST 与 DN 预检、搜索/详情状态、
+预设 save/remove 的真实回包与 mock 偏差、剩余树键盘操作列入下一轮。
+完整发现与验证见工作区 `.goal-state/report-ldap-round4.md`，交付记录见
+`PROGRESS-P-LDAP.zh-CN.md`「review 第 4 轮」。
+
+### Review 第 5 轮（2026-09-12，round4 P2 跟进）
+
+沿用 LDAP 目录内小改动边界；工作来源为 R4-05/06/07/08，不重复前轮已修项。
+
+| 任务 | 内容 | 状态与验收 |
+|---|---|---|
+| R5-1 / R4-08 | 预设 save/remove 类型、mock 与 UI 同步真实回包；按返回 id 更新，过滤器串为恢复依据 | [x] 组件/mock/浏览器通过；真实 sidecar 保存、重启读取、更新与删除回包验证通过 |
+| R5-2 / R4-05 | objectClass → MUST 即时提示/定位/保存门禁；现存不可读属性与隐藏凭据容错 | [x] MUST/SUP、隐藏属性容错与浏览器缺失字段定位通过；七语齐全 |
+| R5-3 / R4-06 | RDN 空段、转义、引号配对检查；LDIF 解析后校验完整 DN | [x] DN/编辑器回归与浏览器改名输入验证通过；前轮 LDIF 离页守卫保持 |
+| R5-4 / R4-07 | 搜索与条目详情 loading/error/empty、原地重试；旧请求失效与关闭保护 | [x] 在途/失败/成功空态与关闭/切换连接回归通过，浏览器重试通过；七语齐全 |
+
+R4-09 大目录保持仅评估；R4-10 树剩余键盘操作、R4-11 mock 搜索/修改保真度
+继续留后续轮次；前轮人工/真机与维持项不变。
+额外记录 P2：`scripts/smoke_test.py` 的 scenario 装饰器在成功时执行场景两次，
+本轮用纯计数器复现后保留待修。完整验证与收敛判定见工作区
+`.goal-state/report-ldap-round5.md`。
 
 ## 10. 风险与备注
 

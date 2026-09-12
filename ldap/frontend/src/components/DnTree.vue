@@ -126,6 +126,7 @@ const hasFilter = computed(() => filterKeyword.value.trim() !== "");
 // 可见行扁平投影：VirtualList 只渲染视口 ± 缓冲窗口，千行子条目不再一次
 // 性挂载全量 DOM。展开/选中/右键语义不变（状态仍在 node 对象上）。
 const treeRows = computed(() => flattenDnTree(rootNode.value));
+const visibleList = ref<{ scrollToIndex(index: number): void }>();
 
 function nodeLabel(dn: string): string {
   const { rdn } = splitFirstDnRdn(dn);
@@ -280,12 +281,19 @@ async function loadMore(node: DnTreeNode) {
 // -- keyword remote filter ---------------------------------------------------
 
 function clearFilter() {
+  window.clearTimeout(filterTimer);
   filterSequence += 1;
   filterKeyword.value = "";
   filterLoading.value = false;
   filterError.value = "";
   filterErrorRaw.value = "";
   filterResults.value = [];
+}
+
+// Refresh the visible view: while filtering, retry that query with its keyword intact.
+function refresh() {
+  window.clearTimeout(filterTimer);
+  return hasFilter.value ? runFilter() : loadRoot();
 }
 
 async function runFilter() {
@@ -328,6 +336,10 @@ function onFilterInput() {
     clearFilter();
     return;
   }
+  // Invalidate the previous query immediately, including the debounce interval.
+  filterSequence += 1;
+  filterLoading.value = true;
+  filterError.value = "";
   filterTimer = window.setTimeout(() => void runFilter(), 300);
 }
 
@@ -371,21 +383,33 @@ function onMenuKeydown(event: KeyboardEvent) {
   items[nextFocusIndex(items.length, index, event.key === "ArrowUp")]?.focus({ preventScroll: true });
 }
 
-// -- keyboard navigation（↑/↓ 在可见行间移动焦点；Enter 由原生 button click 选中）
-// UI 扫描 P2-10：树此前只能 Tab 逐节点走（每节点 2 个停止位），虚拟滚动下
-// 未挂载行不可达。↑/↓ 在当前渲染出的 .tree-node 按钮间移动焦点并滚入视野。
-
-function onTreeKeydown(event: KeyboardEvent) {
-  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+// Navigate the full row model, scrolling an offscreen target into the DOM
+// before focusing it. TreeBranch handles expansion/collapse locally.
+async function onTreeKeydown(event: KeyboardEvent) {
+  if (props.disabled || !["ArrowDown", "ArrowUp", "Home", "End", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
   const container = event.currentTarget as HTMLElement | null;
-  if (!container) return;
-  const nodes = Array.from(container.querySelectorAll<HTMLButtonElement>(".tree-node"));
-  const target = nextTreeFocusIndex(nodes.length, nodes.indexOf(document.activeElement as HTMLButtonElement), event.key);
+  const current = (event.target as HTMLElement).closest<HTMLElement>(".tree-node");
+  if (!container || !current) return;
+  const index = Number(current.dataset.treeIndex);
+  const rows = treeRows.value;
+  let target = nextTreeFocusIndex(hasFilter.value ? sortedFilterResults.value.length : rows.length, index, event.key);
+  if (!hasFilter.value && rows[index]) {
+    const { node, depth } = rows[index];
+    if (event.key === "ArrowRight" && node.expanded && node.children.length > 0) target = index + 1;
+    else if (event.key === "ArrowLeft") {
+      for (let parent = index - 1; parent >= 0; parent--) {
+        if (rows[parent].depth < depth) {
+          target = parent;
+          break;
+        }
+      }
+    }
+  }
   if (target < 0) return;
   event.preventDefault();
-  const node = nodes[target];
-  node?.focus({ preventScroll: true });
-  node?.scrollIntoView({ block: "nearest" });
+  visibleList.value?.scrollToIndex(target);
+  await nextTick();
+  container.querySelector<HTMLElement>(`.tree-node[data-tree-index="${target}"]`)?.focus({ preventScroll: true });
 }
 
 function menuAction(action: string) {
@@ -418,7 +442,7 @@ watch(
 );
 
 defineExpose({
-  refresh: loadRoot,
+  refresh,
   /** After writes, drop the cached children of `dn` (or reload everything). */
   invalidate(dn?: string) {
     if (!dn) {
@@ -441,6 +465,8 @@ defineExpose({
 });
 
 function onMountedCleanup() {
+  window.clearTimeout(filterTimer);
+  filterSequence += 1;
   document.removeEventListener("click", closeContextMenu);
 }
 
@@ -453,8 +479,8 @@ onBeforeUnmount(onMountedCleanup);
     <header class="panel-header">
       <span class="panel-title"><Search class="icon-neutral" aria-hidden="true" />{{ t("tree.title") }}</span>
       <span class="actions">
-        <button class="icon-button" :title="t('refresh')" :disabled="disabled || !hasBaseDn || loadingRoot" @click.stop="loadRoot">
-          <RefreshCw :class="{ spinning: loadingRoot }" />
+        <button class="icon-button" :title="t('refresh')" :aria-label="t('refresh')" :disabled="disabled || !hasBaseDn || (hasFilter ? filterLoading : loadingRoot)" @click.stop="refresh">
+          <RefreshCw :class="{ spinning: hasFilter ? filterLoading : loadingRoot }" aria-hidden="true" />
         </button>
       </span>
     </header>
@@ -463,25 +489,29 @@ onBeforeUnmount(onMountedCleanup);
         v-model="filterKeyword"
         type="text"
         :placeholder="t('tree.filterPlaceholder')"
+        :aria-label="t('tree.filterPlaceholder')"
         :disabled="disabled || !hasBaseDn"
         @input="onFilterInput"
         @keydown.esc="clearFilter"
       />
       <!-- 过滤激活时左栏切换为匹配列表：给显式还原入口，避免"树不见了" -->
-      <button v-if="hasFilter" class="icon-button" :title="t('tree.clearFilter')" @click.stop="clearFilter">
+      <button v-if="hasFilter" class="icon-button" :title="t('tree.clearFilter')" :aria-label="t('tree.clearFilter')" @click.stop="clearFilter">
         <X aria-hidden="true" />
       </button>
     </div>
-    <div class="tree-rows" role="tree" :aria-label="t('tree.title')" @click="closeContextMenu" @keydown="onTreeKeydown">
-      <div v-if="!hasBaseDn" class="tree-state">{{ t("tree.missingBaseDn") }}</div>
+    <div class="tree-rows" role="tree" :aria-label="t('tree.title')" :aria-busy="hasFilter ? filterLoading : loadingRoot" @click="closeContextMenu" @keydown="onTreeKeydown">
+      <div v-if="!hasBaseDn" class="tree-state" role="status">{{ t("tree.missingBaseDn") }}</div>
       <template v-else-if="hasFilter">
-        <div v-if="filterLoading" class="tree-state">{{ t("tree.loading") }}</div>
-        <div v-else-if="filterError" class="tree-error" :title="filterErrorRaw || filterError">{{ filterError }}</div>
-        <div v-else-if="filterResults.length === 0" class="tree-state">{{ t("tree.filterNoMatch", { keyword: filterKeyword.trim() }) }}</div>
+        <div v-if="filterLoading" class="tree-state" role="status">{{ t("tree.loading") }}</div>
+        <div v-else-if="filterError" class="tree-error" role="alert">
+          <span :title="filterErrorRaw || filterError">{{ filterError }}</span>
+          <button type="button" class="toolbar-button" :disabled="disabled" @click.stop="refresh">{{ t("tree.retry") }}</button>
+        </div>
+        <div v-else-if="filterResults.length === 0" class="tree-state" role="status">{{ t("tree.filterNoMatch", { keyword: filterKeyword.trim() }) }}</div>
         <template v-else>
-          <VirtualList :items="sortedFilterResults" :row-height="TREE_ROW_HEIGHT" :reset-key="filterKeyword" class="tree-vlist">
-            <template #default="{ item }">
-              <button class="tree-node" :title="item.dn" @click.stop="selectNode(makeNode(item.dn))" @dblclick.stop="emit('view', item.dn)" @contextmenu.prevent.stop="openContextMenu($event, item.dn)">
+          <VirtualList ref="visibleList" :items="sortedFilterResults" :row-height="TREE_ROW_HEIGHT" :reset-key="filterKeyword" class="tree-vlist">
+            <template #default="{ item, index }">
+              <button class="tree-node" :data-tree-index="index" role="treeitem" aria-level="1" :aria-selected="selectedDn === item.dn" :title="item.dn" :disabled="disabled" @click.stop="selectNode(makeNode(item.dn))" @dblclick.stop="emit('view', item.dn)" @contextmenu.prevent.stop="openContextMenu($event, item.dn)">
                 <span class="tree-row" :class="{ selected: selectedDn === item.dn }">
                   <span class="tree-label">
                     <TreeNodeIcon :dn="item.dn" />
@@ -498,20 +528,22 @@ onBeforeUnmount(onMountedCleanup);
         </template>
       </template>
       <template v-else>
-        <div v-if="loadingRoot" class="tree-state">{{ t("tree.loading") }}</div>
+        <div v-if="loadingRoot" class="tree-state" role="status">{{ t("tree.loading") }}</div>
         <template v-else>
           <!-- 懒展开失败：错误横幅与树并存，不吞掉已加载的树 -->
-          <div v-if="treeError" class="tree-error" :title="treeErrorRaw || treeError">{{ treeError }}</div>
-          <div v-if="!rootNode && !treeError" class="tree-state">{{ t("tree.empty") }}</div>
+          <div v-if="treeError" class="tree-error" role="alert" :title="treeErrorRaw || treeError">{{ treeError }}</div>
+          <div v-if="!rootNode && !treeError" class="tree-state" role="status">{{ t("tree.empty") }}</div>
           <VirtualList
             v-else-if="rootNode"
+            ref="visibleList"
             :items="treeRows"
             :row-height="TREE_ROW_HEIGHT"
             :reset-key="props.baseDn"
             class="tree-vlist"
           >
-            <template #default="{ item }">
+            <template #default="{ item, index }">
               <TreeBranch
+                :data-tree-index="index"
                 :node="item.node"
                 :depth="item.depth"
                 :selected-dn="selectedDn"

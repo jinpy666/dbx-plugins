@@ -180,6 +180,7 @@ export function useLdapSchemaCache(options?: SchemaCacheOptions) {
                     payload: {
                         attributeNames: payload.attributeNames || [],
                         objectClassAttributes: payload.objectClassAttributes || {},
+                        rawObjectClasses: payload.rawObjectClasses,
                     },
                     fetchedAt: Date.now(),
                 };

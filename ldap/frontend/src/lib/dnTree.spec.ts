@@ -103,6 +103,12 @@ describe("tree keyboard navigation (P2-10)", () => {
     expect(nextTreeFocusIndex(4, 1, "Enter")).toBe(-1);
     expect(nextTreeFocusIndex(4, 1, "Tab")).toBe(-1);
     expect(nextTreeFocusIndex(0, -1, "ArrowDown")).toBe(-1);
+    expect(nextTreeFocusIndex(0, -1, "End")).toBe(-1);
+  });
+
+  it("targets the ends of the complete row model", () => {
+    expect(nextTreeFocusIndex(1001, 12, "Home")).toBe(0);
+    expect(nextTreeFocusIndex(1001, 12, "End")).toBe(1000);
   });
 });
 

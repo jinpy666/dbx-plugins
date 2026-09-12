@@ -26,6 +26,20 @@ function syncScroll() {
   scrollTop.value = scroller.value?.scrollTop ?? 0;
 }
 
+// Keyboard navigation can target an unmounted row. Update the window before
+// the caller's nextTick, then it can focus the newly rendered element.
+function scrollToIndex(index: number) {
+  const element = scroller.value;
+  if (!element || index < 0 || index >= props.items.length) return;
+  const height = viewportHeight.value || element.clientHeight || props.rowHeight;
+  const top = index * props.rowHeight;
+  if (top < element.scrollTop) element.scrollTop = top;
+  else if (top + props.rowHeight > element.scrollTop + height) element.scrollTop = top + props.rowHeight - height;
+  syncScroll();
+}
+
+defineExpose({ scrollToIndex });
+
 const totalHeight = computed(() => props.items.length * props.rowHeight);
 const window_ = computed(() =>
   computeWindow(scrollTop.value, viewportHeight.value, props.items.length, props.rowHeight, props.overscan),

@@ -1,6 +1,7 @@
 // friendlyKafkaError 规则映射测试：门禁类优先于网络类，未知错误原样透传。
 import { describe, expect, it } from "vitest";
 import { friendlyKafkaError } from "./kafkaErrors";
+import { t } from "./i18n";
 
 describe("friendlyKafkaError", () => {
   it("maps policy gates before network errors", () => {
@@ -35,5 +36,17 @@ describe("friendlyKafkaError", () => {
     expect(region).toBe(friendlyKafkaError("msk_region is required"));
     // 普通 SASL 认证失败不被 msk 规则误吞。
     expect(friendlyKafkaError("SASL authentication failed")).not.toBe(credential);
+  });
+
+  // round4 面 2：授权类（franz-go kerr TOPIC/GROUP/CLUSTER_AUTHORIZATION_FAILED
+  // 原文案）映射为可行动文案，且不误吞 SASL 认证失败与「unknown authority」TLS 类。
+  it("maps authorization failures with actionable text (round4)", () => {
+    const forbidden = friendlyKafkaError("Not authorized to access topics: [Topic authorization failed.]");
+    expect(forbidden).toBe(t("err.forbidden"));
+    expect(forbidden).toBe(friendlyKafkaError("GROUP_AUTHORIZATION_FAILED: group authorization failed"));
+    expect(forbidden).toBe(friendlyKafkaError("cluster authorization failed"));
+    // 不误吞：SASL 认证失败与 x509 unknown authority 仍落各自类别。
+    expect(friendlyKafkaError("SASL authentication failed")).not.toBe(forbidden);
+    expect(friendlyKafkaError("x509: certificate signed by unknown authority")).not.toBe(forbidden);
   });
 });

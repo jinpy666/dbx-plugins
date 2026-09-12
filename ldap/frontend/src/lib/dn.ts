@@ -4,7 +4,35 @@
  * DNs / RDNs (handles `\,` escapes, quoted values and multi-valued `+` RDNs).
  */
 
-const trimToString = (value: unknown): string => String(value ?? '').trim();
+const trimToString = (value: unknown): string => {
+    const text = String(value ?? '').trimStart();
+    let end = text.length;
+    // An escaped trailing space belongs to the value, not DN formatting.
+    while (end > 0 && /\s/u.test(text[end - 1])) {
+        let slashes = 0;
+        for (let index = end - 2; index >= 0 && text[index] === '\\'; index--) slashes++;
+        if (slashes % 2 !== 0) break;
+        end--;
+    }
+    return text.slice(0, end);
+};
+
+const hasValidEscapesAndQuotes = (text: string): boolean => {
+    let quoted = false;
+    for (let index = 0; index < text.length; index++) {
+        const char = text[index];
+        if (char === '\\') {
+            const next = text[++index];
+            if (!next) return false;
+            if (/^[0-9a-f]$/iu.test(next)) {
+                if (!/^[0-9a-f]$/iu.test(text[++index] ?? '')) return false;
+            } else if (!' ,+"\\<>;=#'.includes(next)) return false;
+        } else if (char === '"') {
+            quoted = !quoted;
+        } else if (char === '\0') return false;
+    }
+    return !quoted;
+};
 
 const findTopLevelChar = (source: string, targetChars: string | string[]): number => {
     const text = String(source || '');
@@ -61,8 +89,8 @@ export const splitFirstDnRdn = (dn: string): DnSplit => {
         return { rdn: text, parentDn: '' };
     }
     return {
-        rdn: text.slice(0, separatorIndex).trim(),
-        parentDn: text.slice(separatorIndex + 1).trim(),
+        rdn: trimToString(text.slice(0, separatorIndex)),
+        parentDn: trimToString(text.slice(separatorIndex + 1)),
     };
 };
 
@@ -115,13 +143,14 @@ export const rdnConfirmationToken = (dn: string): string => {
 
 export const isLikelyRdn = (value: unknown): boolean => {
     const rdn = trimToString(value);
-    if (!rdn) return false;
+    if (!rdn || !hasValidEscapesAndQuotes(rdn)) return false;
     if (findTopLevelChar(rdn, ',') >= 0) return false;
-    const components = splitTopLevel(rdn, '+').map((part) => part.trim()).filter(Boolean);
-    if (components.length === 0) return false;
+    const components = splitTopLevel(rdn, '+').map(trimToString);
     return components.every((component) => {
         const separatorIndex = findTopLevelChar(component, '=');
         if (separatorIndex <= 0) return false;
+        const attribute = component.slice(0, separatorIndex).trim();
+        if (!/^(?:[a-z][a-z0-9-]*|[0-9]+(?:\.[0-9]+)+)$/iu.test(attribute)) return false;
         return component.slice(separatorIndex + 1).trim().length > 0;
     });
 };
@@ -130,6 +159,19 @@ export const isLikelyDn = (value: unknown): boolean => {
     const dn = trimToString(value);
     if (!dn) return false;
     return splitTopLevel(dn, ',').every((part) => isLikelyRdn(part));
+};
+
+/** Decode text AVAs for the directory fixture, reusing the DN escape parser. */
+export const parseRdnAttributes = (rdn: string): Array<{ attribute: string; value: string }> => {
+    if (!isLikelyRdn(rdn)) throw new Error('invalid RDN');
+    return splitTopLevel(rdn, '+').map((component) => {
+        const separator = findTopLevelChar(component, '=');
+        const attribute = component.slice(0, separator).trim();
+        let value = trimToString(component.slice(separator + 1));
+        if (value.startsWith('#')) throw new Error('BER-encoded RDN values are not implemented in the fixture');
+        if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+        return { attribute, value: decodeEscapedValue(value) };
+    });
 };
 
 export const joinRdnAndParent = (rdn: string, parentDn: string): string => {

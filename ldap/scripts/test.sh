@@ -53,6 +53,9 @@ else
   echo "SKIP: manifest.json/dbx-plugin CLI not ready yet; frontend artifacts are in ui/"
 fi
 
+echo "==> smoke runner unit tests (offline)"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'
+
 echo "==> smoke (OpenLDAP container auto-SKIP; unimplemented methods SKIP)"
 python3 scripts/smoke_test.py
 

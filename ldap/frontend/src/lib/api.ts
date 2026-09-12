@@ -41,13 +41,11 @@ export interface LdapModifyChange {
 export interface LdapSearchPreset {
   id: string;
   name: string;
-  baseDn: string;
-  filter: string;
-  scope: LdapScope;
+  baseDn?: string;
+  filter?: string;
+  scope?: LdapScope;
   attributes?: string[];
   sizeLimit?: number;
-  /** Structured query-builder conditions (persisted alongside the filter string). */
-  conditions?: unknown;
 }
 
 export interface LdapConnectionStatus {
@@ -147,7 +145,7 @@ export const ldapApi = {
   entryModifyDn(dn: string, newRdn: string, newParentDn: string | undefined, deleteOldRdn: boolean) {
     return callLdap<{ success: boolean }>(
       "ldap/entry/modifyDn",
-      { dn, newRdn, ...(newParentDn ? { newParentDn } : {}), deleteOldRdn },
+      { dn, newRdn, ...(newParentDn ? { newSuperior: newParentDn } : {}), deleteOldRdn },
     );
   },
 
@@ -160,11 +158,11 @@ export const ldapApi = {
   },
 
   presetsSave(preset: LdapSearchPreset) {
-    return callLdap<{ presets: LdapSearchPreset[] }>("ldap/presets/save", { preset });
+    return callLdap<{ success: boolean; preset: LdapSearchPreset }>("ldap/presets/save", { preset });
   },
 
   presetsRemove(id: string) {
-    return callLdap<{ presets: LdapSearchPreset[] }>("ldap/presets/remove", { id });
+    return callLdap<{ success: boolean }>("ldap/presets/remove", { id });
   },
 };
 

@@ -87,6 +87,31 @@ beforeEach(() => {
   setKafkaConnectionId("conn-test");
 });
 
+// round4 面 1：管理表空态/加载态/错误态三态收敛（与 TopicTree 同序：
+// error → loading → empty），不再把「集群无 topic」与「加载失败」混为一谈。
+describe("TopicsPanel grid states", () => {
+  it("shows a friendly error instead of the empty hint when load failed", () => {
+    const wrapper = mountPanel({ topics: [], error: "Not authorized to access topics: [Topic authorization failed.]" });
+    const state = wrapper.find(".grid-box .empty");
+    expect(state.exists()).toBe(true);
+    expect(state.text()).not.toBe(t("topics.empty"));
+    expect(state.text()).toBe(t("err.forbidden"));
+    // 原始错误串留在 title 悬停里供排查
+    expect(state.attributes("title")).toContain("Topic authorization failed");
+    expect(wrapper.find(".grid-stub").exists()).toBe(false);
+  });
+
+  it("shows the loading state instead of the empty hint while loading", () => {
+    const wrapper = mountPanel({ topics: [], loading: true });
+    expect(wrapper.find(".grid-box .empty").text()).toBe(t("tree.loading"));
+  });
+
+  it("keeps the plain empty hint for a genuinely empty cluster", () => {
+    const wrapper = mountPanel({ topics: [], loading: false });
+    expect(wrapper.find(".grid-box .empty").text()).toBe(t("topics.empty"));
+  });
+});
+
 describe("TopicsPanel expand partitions", () => {
   it("rejects a smaller new count with the dedicated message and no request (P2-20)", async () => {
     installBridge({});

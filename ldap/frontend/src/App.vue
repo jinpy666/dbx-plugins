@@ -25,6 +25,7 @@ import ConnectionsPanel from "./components/ConnectionsPanel.vue";
 import AuditFeedPanel from "./components/AuditFeedPanel.vue";
 import { deriveSchemaMetadata, useLdapSchemaCache } from "./lib/schemaCache";
 import { deriveDnValuedAttributes } from "./lib/dnAttributes";
+import type { LdapSchema } from "./lib/newEntryTemplates";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 
 interface ConnectionSummary {
@@ -56,6 +57,9 @@ const results = ref<LdapEntry[]>([]);
 const resultCount = ref(0);
 const resultTruncated = ref(false);
 const searching = ref(false);
+const searchError = ref("");
+const searchErrorDetail = ref("");
+let searchRequestSeq = 0;
 // 空结果两态（UI 扫描 P2-3）：执行过搜索后的 0 条 ≠ "请先执行搜索"。
 const hasSearched = ref(false);
 // 恰好等于 sizeLimit 的"整页结果"信号（UI 扫描 P2-15）：契约 truncated 只在
@@ -68,6 +72,11 @@ const lastSizeLimit = ref<number>();
 const editorOpen = ref(false);
 const editorEntry = ref<LdapEntry>();
 const editorParentDn = ref("");
+const editorRequestedDn = ref("");
+const editorLoading = ref(false);
+const editorLoadError = ref("");
+const editorLoadErrorDetail = ref("");
+let entryRequestSeq = 0;
 const deleteOpen = ref(false);
 const deleteDn = ref("");
 const deleteSubmitting = ref(false);
@@ -89,20 +98,26 @@ const wizardSchema = computed(() => ({ objectClassAttributes: wizardSchemaCache.
 // 条目关联视图（泛化）：schema 驱动的 DN 值属性名集合，经 EntryEditorDialog
 // 透传给 AssociationPanel。与 wizardSchemaCache 同款 useLdapSchemaCache 缓存
 // （per-connection TTL + inFlight 去重），但 loader 直接把 ldap/schema 的
-// 原始 attributeTypes 装进 attributeNames 槽（缓存体只保留 attributeNames/
-// objectClassAttributes，故不复用 wizardSchemaCache），供
-// deriveDnValuedAttributes 消费。惰性：条目编辑器首次打开时加载；失败静默
+// 原始 attributeTypes 装进 attributeNames 槽供 deriveDnValuedAttributes 消费；
+// 同一次加载保留 objectClass MUST/SUP，供编辑器预检。惰性：首次打开时加载；失败静默
 // 降级为不传（panel 有内置兜底表），不弹错误横幅。
 const dnAttributes = ref<string[]>([]);
+const editorSchema = ref<LdapSchema>();
 let dnAttributesReady = false;
 const dnSchemaCache = useLdapSchemaCache({
-  loader: () => ldapApi.schema().then((result) => ({ attributeNames: result.attributeTypes })),
+  loader: () => ldapApi.schema().then((result) => ({
+    ...deriveSchemaMetadata(result.attributeTypes, result.objectClasses),
+    attributeNames: result.attributeTypes,
+  })),
 });
 async function ensureDnAttributes() {
   if (dnAttributesReady) return;
+  const requestedConnection = connectionId.value;
   try {
-    const payload = await dnSchemaCache.ensureLoaded(connectionId.value);
+    const payload = await dnSchemaCache.ensureLoaded(requestedConnection);
+    if (requestedConnection !== connectionId.value) return;
     dnAttributes.value = deriveDnValuedAttributes(payload?.attributeNames ?? []);
+    editorSchema.value = payload ?? undefined;
     dnAttributesReady = true;
   } catch {
     // schema 拉取失败静默降级；不置位 ready，下次打开编辑器可重试
@@ -197,10 +212,20 @@ function showNotice(message: string) {
   noticeTimer = window.setTimeout(() => (notice.value = ""), 3500);
 }
 
-function showError(cause: unknown, target: "ldap" | "init" = "ldap") {
+function showError(cause: unknown, target: "ldap" | "init" | "search" | "entry" = "ldap") {
   const message = cause instanceof Error ? cause.message : String(cause);
   if (target === "init") {
     initError.value = message;
+    return;
+  }
+  if (target === "search") {
+    searchError.value = friendlyLdapError(message);
+    searchErrorDetail.value = message;
+    return;
+  }
+  if (target === "entry") {
+    editorLoadError.value = friendlyLdapError(message);
+    editorLoadErrorDetail.value = message;
     return;
   }
   // 横幅展示本地化的可行动文案；原始错误串挂在 title 悬停里供排查。
@@ -234,9 +259,10 @@ async function refreshResultsAfterWrite(affected: (dn: string) => boolean) {
 
 async function runSearch(model: SearchFormModel) {
   if (busy.value || searching.value) return;
+  const request = ++searchRequestSeq;
   searching.value = true;
-  searchModel.value = model;
-  hasSearched.value = true;
+  searchModel.value = { ...model };
+  searchError.value = "";
   ldapError.value = "";
   try {
     const attributes = model.attributes
@@ -254,16 +280,22 @@ async function runSearch(model: SearchFormModel) {
       typesOnly: model.typesOnly,
       derefAliases: model.derefAliases,
     });
+    if (request !== searchRequestSeq) return;
+    hasSearched.value = true;
     results.value = Array.isArray(result.entries) ? result.entries : [];
     resultCount.value = Number.isFinite(result.count) ? result.count : results.value.length;
     resultTruncated.value = result.truncated === true;
     resultAtLimit.value = sizeLimit !== undefined && resultCount.value === sizeLimit;
     lastSizeLimit.value = sizeLimit;
   } catch (cause) {
-    showError(cause);
+    if (request === searchRequestSeq) showError(cause, "search");
   } finally {
-    searching.value = false;
+    if (request === searchRequestSeq) searching.value = false;
   }
+}
+
+function retrySearch() {
+  if (searchModel.value) void runSearch(searchModel.value);
 }
 
 function positiveInt(value: string): number | undefined {
@@ -290,18 +322,33 @@ function selectEntry(dn: string) {
 const editorInitialTab = ref<"ldif" | "assoc">();
 
 async function openEntry(dn: string, initialTab?: "ldif" | "assoc") {
+  const request = ++entryRequestSeq;
+  editorRequestedDn.value = dn;
   editorInitialTab.value = initialTab;
+  editorLoadError.value = "";
+  editorLoading.value = true;
+  editorOpen.value = true;
   // 关联视图泛化的 DN 属性名集合：编辑器打开时惰性拉取（失败静默降级）。
   void ensureDnAttributes();
   ldapError.value = "";
   try {
     const result = await ldapApi.entryGet(dn);
+    if (request !== entryRequestSeq) return;
     editorEntry.value = result.entry;
     editorParentDn.value = "";
     editorOpen.value = true;
   } catch (cause) {
-    showError(cause);
+    if (request === entryRequestSeq) showError(cause, "entry");
+  } finally {
+    if (request === entryRequestSeq) editorLoading.value = false;
   }
+}
+
+function closeEditor() {
+  entryRequestSeq++;
+  editorOpen.value = false;
+  editorLoading.value = false;
+  editorLoadError.value = "";
 }
 
 // 树右键「成员」：立即以 (memberOf=<DN>) 在连接 Base 下子树搜索，
@@ -331,15 +378,17 @@ async function onWizardCreate(payload: { dn: string; attributes: Record<string, 
 }
 
 function onEditorSaved(dn: string, mode_: "add" | "edit") {
-  editorOpen.value = false;
+  closeEditor();
   showNotice(mode_ === "add" ? t("editor.added") : t("editor.saved"));
   treeRef.value?.invalidate(mode_ === "add" ? parentOf(dn) : dn);
   void openEntryRefresh(dn);
 }
 
 async function openEntryRefresh(dn: string) {
+  const request = entryRequestSeq;
   try {
     const result = await ldapApi.entryGet(dn);
+    if (request !== entryRequestSeq || editorOpen.value) return;
     editorEntry.value = result.entry;
   } catch {
     // Entry may have been renamed/moved; keep the dialog closed.
@@ -469,7 +518,11 @@ async function copyDn(dn: string) {
   showNotice((await writeClipboardText(dn)) ? t("copied") : t("copyFailed"));
 }
 
-function handleEvent(event: { method: string; params: Record<string, unknown> }) {
+function handleEvent(event: DbxPluginEvent) {
+  if (event.type === "env") {
+    if (typeof event.locale === "string") setWorkbenchLocale(event.locale || "zh-CN");
+    return;
+  }
   if (event.method === "ldap/audit") {
     const params = event.params || {};
     // 数据面：进入最近操作面板（denied/error 高亮）；即时反馈走横幅/通知。
@@ -507,7 +560,8 @@ async function initialize() {
   // appearance 契约缺失（当前 1.1 桥只推 theme）时订阅 env 主题推送，两套不同时挂。
   else unsubscribeAppearance.push(onHostThemeChange((theme) => applyAppearance(themeToAppearance(theme))));
   if (api.onLocaleChange) unsubscribeLocale.push(api.onLocaleChange((next) => setWorkbenchLocale(next || "zh-CN")));
-  if (api.onContextChange) unsubscribeContext.push(api.onContextChange((context) => {
+  const onContext = api.onContext ?? api.onContextChange;
+  if (onContext) unsubscribeContext.push(onContext.call(api, (context) => {
     hostContext.value = context;
     syncConnectionContext();
   }));
@@ -531,12 +585,16 @@ function syncConnectionContext() {
   const switched = lastSyncedConnectionId !== "" && lastSyncedConnectionId !== current;
   lastSyncedConnectionId = current;
   if (switched) {
-    editorOpen.value = false;
+    closeEditor();
+    searchRequestSeq++;
+    searching.value = false;
+    searchError.value = "";
     deleteOpen.value = false;
     modifyDnOpen.value = false;
     wizardOpen.value = false;
     // DN 属性名集合属于上一个连接的 schema，随连接切换一并失效重取。
     dnAttributes.value = [];
+    editorSchema.value = undefined;
     dnAttributesReady = false;
     results.value = [];
     resultCount.value = 0;
@@ -583,6 +641,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  searchRequestSeq++;
+  entryRequestSeq++;
   window.clearTimeout(noticeTimer);
   for (const dispose of [...unsubscribeAppearance, ...unsubscribeLocale, ...unsubscribeContext, ...unsubscribeEvent]) dispose();
 });
@@ -648,6 +708,7 @@ onBeforeUnmount(() => {
           ref="searchRef"
           :base-dn="baseDn"
           :disabled="searching"
+          :running="searching"
           @run="runSearch"
           @notify="showNotice"
           @error="(message) => showError(message)"
@@ -661,6 +722,10 @@ onBeforeUnmount(() => {
           :size-limit="lastSizeLimit"
           :searched="hasSearched"
           :disabled="searching"
+          :loading="searching"
+          :error="searchError"
+          :error-detail="searchErrorDetail"
+          @retry="retrySearch"
           @open="openEntry"
           @export="exportResults"
         />
@@ -677,8 +742,14 @@ onBeforeUnmount(() => {
       :can-write="canWrite"
       :base-dn="baseDn"
       :dn-attributes="dnAttributes"
+      :schema="editorSchema"
+      :requested-dn="editorRequestedDn"
+      :loading="editorLoading"
+      :load-error="editorLoadError"
+      :load-error-detail="editorLoadErrorDetail"
       :initial-tab="editorInitialTab"
-      @close="editorOpen = false"
+      @close="closeEditor"
+      @retry="openEntry(editorRequestedDn, editorInitialTab)"
       @saved="onEditorSaved"
       @error="showError"
       @notify="showNotice"

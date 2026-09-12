@@ -1189,8 +1189,14 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
     </div>
     <!-- P2-21：两态空态——未选 topic 引导先在左侧树选择；已选 topic 尚无结果
          或结果为空才是「调整条件重新消费」。空态包进 grid-box--fill 与结果区
-         同一容器，占满剩余高度使文案垂直居中（裸 p 会贴在表单下方）。 -->
-    <div v-else-if="!consuming" class="grid-box grid-box--fill">
+         同一容器，占满剩余高度使文案垂直居中（裸 p 会贴在表单下方）。
+         round4 面 1：消费在途（consuming）不再整块空白，给出进行中反馈
+         （复用 messages.running，消费按钮同文案），请求落地/失败后由 result
+         或错误横幅接管。 -->
+    <div v-else-if="consuming" class="grid-box grid-box--fill">
+      <p class="empty compact">{{ t("messages.running") }}</p>
+    </div>
+    <div v-else class="grid-box grid-box--fill">
       <p class="empty compact">{{ topic ? t("messages.noMessages") : t("messages.uiNoTopicSelected") }}</p>
     </div>
 

@@ -136,6 +136,226 @@ test("builder → source mode carries the generated filter", async (page) => {
   expectEqual(value, "(!(uid=admin))", "source input");
 });
 
+test("source syntax feedback is linked to the field and recovers", async (page) => {
+  const input = page.locator(".filter-source input");
+  await input.fill("(uid");
+  expectEqual(await input.getAttribute("aria-invalid"), "true", "invalid source field");
+  const description = await input.getAttribute("aria-describedby");
+  expectEqual(await page.locator('[id="' + description + '"]').innerText(), "LDAP 过滤器不合法", "source error");
+  await input.fill("(objectClass=*)");
+  expectEqual(await input.getAttribute("aria-invalid"), "false", "corrected source field");
+});
+
+test("invalid numeric inputs block search until corrected", async (page) => {
+  const input = page.locator("input.numeric").first();
+  await input.fill("12px");
+  expectEqual(await page.locator(".search-form button[type='submit']").isDisabled(), true, "invalid number blocks search");
+  await input.fill("500");
+  expectEqual(await page.locator(".search-form button[type='submit']").isDisabled(), false, "valid number allows search");
+});
+
+test("lazy tree node expands and collapses with the keyboard", async (page) => {
+  const row = page.locator('.tree-node[title="ou=services,dc=demo,dc=dbx"]');
+  const child = page.locator('.tree-node[title="cn=ldap,ou=services,dc=demo,dc=dbx"]');
+  expectEqual(await row.getAttribute("aria-expanded"), "false", "unloaded node is collapsed");
+  await row.press("ArrowRight");
+  await child.waitFor();
+  expectEqual(await row.getAttribute("aria-expanded"), "true", "expanded node");
+  await row.press("ArrowLeft");
+  await child.waitFor({ state: "hidden" });
+  expectEqual(await row.getAttribute("aria-expanded"), "false", "collapsed node");
+});
+
+test("tree filter failure retries the same keyword and restores results", async (page) => {
+  await page.evaluate(() => {
+    const invoke = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+    let failOnce = true;
+    window.dbxPlugin.invoke = async (method, params, options) => {
+      if (method === "ldap/search" && params.scope === "sub" && params.sizeLimit === 100 && failOnce) {
+        failOnce = false;
+        throw new Error("connection refused (UI retry fixture)");
+      }
+      return invoke(method, params, options);
+    };
+  });
+  const input = page.locator(".tree-filter input");
+  await input.fill("user0001");
+  const retry = page.locator(".tree-error button");
+  await retry.waitFor();
+  expectEqual(await retry.innerText(), "重试", "localized retry action");
+  await retry.click();
+  const hit = page.locator('.tree-node[title="uid=user0001,ou=people,dc=demo,dc=dbx"]');
+  await hit.waitFor();
+  expectEqual(await input.inputValue(), "user0001", "retry preserves keyword");
+  expectEqual(await hit.getAttribute("role"), "treeitem", "filtered hit semantics");
+});
+
+async function captureReview(page, name) {
+  if (!process.env.LDAP_UI_ARTIFACT_DIR) return;
+  mkdirSync(process.env.LDAP_UI_ARTIFACT_DIR, { recursive: true });
+  await page.screenshot({ path: path.join(process.env.LDAP_UI_ARTIFACT_DIR, name + ".png") });
+}
+
+test("presets follow save/remove responses and restore the updated filter", async (page) => {
+  await page.locator(".search-form > label.field input").first().fill("dc=demo,dc=dbx");
+  await page.locator(".filter-source input").fill("(uid=user0001)");
+  await page.locator(".preset-input").fill("Round5 preset");
+  await page.locator(".search-presets button").first().click();
+  await page.waitForFunction(() => document.querySelector(".search-presets select").value !== "");
+  const id = await page.locator(".search-presets select").inputValue();
+  await page.locator(".filter-source input").fill("(uid=user0002)");
+  await page.locator(".search-presets button").first().click();
+  await page.waitForFunction(() => !document.querySelector(".preset-input").disabled);
+  const stored = await page.evaluate(() => window.dbxPlugin.invoke("ldap/presets/list"));
+  expectEqual(stored.presets.length, 1, "one preset after two saves");
+  expectEqual(stored.presets[0].id, id, "stable saved id");
+  expectEqual(stored.presets[0].filter, "(uid=user0002)", "latest filter persisted");
+  expectEqual("conditions" in stored.presets[0], false, "only protocol fields persisted");
+  await page.locator(".filter-source input").fill("(uid=unsaved)");
+  await page.locator(".search-presets select").dispatchEvent("change");
+  expectEqual(await page.locator(".qb-preview").innerText(), "(uid=user0002)", "filter restored into builder");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator(".search-presets button").last().click();
+  await page.waitForFunction(() => document.querySelector(".search-presets select").options.length === 1);
+});
+
+test("search shows pending/failure states and retries without losing the query", async (page) => {
+  await page.locator(".search-form > label.field input").first().fill("dc=demo,dc=dbx");
+  await page.locator(".search-form .mode-switch button").nth(1).click();
+  await page.locator(".filter-source input").fill("(uid=user0001)");
+  await page.evaluate(() => {
+    const invoke = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+    window.__ldapRound5Invoke = invoke;
+    let first = true;
+    window.dbxPlugin.invoke = (method, params, options) => {
+      if (method === "ldap/search" && params.filter === "(uid=user0001)" && first) {
+        first = false;
+        return new Promise((_, reject) => { window.__ldapRound5Fail = () => reject(new Error("connection refused")); });
+      }
+      return invoke(method, params, options);
+    };
+  });
+  try {
+    await page.locator(".search-form button[type='submit']").click();
+    await page.locator(".result-pane[aria-busy='true']").waitFor();
+    expectEqual(await page.locator(".result-pane [role='status']").innerText(), "搜索中…", "pending result copy");
+    expectEqual(await page.locator(".search-form button[type='submit']").innerText(), "搜索中…", "pending action copy");
+    await page.evaluate(() => window.__ldapRound5Fail());
+    await page.locator(".result-pane .request-error button").waitFor();
+    expectEqual(await page.locator(".filter-source input").inputValue(), "(uid=user0001)", "failed query retained");
+    await captureReview(page, "ldap-round5-search-retry");
+    await page.locator(".result-pane .request-error button").click();
+    await page.locator(".result-row").first().waitFor();
+    expectEqual(await page.locator(".result-row").count(), 1, "retry result count");
+  } finally {
+    await page.evaluate(() => { window.dbxPlugin.invoke = window.__ldapRound5Invoke; });
+  }
+});
+
+test("entry opens with loading feedback and retries a failed read", async (page) => {
+  await page.evaluate(() => {
+    const invoke = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+    window.__ldapRound5Invoke = invoke;
+    let first = true;
+    window.dbxPlugin.invoke = (method, params, options) => {
+      if (method === "ldap/entry/get" && first) {
+        first = false;
+        return new Promise((_, reject) => { window.__ldapRound5Fail = () => reject(new Error("connection refused")); });
+      }
+      return invoke(method, params, options);
+    };
+  });
+  try {
+    await page.locator(".result-row").first().dblclick();
+    await page.locator(".editor-modal[aria-busy='true']").waitFor();
+    expectEqual(await page.locator(".editor-modal [role='status']").innerText(), "正在加载条目…", "pending entry copy");
+    await page.evaluate(() => window.__ldapRound5Fail());
+    await page.locator(".editor-modal .request-error button").click();
+    await page.locator(".editor-modal .attr-editor").waitFor();
+  } finally {
+    await page.evaluate(() => { window.dbxPlugin.invoke = window.__ldapRound5Invoke; });
+  }
+});
+
+test("missing MUST feedback focuses the affected field and recovers after input", async (page) => {
+  const surname = page.getByRole("textbox", { name: "sn", exact: true });
+  const original = await surname.inputValue();
+  const row = page.locator(".attr-row").filter({ has: surname });
+  await row.getByRole("button", { name: "移除属性", exact: true }).click();
+  expectEqual(await page.locator(".editor-modal footer .primary-button").isDisabled(), true, "missing MUST blocks save");
+  await captureReview(page, "ldap-round5-required-attribute");
+  await page.getByRole("button", { name: "定位并补充 sn", exact: true }).click();
+  expectEqual(await surname.evaluate((element) => element === document.activeElement), true, "required field receives focus");
+  expectEqual(await surname.getAttribute("aria-invalid"), "true", "required field is marked invalid");
+  await surname.fill(original);
+  expectEqual(await page.locator(".editor-modal footer .primary-button").isDisabled(), false, "corrected MUST releases save");
+  await page.locator(".editor-modal").getByRole("button", { name: "取消", exact: true }).click();
+});
+
+test("RDN preflight rejects empty multi-value segments and accepts escaped separators", async (page) => {
+  await page.locator('.tree-node[title="uid=user0001,ou=people,dc=demo,dc=dbx"]').click({ button: "right" });
+  await page.getByRole("menuitem", { name: /重命名/ }).click();
+  const input = page.locator(".small-modal input[type='text']").first();
+  await input.fill("cn=bad+");
+  expectEqual(await input.getAttribute("aria-invalid"), "true", "invalid RDN");
+  expectEqual(await page.locator(".small-modal .primary-button").isDisabled(), true, "invalid RDN blocks rename");
+  await input.fill("cn=valid\\+value");
+  expectEqual(await input.getAttribute("aria-invalid"), "false", "escaped plus is accepted");
+  await page.locator(".small-modal").getByRole("button", { name: "取消", exact: true }).click();
+});
+
+test("tree keyboard reaches virtual rows and activates load more through Tab/Enter", async (page) => {
+  await page.locator(".tree-filter input").fill("");
+  const people = page.locator('.tree-node[title="ou=people,dc=demo,dc=dbx"]');
+  await people.press("ArrowRight");
+  await people.locator(".tree-badge--truncated").waitFor();
+  await people.press("ArrowRight");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "uid=user0000,ou=people,dc=demo,dc=dbx", "Right enters first child");
+  await page.keyboard.press("ArrowLeft");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "ou=people,dc=demo,dc=dbx", "Left returns to parent");
+  await page.keyboard.press("Tab");
+  expectEqual(await page.evaluate(() => document.activeElement?.matches("button.tree-badge--truncated")), true, "load more is keyboard reachable");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelector('.tree-node[title="ou=people,dc=demo,dc=dbx"] .tree-badge')?.textContent === "1000");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "ou=people,dc=demo,dc=dbx", "loading retains node focus");
+  await page.keyboard.press("ArrowRight");
+  for (let index = 0; index < 60; index++) await page.keyboard.press("ArrowDown");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "uid=user0060,ou=people,dc=demo,dc=dbx", "Down crosses virtual windows");
+  await page.keyboard.press("End");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "ou=services,dc=demo,dc=dbx", "End reaches final logical row");
+  await page.keyboard.press("ArrowUp");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "uid=user0999,ou=people,dc=demo,dc=dbx", "Up reaches last child");
+  if (await page.locator(".tree-node").count() >= 100) throw new Error("tree virtualization was lost");
+  await captureReview(page, "ldap-round6-tree-keyboard");
+  await page.keyboard.press("Home");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "dc=demo,dc=dbx", "Home returns to root");
+});
+
+test("filtered tree Home/End moves to entries outside the initial DOM window", async (page) => {
+  await page.locator(".tree-filter input").fill("user");
+  const first = page.locator('.tree-node[title="uid=user0000,ou=people,dc=demo,dc=dbx"]');
+  await first.waitFor();
+  await first.press("End");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "uid=user0099,ou=people,dc=demo,dc=dbx", "End reaches last filter hit");
+  await page.keyboard.press("Home");
+  expectEqual(await page.evaluate(() => document.activeElement?.getAttribute("title")), "uid=user0000,ou=people,dc=demo,dc=dbx", "Home returns to first filter hit");
+});
+
+test("rename dialog moves an entry through the real newSuperior field", async (page) => {
+  await page.locator(".tree-filter input").fill("user0001");
+  await page.locator('.tree-node[title="uid=user0001,ou=people,dc=demo,dc=dbx"]').click({ button: "right" });
+  await page.getByRole("menuitem", { name: /重命名/ }).click();
+  const inputs = page.locator(".small-modal input[type='text']");
+  await inputs.nth(0).fill("uid=round6-moved");
+  await inputs.nth(1).fill("ou=services,dc=demo,dc=dbx");
+  await page.locator(".small-modal .primary-button").click();
+  await page.locator(".small-modal").waitFor({ state: "hidden" });
+  const moved = await page.evaluate(async () => window.dbxPlugin.invoke("ldap/entry/get", {
+    dn: "uid=round6-moved,ou=services,dc=demo,dc=dbx", attributes: ["uid"],
+  }));
+  expectEqual(moved.entry.attributes.uid.join(","), "round6-moved", "new parent and naming attribute persisted");
+});
+
 // -- main ----------------------------------------------------------------------
 
 const playwright = await loadPlaywrightCore();

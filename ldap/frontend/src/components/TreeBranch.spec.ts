@@ -59,6 +59,28 @@ describe("TreeBranch child-count badge", () => {
     await wrapper.find(".tree-badge--truncated").trigger("click");
     expect(wrapper.emitted("loadMore")).toBeUndefined();
   });
+
+  it("offers a native load-more button and retains row focus when loading replaces it", async () => {
+    const wrapper = mount(TreeBranch, {
+      props: { node: makeNode({ truncated: true }), depth: 0, selectedDn: "" },
+      attachTo: document.body,
+    });
+    try {
+      const badge = wrapper.find(".tree-badge--truncated");
+      expect(badge.element.tagName).toBe("BUTTON");
+      expect(badge.attributes("tabindex")).toBeUndefined(); // native button tab stop
+      expect(badge.attributes("aria-label")).toContain("加载更多");
+      (badge.element as HTMLElement).focus();
+      await badge.trigger("click");
+      await wrapper.setProps({ node: makeNode({ loading: true, truncated: true }) });
+      expect(document.activeElement).toBe(wrapper.find(".tree-node").element);
+      expect(wrapper.emitted("loadMore")).toHaveLength(1);
+      expect(wrapper.emitted("select")).toBeUndefined();
+      expect(wrapper.emitted("toggle")).toBeUndefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
 });
 
 describe("TreeBranch row double-click", () => {
@@ -101,5 +123,41 @@ describe("TreeBranch kind icon", () => {
     expect(kindClass("uid=bob,ou=people,dc=demo,dc=dbx")).toContain("icon-blue");
     expect(kindClass("o=acme,dc=demo,dc=dbx")).toContain("icon-emerald");
     expect(kindClass("c=CN,o=acme")).toContain("icon-neutral");
+  });
+});
+
+describe("TreeBranch lazy-node accessibility", () => {
+  it("announces an unloaded node as collapsed, then omits expansion on a confirmed leaf", async () => {
+    const wrapper = mountBranch(makeNode({ loaded: false, expanded: false }));
+    const row = wrapper.find("[role='treeitem']");
+    expect(row.attributes("aria-level")).toBe("2");
+    expect(row.attributes("aria-expanded")).toBe("false");
+    await wrapper.setProps({ node: makeNode({ loading: true, loaded: false, expanded: false }) });
+    expect(row.attributes("aria-busy")).toBe("true");
+    await wrapper.setProps({ node: makeNode({ children: [] }) });
+    expect(row.attributes("aria-expanded")).toBeUndefined();
+  });
+
+  it("uses Right/Left to expand/collapse without reversing the requested state", async () => {
+    const wrapper = mountBranch(makeNode({ loaded: false, expanded: false }));
+    const row = wrapper.find(".tree-node");
+    await row.trigger("keydown", { key: "ArrowRight" });
+    expect(wrapper.emitted("toggle")).toHaveLength(1);
+    await wrapper.setProps({ node: makeNode({ children: [makeNode()] }) });
+    await row.trigger("keydown", { key: "ArrowRight" });
+    expect(wrapper.emitted("toggle")).toHaveLength(1);
+    await row.trigger("keydown", { key: "ArrowLeft" });
+    expect(wrapper.emitted("toggle")).toHaveLength(2);
+  });
+
+  it("does not expand a confirmed leaf, a loading node or a disabled node", async () => {
+    const wrapper = mountBranch(makeNode({ expanded: false }));
+    const row = wrapper.find(".tree-node");
+    await row.trigger("keydown", { key: "ArrowRight" });
+    await wrapper.setProps({ node: makeNode({ loaded: false, expanded: false, loading: true }) });
+    await row.trigger("keydown", { key: "ArrowRight" });
+    await wrapper.setProps({ node: makeNode({ loaded: false, expanded: false }), disabled: true });
+    await row.trigger("keydown", { key: "ArrowRight" });
+    expect(wrapper.emitted("toggle")).toBeUndefined();
   });
 });

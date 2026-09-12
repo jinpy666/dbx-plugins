@@ -24,12 +24,16 @@ import {
   type TopicVm,
 } from "../lib/kafkaColumns";
 import { offsetTimeToParam, parseHeadersJson, sortTopics } from "../lib/kafkaModel";
+import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { useModalBehavior } from "../lib/modalBehavior";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
   topics: KafkaTopic[];
   loading: boolean;
+  /** round4 面 1：与 TopicTree 同源的加载错误（App topicsError）——空态不再把
+   *  「集群无 topic」与「列表加载失败」混为一谈。 */
+  error?: string;
   canWrite: boolean;
   canDelete: boolean;
 }>();
@@ -93,6 +97,10 @@ useModalBehavior({ open: configOpen, container: configModalEl, close: () => (con
 
 const canManage = computed(() => props.canWrite);
 const canDeleteTopic = computed(() => props.canWrite && props.canDelete);
+
+// round4 面 1：错误正文走 friendlyKafkaError（与 TopicTree 同源），原文留 title。
+const friendlyError = computed(() => (props.error ? friendlyKafkaError(props.error) : ""));
+const errorDetail = computed(() => (props.error && friendlyError.value !== props.error ? props.error : ""));
 
 function selectTopic(topic: KafkaTopic | null) {
   selected.value = topic;
@@ -311,7 +319,11 @@ watch(
     </div>
 
     <div class="grid-box grid-box--fill">
-      <p v-if="topics.length === 0" class="empty compact">{{ t("topics.empty") }}</p>
+      <!-- round4 面 1：三态收敛（与 TopicTree 同序：error → loading → empty），
+           加载中/失败不再误显「空集群」。 -->
+      <p v-if="error" class="empty compact" :title="errorDetail">{{ friendlyError }}</p>
+      <p v-else-if="loading && topics.length === 0" class="empty compact">{{ t("tree.loading") }}</p>
+      <p v-else-if="topics.length === 0" class="empty compact">{{ t("topics.empty") }}</p>
       <DbxAgGrid
         v-else
         table-key="topics"

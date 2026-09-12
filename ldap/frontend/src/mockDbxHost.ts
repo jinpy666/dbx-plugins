@@ -13,6 +13,8 @@
  *                       reject — mirrors the backend write-policy branch)
  */
 import "./style.css";
+import { parseRdnAttributes, splitFirstDnRdn } from "./lib/dn";
+import { validateLDAPFilter } from "./lib/ldapFilter";
 
 const eventListeners = new Set<(event: DbxPluginEvent) => void>();
 const appearanceListeners = new Set<(appearance: DbxPluginAppearance) => void>();
@@ -72,14 +74,17 @@ function get(dn: string): MockEntry | undefined {
   return directory.get(dn.toLowerCase());
 }
 
-function rdnOf(dn: string): string {
-  const index = dn.indexOf(",");
-  return index > 0 ? dn.slice(0, index) : dn;
+function attributeKey(attributes: MockEntry["attributes"], name: string): string {
+  return Object.keys(attributes).find((key) => key.toLowerCase() === name.toLowerCase()) ?? name;
 }
 
-function parentOf(dn: string): string {
-  const index = dn.indexOf(",");
-  return index > 0 ? dn.slice(index + 1) : dn;
+function selectAttributes(attributes: MockEntry["attributes"], requested: unknown, typesOnly = false): MockEntry["attributes"] {
+  const names = Array.isArray(requested) ? requested.map((name) => String(name).trim().toLowerCase()).filter(Boolean) : [];
+  // All stored directory attributes are user attributes; dn is entry metadata,
+  // not an alias for '*'. A 1.1-only request returns just entry DNs.
+  return Object.fromEntries(Object.entries(attributes)
+    .filter(([name]) => names.length === 0 || names.includes("*") || names.includes(name.toLowerCase()))
+    .map(([name, values]) => [name, typesOnly ? [] : [...values]]));
 }
 
 put(BASE_DN, { dc: ["demo"], o: ["Demo Organization"], objectClass: ["dcObject", "organization"] });
@@ -123,7 +128,7 @@ function decodeFilterValue(value: string): string {
 }
 
 function matchItem(entry: MockEntry, attribute: string, rawValue: string): boolean {
-  const values = entry.attributes[attribute] ?? [];
+  const values = entry.attributes[attributeKey(entry.attributes, attribute)] ?? [];
   if (rawValue === "*") return values.length > 0;
   if (!rawValue.includes("*")) {
     return values.some((value) => value.toLowerCase() === decodeFilterValue(rawValue).toLowerCase());
@@ -183,32 +188,40 @@ function dnWithinBase(dn: string, baseDn: string): boolean {
   return a === b || a.endsWith(`,${b}`);
 }
 
-function search(params_: Record<string, unknown>): { entries: MockEntry[]; count: number; truncated: boolean } {
+function search(params_: Record<string, unknown>) {
   if (params.get("err") === "1") throw new Error("connection lost (fixture error injection)");
-  const baseDn = String(params_.baseDn ?? BASE_DN);
-  const filter = String(params_.filter ?? "(objectClass=*)");
+  const baseDn = String(params_.baseDn ?? "").trim() || BASE_DN;
+  const filter = String(params_.filter ?? "").trim() || "(objectClass=*)";
+  if (!validateLDAPFilter(filter)) throw new Error("invalid LDAP filter");
   const scope = String(params_.scope ?? "sub");
-  const sizeLimit = Number(params_.sizeLimit ?? 0) || 0;
-  const wanted = Array.isArray(params_.attributes) ? (params_.attributes as string[]).map(String) : null;
+  const paged = Number(params_.pageSize) > 0;
+  const sizeLimit = Math.max(0, Number(params_.sizeLimit) || 0);
+  const limit = paged ? sizeLimit || 500 : sizeLimit;
+  // No alias engine is simulated: make an effective dereference request fail
+  // explicitly rather than passing a test with silently different results.
+  if (["searching", "finding", "always"].includes(String(params_.derefAliases)) &&
+      [...directory.values()].some((entry) => entry.attributes[attributeKey(entry.attributes, "aliasedObjectName")])) {
+    throw new Error("alias dereferencing is not implemented in the fixture");
+  }
   const matched: MockEntry[] = [];
   for (const entry of directory.values()) {
     if (!dnWithinBase(entry.dn, baseDn)) continue;
     if (scope === "base" && entry.dn.toLowerCase() !== baseDn.toLowerCase()) continue;
     if (scope === "one") {
-      const relative = entry.dn.slice(0, entry.dn.length - baseDn.length - 1);
-      if (relative.includes(",")) continue;
+      if (splitFirstDnRdn(entry.dn).parentDn.toLowerCase() !== baseDn.toLowerCase()) continue;
     }
     if (!matchFilter(entry, filter)) continue;
     matched.push(entry);
-    if (sizeLimit > 0 && matched.length >= sizeLimit) break;
+    if (limit > 0 && matched.length >= limit && paged) break;
+    if (limit > 0 && matched.length > limit) throw new Error('LDAP Result Code 4 "Size Limit Exceeded"');
   }
   const entries = matched.map((entry) => ({
     dn: entry.dn,
-    attributes: wanted
-      ? Object.fromEntries(Object.entries(entry.attributes).filter(([name]) => wanted.some((w) => w.toLowerCase() === name.toLowerCase() || w === "dn")))
-      : { ...entry.attributes },
+    attributes: selectAttributes(entry.attributes, params_.attributes, params_.typesOnly === true),
   }));
-  return { entries, count: entries.length, truncated: false };
+  // Mirror the current Go aggregator, including its exact-limit flag. pageSize
+  // is a transport page size, not a request for one UI page.
+  return { entries, count: entries.length, truncated: paged && entries.length >= limit, baseDn, filter };
 }
 
 // ldap/count（A-LDAP 契约：scope=one，上限 5000）——直接子条目精确计数，
@@ -306,19 +319,24 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   else if (method === "ldap/entry/get") {
     const entry = get(String(input.dn ?? ""));
     if (!entry) throw new Error(`entry not found: ${input.dn}`);
-    result = { entry };
+    result = { entry: { dn: entry.dn, attributes: selectAttributes(entry.attributes, input.attributes) } };
   } else if (method === "ldap/rootDse") {
     result = {
-      attributes: {
+      attributes: selectAttributes({
         namingContexts: [BASE_DN],
         supportedLDAPVersion: ["3"],
         supportedSASLMechanisms: ["SIMPLE", "EXTERNAL"],
         subschemaSubentry: ["cn=Subschema"],
         vendorName: ["FixtureLDAP"],
-      },
+      }, input.attributes),
     };
   } else if (method === "ldap/schema") result = { attributeTypes: attributeTypeDefinitions, objectClasses: objectClassDefinitions };
   else if (method === "ldap/count") result = countChildren(input);
+  else if (method === "ldap/entry/childrenCount") {
+    const dn = String(input.dn ?? "").trim();
+    if (!dn) throw new Error("dn is required");
+    result = countChildren({ baseDn: dn });
+  }
   else if (method === "ldap/entry/add") {
     if (readOnly) denyWrite(String(input.dn ?? ""));
     const dn = String(input.dn ?? "");
@@ -329,12 +347,31 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     if (readOnly) denyWrite(String(input.dn ?? ""));
     const entry = get(String(input.dn ?? ""));
     if (!entry) throw new Error(`entry not found: ${input.dn}`);
-    for (const change of (input.changes ?? []) as Array<Record<string, unknown>>) {
-      const attribute = String(change.attribute);
+    const changes = (input.changes ?? []) as Array<Record<string, unknown>>;
+    if (!changes.length) throw new Error("changes is required");
+    // LDAP modifications are atomic, including when a later change fails.
+    const attributes = selectAttributes(entry.attributes, []);
+    for (const [index, change] of changes.entries()) {
+      const name = String(change.attribute ?? "").trim();
+      if (!name) throw new Error(`change ${index} attribute is required`);
+      const attribute = attributeKey(attributes, name);
+      const operation = String(change.operation ?? "").trim().toLowerCase();
       const values = Array.isArray(change.values) ? (change.values as string[]).map(String) : [];
-      if (change.operation === "delete") delete entry.attributes[attribute];
-      else entry.attributes[attribute] = values;
+      const previous = attributes[attribute] ?? [];
+      if (operation === "add" || operation === "replace") {
+        if (!values.length || values.some((value) => !value.trim())) throw new Error(`attribute ${JSON.stringify(name)} requires non-empty values`);
+        if (new Set(values).size !== values.length || (operation === "add" && values.some((value) => previous.includes(value)))) {
+          throw new Error("LDAP attribute or value exists");
+        }
+        attributes[attribute] = operation === "add" ? [...previous, ...values] : values;
+      } else if (operation === "delete") {
+        if (!previous.length || values.some((value) => !previous.includes(value))) throw new Error("LDAP no such attribute");
+        const remaining = values.length ? previous.filter((value) => !values.includes(value)) : [];
+        if (remaining.length) attributes[attribute] = remaining;
+        else delete attributes[attribute];
+      } else throw new Error(`change ${index} operation must be add, replace, or delete`);
     }
+    entry.attributes = attributes;
   } else if (method === "ldap/entry/delete") {
     if (readOnly) denyWrite(String(input.dn ?? ""));
     const dn = String(input.dn ?? "");
@@ -365,9 +402,33 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const dn = String(input.dn ?? "");
     const entry = get(dn);
     if (!entry) throw new Error(`entry not found: ${dn}`);
-    const newDn = `${input.newRdn},${input.newParentDn ? String(input.newParentDn) : parentOf(dn)}`;
-    directory.delete(dn.toLowerCase());
-    put(newDn, entry.attributes);
+    const newRdn = String(input.newRdn ?? "");
+    const newNaming = parseRdnAttributes(newRdn);
+    const oldNaming = parseRdnAttributes(splitFirstDnRdn(dn).rdn);
+    const parentDn = String(input.newSuperior ?? "").trim() || splitFirstDnRdn(dn).parentDn;
+    if (!get(parentDn)) throw new Error(`entry not found: ${parentDn}`);
+    if (dnWithinBase(parentDn, dn)) throw new Error("cannot move an entry below itself");
+    const newDn = `${newRdn},${parentDn}`;
+    if (!dnWithinBase(newDn, BASE_DN)) throw new Error(`base DN allowlist rejected: ${newDn}`);
+    if (get(newDn) && newDn.toLowerCase() !== dn.toLowerCase()) throw new Error(`entry already exists: ${newDn}`);
+    const attributes = selectAttributes(entry.attributes, []);
+    for (const { attribute, value } of newNaming) {
+      const key = attributeKey(attributes, attribute);
+      if (!(attributes[key] ?? []).includes(value)) attributes[key] = [...(attributes[key] ?? []), value];
+    }
+    if (input.deleteOldRdn === true) {
+      for (const { attribute, value } of oldNaming) {
+        if (newNaming.some((ava) => ava.attribute.toLowerCase() === attribute.toLowerCase() && ava.value === value)) continue;
+        const key = attributeKey(attributes, attribute);
+        const values = (attributes[key] ?? []).filter((oldValue) => oldValue !== value);
+        if (values.length) attributes[key] = values;
+        else delete attributes[key];
+      }
+    }
+    const subtree = [...directory.values()].filter((child) => dnWithinBase(child.dn, dn));
+    entry.attributes = attributes;
+    for (const child of subtree) directory.delete(child.dn.toLowerCase());
+    for (const child of subtree) put(child.dn.slice(0, child.dn.length - dn.length) + newDn, child.attributes);
   } else if (method === "ldap/connections/statuses") {
     // 字段名与后端契约一致：status（三态）+ unix 毫秒 lastUsedAt。
     result = { statuses: [{ connectionId: String(context.connectionId), status: "connected", readOnly, lastUsedAt: Date.now() }] };
@@ -376,23 +437,37 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   } else if (method === "ldap/presets/save") {
     const presets = JSON.parse(localStorage.getItem("ldap-mock-presets") ?? "[]") as unknown[];
     const incoming = (input.preset ?? {}) as Record<string, unknown>;
-    const index = presets.findIndex((preset) => (preset as Record<string, unknown>).id === incoming.id);
-    if (index >= 0) presets[index] = incoming;
-    else presets.push(incoming);
+    const name = String(incoming.name ?? "").trim();
+    if (!name) throw new Error("preset name is required");
+    // 镜像 Go LDAPSearchPreset：只存协议字段，conditions 不会往返。
+    const preset = {
+      id: String(incoming.id ?? "").trim() || crypto.randomUUID(),
+      name,
+      ...(incoming.baseDn ? { baseDn: incoming.baseDn } : {}),
+      ...(incoming.filter ? { filter: incoming.filter } : {}),
+      ...(incoming.scope ? { scope: incoming.scope } : {}),
+      ...(Array.isArray(incoming.attributes) && incoming.attributes.length ? { attributes: [...incoming.attributes] } : {}),
+      ...(incoming.sizeLimit ? { sizeLimit: incoming.sizeLimit } : {}),
+    };
+    const index = presets.findIndex((item) => (item as Record<string, unknown>).id === preset.id);
+    if (index >= 0) presets[index] = preset;
+    else presets.push(preset);
     localStorage.setItem("ldap-mock-presets", JSON.stringify(presets));
-    result = { presets };
+    result = { success: true, preset };
   } else if (method === "ldap/presets/remove") {
-    const id = String(input.id ?? "");
-    const presets = (JSON.parse(localStorage.getItem("ldap-mock-presets") ?? "[]") as Array<Record<string, unknown>>).filter((preset) => preset.id !== id);
-    localStorage.setItem("ldap-mock-presets", JSON.stringify(presets));
-    result = { presets };
-  } else if (method === "ldap/audit") {
-    // never emitted by the mock host itself
+    const id = String(input.id ?? "").trim();
+    if (!id) throw new Error("Missing preset id");
+    const presets = JSON.parse(localStorage.getItem("ldap-mock-presets") ?? "[]") as Array<Record<string, unknown>>;
+    if (!presets.some((preset) => preset.id === id)) throw new Error(`preset ${JSON.stringify(id)} is not found`);
+    localStorage.setItem("ldap-mock-presets", JSON.stringify(presets.filter((preset) => preset.id !== id)));
+    result = { success: true };
+  } else {
+    throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });
   }
   return result as T;
 };
 
-// window.dbxPlugin 组装（与宿主 Host API 1.0 面一致）。
+// Current host callbacks plus optional legacy callbacks for compatibility fixtures.
 window.dbxPlugin = {
   ready: Promise.resolve(context),
   context,
@@ -414,6 +489,10 @@ window.dbxPlugin = {
     return () => appearanceListeners.delete(listener);
   },
   onLocaleChange: () => () => undefined,
+  onContext: (listener) => {
+    contextListeners.add(listener);
+    return () => contextListeners.delete(listener);
+  },
   onContextChange: (listener) => {
     contextListeners.add(listener);
     listener(context);

@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { ldapApi, type LdapEntry } from "../lib/api";
+import type { LdapSchema } from "../lib/newEntryTemplates";
 
 vi.mock("../lib/api", () => ({
   ldapApi: {
@@ -66,6 +67,10 @@ function mountEditor(props: {
   baseDn?: string;
   initialTab?: "form" | "ldif" | "assoc";
   dnAttributes?: string[];
+  schema?: LdapSchema;
+  loading?: boolean;
+  loadError?: string;
+  requestedDn?: string;
 }) {
   return mount(EntryEditorDialog, { props });
 }
@@ -94,6 +99,87 @@ const pressEscape = () => {
 };
 
 describe("EntryEditorDialog", () => {
+  it("locates a removed MUST attribute and restores saving after it is filled", async () => {
+    const entry = { ...demoEntry, attributes: { ...demoEntry.attributes, sn: ["Alice"] } };
+    const wrapper = mount(EntryEditorDialog, { props: { canWrite: true, open: true, entry }, attachTo: document.body });
+    tracked.push(wrapper);
+    const surname = attrRows(wrapper).find((row) => (row.find("input").element as HTMLInputElement).value === "sn")!;
+    await surname.find("button[title='移除属性']").trigger("click");
+    expect(saveButton(wrapper).attributes("disabled")).toBeDefined();
+    await wrapper.find(".required-attributes button").trigger("click");
+    const restored = attrRows(wrapper).at(-1)!.find("textarea");
+    expect(document.activeElement).toBe(restored.element);
+    expect(restored.attributes("aria-invalid")).toBe("true");
+    expect(restored.attributes("aria-describedby")).toBe(wrapper.find(".required-attributes").attributes("id"));
+    await restored.setValue("Updated surname");
+    expect(wrapper.find(".required-attributes").exists()).toBe(false);
+    expect(saveButton(wrapper).attributes("disabled")).toBeUndefined();
+    entryModifyMock.mockResolvedValue({ success: true });
+    await saveButton(wrapper).trigger("click");
+    await flushPromises();
+    expect(entryModifyMock).toHaveBeenCalledWith(entry.dn, [{ operation: "replace", attribute: "sn", values: ["Updated surname"] }]);
+  });
+
+  it("updates MUST feedback when objectClass changes, while tolerating the original hidden sn", async () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: demoEntry });
+    expect(wrapper.find(".required-attributes").exists()).toBe(false);
+    const classes = attrRows(wrapper).find((row) => (row.find("input").element as HTMLInputElement).value === "objectClass")!.find("textarea");
+    await classes.setValue("top\nperson\ngroupOfNames");
+    expect(wrapper.find(".required-attributes").text()).toContain("member");
+    expect(wrapper.find(".required-attributes").text()).not.toContain("sn");
+    await classes.setValue("top\nperson");
+    expect(wrapper.find(".required-attributes").exists()).toBe(false);
+    await classes.setValue("");
+    expect(wrapper.find(".required-attributes").text()).toContain("objectClass");
+    expect(saveButton(wrapper).attributes("disabled")).toBeDefined();
+  });
+
+  it("validates LDIF attributes without requiring a tab switch", async () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, entry: { ...demoEntry, attributes: { ...demoEntry.attributes, sn: ["Alice"] } } });
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const ldif = wrapper.find(".ldif-editor");
+    const original = (ldif.element as HTMLTextAreaElement).value;
+    await ldif.setValue(original.replace(/^sn:.*\n?/m, ""));
+    expect(wrapper.find(".required-attributes").text()).toContain("sn");
+    expect(ldif.attributes("aria-invalid")).toBe("true");
+    await ldif.setValue(original);
+    expect(saveButton(wrapper).attributes("disabled")).toBeUndefined();
+  });
+
+  it("blocks a fast save of malformed LDIF DN and saves the corrected full DN", async () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, parentDn: "ou=people,dc=demo,dc=dbx" });
+    await rdnInput(wrapper).setValue("cn=old");
+    await wrapper.findAll(".mode-switch button")[1].trigger("click");
+    const ldif = wrapper.find(".ldif-editor").element as HTMLTextAreaElement;
+    ldif.value = "dn: cn=bad+,dc=demo,dc=dbx\nobjectClass: top\n";
+    ldif.dispatchEvent(new Event("input", { bubbles: true }));
+    (saveButton(wrapper).element as HTMLButtonElement).click();
+    await flushPromises();
+    expect(entryAddMock).not.toHaveBeenCalled();
+    expect(wrapper.find(".attr-row .form-error").text()).toContain("RDN 无效");
+    await wrapper.find(".ldif-editor").setValue("dn: cn=new,dc=example,\nobjectClass: top\n");
+    expect(saveButton(wrapper).attributes("disabled")).toBeDefined();
+    await wrapper.find(".ldif-editor").setValue("dn: cn=new\nobjectClass: top\n");
+    expect(saveButton(wrapper).attributes("disabled")).toBeUndefined();
+    entryAddMock.mockResolvedValue({ success: true });
+    await saveButton(wrapper).trigger("click");
+    await flushPromises();
+    expect(entryAddMock).toHaveBeenCalledWith("cn=new", { objectClass: ["top"] });
+  });
+
+  it("shows loading, recoverable failure, and an explicit empty detail state", async () => {
+    const wrapper = trackEditor({ canWrite: true, open: true, loading: true, requestedDn: demoEntry.dn });
+    expect(wrapper.find("[role='status']").text()).toBe("正在加载条目…");
+    expect(wrapper.find(".attr-editor").exists()).toBe(false);
+    expect(saveButton(wrapper).exists()).toBe(false);
+    await wrapper.setProps({ loading: false, loadError: "unreachable" });
+    await wrapper.find(".request-error button").trigger("click");
+    expect(wrapper.emitted("retry")).toHaveLength(1);
+    await wrapper.setProps({ loadError: "", entry: { dn: demoEntry.dn, attributes: {} } });
+    expect(wrapper.find(".attr-editor [role='status']").text()).toBe("此条目未返回可读取的属性。");
+    expect(wrapper.find(".required-attributes").exists()).toBe(false);
+  });
+
   it("routes password attributes to the hash editor (M6 N2)", () => {
     const wrapper = trackEditor({
       canWrite: true,

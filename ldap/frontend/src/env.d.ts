@@ -5,10 +5,14 @@ interface DbxPluginBinaryEvent {
   dataBase64?: string;
 }
 
-interface DbxPluginEvent {
+interface DbxPluginBackendEvent {
+  type?: "event";
   method: string;
   params: Record<string, unknown>;
 }
+
+// Current bridges also send environment updates through onEvent (no method/params).
+type DbxPluginEvent = DbxPluginBackendEvent | { type: "env"; locale?: string; theme?: DbxPluginTheme };
 
 interface DbxPluginFileTransferApi {
   pick(options?: { accept?: string; multiple?: boolean }): Promise<{ files: Array<{ handleId: string; name: string; size: number; contentType: string }> }>;
@@ -57,6 +61,8 @@ interface DbxPluginApi {
   onBinary(listener: (event: DbxPluginBinaryEvent) => void): () => void;
   onAppearanceChange?(listener: (appearance: DbxPluginAppearance) => void): () => void;
   onLocaleChange?(listener: (locale: string) => void): () => void;
+  onContext?(listener: (context: Record<string, unknown>) => void): () => void;
+  /** Legacy optional callback; current bridges use onContext. */
   onContextChange?(listener: (context: Record<string, unknown>) => void): () => void;
   decodeBase64(value: string): Uint8Array;
   encodeBase64(value: Uint8Array | ArrayBuffer): string;

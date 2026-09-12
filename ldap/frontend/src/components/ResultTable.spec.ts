@@ -8,11 +8,28 @@ import type { LdapEntry } from "../lib/api";
 
 const entry: LdapEntry = { dn: "cn=alice,dc=demo,dc=dbx", attributes: { cn: ["alice"] } };
 
-function mountTable(props: { entries: LdapEntry[]; count: number; truncated?: boolean; searched?: boolean; atLimit?: boolean; sizeLimit?: number }) {
+function mountTable(props: { entries: LdapEntry[]; count: number; truncated?: boolean; searched?: boolean; atLimit?: boolean; sizeLimit?: number; loading?: boolean; error?: string }) {
   return mount(ResultTable, { props: { truncated: false, ...props } });
 }
 
 describe("ResultTable empty states (P2-3)", () => {
+  it.each([{ entries: [] }, { entries: [entry] }])("shows loading instead of stale or empty results", ({ entries }) => {
+    const wrapper = mountTable({ entries, count: entries.length, loading: true, searched: true });
+    expect(wrapper.find("[role='status']").text()).toBe("搜索中…");
+    expect(wrapper.find(".result-row").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("没有匹配");
+    wrapper.unmount();
+  });
+
+  it("offers retry on failure and distinguishes it from a successful empty result", async () => {
+    const wrapper = mountTable({ entries: [entry], count: 1, searched: true, error: "unreachable" });
+    expect(wrapper.find(".result-row").exists()).toBe(false);
+    await wrapper.find("[role='alert'] button").trigger("click");
+    expect(wrapper.emitted("retry")).toHaveLength(1);
+    await wrapper.setProps({ error: "", entries: [], count: 0 });
+    expect(wrapper.find("[role='status']").text()).toBe("当前搜索没有匹配的条目");
+    wrapper.unmount();
+  });
   it("says 'run a search first' before any search has run", () => {
     const wrapper = mountTable({ entries: [], count: 0 });
     expect(wrapper.find(".empty").text()).toBe("暂无结果，请先执行搜索");

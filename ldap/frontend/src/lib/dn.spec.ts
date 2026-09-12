@@ -56,6 +56,18 @@ describe("rdnConfirmationToken", () => {
 });
 
 describe("isLikelyRdn / isLikelyDn", () => {
+  it.each(["cn=a+", "+cn=a", "cn=a++uid=b", "cn=a\\", "cn=a\\2", "cn=a\\zz", 'cn="unfinished', "bad name=a"])("rejects malformed RDN %s", (rdn) => {
+    expect(isLikelyRdn(rdn)).toBe(false);
+    expect(isLikelyDn("dc=example," + rdn)).toBe(false);
+  });
+
+  it.each(["cn=Doe\\, John", "cn=a\\+b+uid=c", "cn=\\e4\\b8\\ad", 'cn="Doe, John"', "2.5.4.3=alice", "cn=a\\ "])("keeps supported escaping and quoted values: %s", (rdn) => {
+    expect(isLikelyRdn(rdn)).toBe(true);
+    const dn = joinRdnAndParent(rdn, "dc=example");
+    expect(isLikelyDn(dn)).toBe(true);
+    expect(splitFirstDnRdn(dn).rdn).toBe(rdn);
+  });
+
   it("accepts simple and multi-valued RDNs", () => {
     expect(isLikelyRdn("cn=jdoe")).toBe(true);
     expect(isLikelyRdn("cn=a+uid=b")).toBe(true);

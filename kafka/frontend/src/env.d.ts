@@ -21,6 +21,30 @@ interface DbxPluginFileTransferApi {
   onDrop(listener: (files: Array<{ handleId: string; name: string; size: number; contentType: string }>) => void): () => void;
 }
 
+/**
+ * `<domain>/ui/intent` 事件载荷（M3 MCP UI intent 通道；sidecar `mcp/call`
+ * 经 emitter 下发，shared/frontend/uiIntent 消费并回报
+ * `<domain>/ui/state/report`）。
+ */
+interface DbxPluginUiIntentEvent {
+  intentId: string;
+  action: string;
+  params?: Record<string, unknown>;
+}
+
+/** `<domain>/ui/state/report` 的请求体（intent 回报或快照型）。 */
+interface DbxPluginUiStateReport {
+  intentId?: string;
+  status: "applied" | "rejected" | "snapshot";
+  summary?: {
+    count?: number;
+    truncated?: boolean;
+    rows?: Array<Record<string, unknown>>;
+    anchor?: string;
+    reason?: string;
+  };
+}
+
 interface DbxPluginTheme {
   appearance: "light" | "dark";
   /** 宿主根节点解析后的设计令牌（--color-* / --radius-* / --font-*），Host API 1.0 无此字段。 */

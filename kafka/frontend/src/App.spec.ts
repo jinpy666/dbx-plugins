@@ -9,7 +9,11 @@ import MessagesPanel from "./components/MessagesPanel.vue";
 import { setKafkaConnectionId } from "./lib/api";
 
 const invokeMock = vi.fn();
-let eventListener: ((event: { method: string; params: Record<string, unknown> }) => void) | null = null;
+// 宿主桥事件监听器列表（App壳 handleEvent 与 useUiIntent 各订阅一份）。
+const eventListeners: Array<(event: { method: string; params: Record<string, unknown> }) => void> = [];
+function emitHostEvent(event: { method: string; params: Record<string, unknown> }) {
+  for (const listener of eventListeners) listener(event);
+}
 
 function installHostBridge() {
   invokeMock.mockReset();
@@ -19,7 +23,7 @@ function installHostBridge() {
     if (method === "kafka/presets/list") return { presets: [] };
     throw new Error(`unhandled method: ${method}`);
   });
-  eventListener = null;
+  eventListeners.length = 0;
   (window as unknown as { dbxPlugin: unknown }).dbxPlugin = {
     // ready 永不 resolve：走 Promise.any 兜底的 host.getContext（与真实宿主慢启动同型）
     ready: new Promise(() => {}),
@@ -30,8 +34,11 @@ function installHostBridge() {
     invoke: invokeMock,
     locale: "zh-CN",
     onEvent: (listener: (event: { method: string; params: Record<string, unknown> }) => void) => {
-      eventListener = listener;
-      return () => {};
+      eventListeners.push(listener);
+      return () => {
+        const index = eventListeners.indexOf(listener);
+        if (index >= 0) eventListeners.splice(index, 1);
+      };
     },
   };
 }
@@ -54,7 +61,7 @@ describe("App a11y live regions (P2-24)", () => {
     const wrapper = await mountApp();
     expect(wrapper.find(".error-banner").exists()).toBe(false);
     // 异步到达的错误（审计 denied/error 事件走 showError）
-    eventListener?.({ method: "kafka/audit", params: { action: "kafka/test", result: "denied", detail: "boom" } });
+    emitHostEvent({ method: "kafka/audit", params: { action: "kafka/test", result: "denied", detail: "boom" } });
     await flushPromises();
     const banner = wrapper.find(".error-banner");
     expect(banner.exists()).toBe(true);
@@ -82,7 +89,7 @@ describe("App stream backpressure visibility (§8.3 遗留收口)", () => {
     const wrapper = await mountApp();
     // 流面板未激活（App 层缓冲生效）：灌满 800 缓冲 + 1 条触发丢最旧。
     for (let i = 0; i < 801; i++) {
-      eventListener?.({
+      emitHostEvent({
         method: "kafka/stream/messages",
         params: {
           sessionId: "s1",
@@ -110,7 +117,7 @@ describe("App stream backpressure visibility (§8.3 遗留收口)", () => {
   it("does not notify when no buffered events were dropped", async () => {
     const wrapper = await mountApp();
     for (let i = 0; i < 10; i++) {
-      eventListener?.({ method: "kafka/stream/messages", params: { sessionId: "s1", messages: [], totalScanned: i, totalMatched: i, paused: false, bufferSize: 0 } });
+      emitHostEvent({ method: "kafka/stream/messages", params: { sessionId: "s1", messages: [], totalScanned: i, totalMatched: i, paused: false, bufferSize: 0 } });
     }
     await flushPromises();
     const streamTab = wrapper.findAll(".tab-bar button").find((b) => b.text().includes("流式"));
@@ -118,5 +125,37 @@ describe("App stream backpressure visibility (§8.3 遗留收口)", () => {
     await flushPromises();
     expect(wrapper.find(".notice").exists()).toBe(false);
     wrapper.unmount();
+  });
+});
+
+describe("App MCP UI intent wiring (M3)", () => {
+  it("applies a focus intent by switching panels and reports through kafka/ui/state/report", async () => {
+    const wrapper = await mountApp();
+    emitHostEvent({
+      method: "kafka/ui/intent",
+      params: { intentId: "i-focus", action: "focus", params: { panel: "topics" } },
+    });
+    await flushPromises();
+    await flushPromises();
+    // openPanel 先报快照（panel 切换），intent 处理器随后报 applied。
+    const reports = invokeMock.mock.calls.filter(([method]) => method === "kafka/ui/state/report").map(([, body]) => body);
+    expect(reports).toContainEqual(expect.objectContaining({ intentId: "i-focus", status: "applied", summary: { panel: "topics" } }));
+    expect(reports).toContainEqual(expect.objectContaining({ status: "snapshot", summary: { panel: "topics" } }));
+    // 面板确实切换（topics tab 激活态）。
+    const tabs = wrapper.findAll(".tab-bar button");
+    const topicsTab = tabs.find((tab) => tab.text().length > 0 && tab.classes().includes("is-active"));
+    expect(topicsTab).toBeTruthy();
+  });
+
+  it("reports rejected for an unknown panel action", async () => {
+    await mountApp();
+    emitHostEvent({
+      method: "kafka/ui/intent",
+      params: { intentId: "i-bad", action: "focus", params: { panel: "nope" } },
+    });
+    await flushPromises();
+    await flushPromises();
+    const reports = invokeMock.mock.calls.filter(([method]) => method === "kafka/ui/state/report").map(([, body]) => body);
+    expect(reports).toContainEqual(expect.objectContaining({ intentId: "i-bad", status: "rejected" }));
   });
 });

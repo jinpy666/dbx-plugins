@@ -434,3 +434,79 @@ describe("MessagesPanel", () => {
     expect(base64View.text()).toBe(btoa('{"v":"body"}'));
   });
 });
+
+// -- MCP UI intent（M3）：applyIntentConsume / applyIntentSelect ----------------
+
+describe("MessagesPanel MCP intent (M3)", () => {
+  const intentResult: ConsumeResult = {
+    messages: [
+      { topic: "order-events", partition: 0, offset: 42, timestamp: 1_700_000_000_000, key: "k-42", valueText: '{"v":"a"}' },
+      { topic: "order-events", partition: 1, offset: 7, timestamp: 1_700_000_000_001, key: "k-7", valueText: '{"v":"b"}' },
+    ],
+    scanned: 10,
+    matched: 2,
+    limited: false,
+    hasMore: false,
+  };
+
+  it("applyIntentConsume fills the form, consumes and returns an applied summary with anchors", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": intentResult,
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    const panel = wrapper.vm as unknown as { applyIntentConsume(params: Record<string, unknown>): Promise<{ status: string; summary?: Record<string, unknown>; reason?: string }> };
+    const outcome = await panel.applyIntentConsume({
+      topic: "order-events",
+      offsetStrategy: "earliest",
+      limit: 50,
+      valueFilter: "a",
+      matchMode: "contains",
+    });
+    expect(outcome.status).toBe("applied");
+    expect(outcome.summary?.count).toBe(2);
+    expect(outcome.summary?.anchor).toBe("order-events-p0-o42");
+    // rows ≤5、含 partition/offset 定位字段。
+    expect((outcome.summary?.rows as unknown[]).length).toBe(2);
+    const call = invokeMock.mock.calls.find(([method]) => method === "kafka/messages/consume");
+    expect(call?.[1]).toMatchObject({ topic: "order-events", offsetStrategy: "earliest", limit: 50, valueFilter: "a", matchMode: "contains" });
+  });
+
+  it("applyIntentConsume reports rejected with the sidecar error message", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": { error: { message: "kafka cluster not ready" } },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    const panel = wrapper.vm as unknown as { applyIntentConsume(params: Record<string, unknown>): Promise<{ status: string; reason?: string }> };
+    const outcome = await panel.applyIntentConsume({ topic: "order-events" });
+    expect(outcome.status).toBe("rejected");
+    expect(outcome.reason).toBe("kafka cluster not ready");
+  });
+
+  it("applyIntentSelect locates partition+offset in current results and opens the detail drawer", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": intentResult,
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    const panel = wrapper.vm as unknown as {
+      applyIntentConsume(params: Record<string, unknown>): Promise<{ status: string }>;
+      applyIntentSelect(params: Record<string, unknown>): Promise<{ status: string; summary?: { anchor?: string }; reason?: string }>;
+    };
+    await panel.applyIntentConsume({ topic: "order-events" });
+    await flushPromises();
+    const hit = await panel.applyIntentSelect({ partition: 1, offset: 7 });
+    expect(hit.status).toBe("applied");
+    expect(hit.summary?.anchor).toBe("order-events-p1-o7");
+    // 详情抽屉打开（detail drawer 渲染）。
+    expect(wrapper.find(".detail-drawer, [role=dialog], .drawer").exists()).toBe(true);
+
+    const miss = await panel.applyIntentSelect({ partition: 9, offset: 9 });
+    expect(miss.status).toBe("rejected");
+    expect(miss.reason).toContain("partition+offset");
+  });
+});

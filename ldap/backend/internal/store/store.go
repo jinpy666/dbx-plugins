@@ -176,6 +176,8 @@ type AuditRecord struct {
 	Action       string `json:"action"`       // 如 ldap/entry/delete
 	Target       string `json:"target"`       // DN（不记值）
 	Result       string `json:"result"`       // ok | denied | error
+	// Source 调用来源（可选，缺省空 = 工作台；"mcp" = MCP 写路径）。
+	Source string `json:"source,omitempty"`
 }
 
 // AppendAudit 追加一条审计记录；rec.Time 为空时取当前时间（RFC3339）。

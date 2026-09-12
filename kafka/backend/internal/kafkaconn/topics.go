@@ -190,11 +190,11 @@ func (s *Service) CreateTopics(ctx context.Context, req TopicsCreateRequest) ([]
 func (s *Service) DeleteTopics(ctx context.Context, req TopicsDeleteRequest) ([]MutationResult, error) {
 	profile := s.profileOf(req.ConnectionID)
 	if err := ensureDeleteAllowed(profile, "topics/delete"); err != nil {
-		s.emitAudit(req.ConnectionID, "topics-delete", joinNames(req.Topics), "blocked", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "topics-delete", joinNames(req.Topics), "blocked", err.Error())
 		return nil, err
 	}
 	if err := ensureTopicDeleteConfirm(req); err != nil {
-		s.emitAudit(req.ConnectionID, "topics-delete", joinNames(req.Topics), "blocked", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "topics-delete", joinNames(req.Topics), "blocked", err.Error())
 		return nil, err
 	}
 	topics := normalizeTopicNames(req.Topics)
@@ -213,10 +213,10 @@ func (s *Service) DeleteTopics(ctx context.Context, req TopicsDeleteRequest) ([]
 		return nil
 	})
 	if err != nil {
-		s.emitAudit(req.ConnectionID, "topics-delete", joinNames(topics), "error", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "topics-delete", joinNames(topics), "error", err.Error())
 		return nil, err
 	}
-	s.emitAudit(req.ConnectionID, "topics-delete", joinNames(topics), "success", "")
+	s.emitAuditSource(req.Source, req.ConnectionID, "topics-delete", joinNames(topics), "success", "")
 	return results, nil
 }
 
@@ -229,7 +229,7 @@ func (s *Service) DeleteTopics(ctx context.Context, req TopicsDeleteRequest) ([]
 func (s *Service) ClearTopicRecords(ctx context.Context, req TopicRecordsClearRequest) (*TopicRecordsClearResult, error) {
 	topic := trimSpace(req.Topic)
 	if err := ensureDeleteAllowed(s.profileOf(req.ConnectionID), "topics/records/clear"); err != nil {
-		s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "blocked", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "topics.records.clear", topic, "blocked", err.Error())
 		return nil, err
 	}
 	if topic == "" {
@@ -237,7 +237,7 @@ func (s *Service) ClearTopicRecords(ctx context.Context, req TopicRecordsClearRe
 	}
 	if err := ensureTopicDeleteConfirm(TopicsDeleteRequest{Topics: []string{topic}, ConfirmTopic: req.ConfirmTopic}); err != nil {
 		// §12.2.1 冻结契约：confirmTopic 不匹配 → -32602 参数错。
-		s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "blocked", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "topics.records.clear", topic, "blocked", err.Error())
 		return nil, &InvalidParamsError{Msg: err.Error()}
 	}
 
@@ -277,10 +277,10 @@ func (s *Service) ClearTopicRecords(ctx context.Context, req TopicRecordsClearRe
 		return nil
 	})
 	if err != nil {
-		s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "error", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "topics.records.clear", topic, "error", err.Error())
 		return nil, err
 	}
-	s.emitAudit(req.ConnectionID, "topics.records.clear", topic, "success", sprintf("partitions=%d", len(result.Rows)))
+	s.emitAuditSource(req.Source, req.ConnectionID, "topics.records.clear", topic, "success", sprintf("partitions=%d", len(result.Rows)))
 	return &result, nil
 }
 

@@ -141,7 +141,7 @@ function applyBaseDn(next: string, highlight = true) {
 
 onBeforeUnmount(() => window.clearTimeout(baseDnHighlightTimer));
 
-defineExpose({ applyBaseDn, runSubtreeAt, runFilterAt });
+defineExpose({ applyBaseDn, runSubtreeAt, runFilterAt, applyIntentSearch });
 
 // 树右键「搜索此子树」直达（此前只改 Base 不执行，用户预期是马上出结果集）：
 // Base 指到该节点、范围强制切到子树并立即运行。过滤器沿用表单当前配置；
@@ -169,6 +169,39 @@ function runFilterAt(baseDn: string, filter: string) {
   applyBaseDn(baseDn);
   draft.value.scope = "sub";
   emit("run", { ...toModel(), filter: effectiveFilter });
+}
+
+/** MCP UI intent（useUiIntent）落表：条件整体替换走既有 preset 反序列化
+ * 路径（过滤器串 → 构建器，解析失败保持源码模式）；scope/sizeLimit 越界
+ * 值兜底当前值。返回组装好的模型供 App 触发 runSearch。 */
+function applyIntentSearch(params: {
+  baseDn?: string;
+  filter?: string;
+  scope?: string;
+  attributes?: string[];
+  sizeLimit?: number;
+}): SearchFormModel {
+  const filter = (params.filter ?? "").trim() || "(objectClass=*)";
+  const fromFilter = toBuilderRoot(parseFilterStructure(filter));
+  if (fromFilter) {
+    builderRoot.value = fromFilter;
+    builderMode.value = true;
+    sourceParseError.value = false;
+  } else {
+    sourceFilter.value = filter;
+    builderMode.value = false;
+  }
+  const scope = (params.scope ?? "").trim().toLowerCase();
+  const sizeLimit = Number(params.sizeLimit);
+  draft.value = {
+    ...draft.value,
+    baseDn: (params.baseDn ?? "").trim() || draft.value.baseDn,
+    filter,
+    scope: scope === "base" || scope === "one" || scope === "sub" ? scope : draft.value.scope,
+    attributes: Array.isArray(params.attributes) && params.attributes.length ? params.attributes.join(", ") : draft.value.attributes,
+    sizeLimit: Number.isFinite(sizeLimit) && sizeLimit > 0 ? String(sizeLimit) : draft.value.sizeLimit,
+  };
+  return toModel();
 }
 
 function parseAttributes(): string[] | undefined {

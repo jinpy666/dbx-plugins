@@ -165,7 +165,28 @@ export const ldapApi = {
   presetsRemove(id: string) {
     return callLdap<{ success: boolean }>("ldap/presets/remove", { id });
   },
+
+  uiStateReport(body: LdapUiStateReport) {
+    return callLdap<{ success: boolean }>("ldap/ui/state/report", { ...body });
+  },
 };
+
+// -- MCP UI intent 通道（M1，shared/frontend/uiIntent 消费） ------------------
+
+export interface LdapUiIntentSummary {
+  count?: number;
+  truncated?: boolean;
+  rows?: Array<Record<string, unknown>>;
+  anchor?: string;
+  reason?: string;
+}
+
+export interface LdapUiStateReport {
+  /** 缺省 = 快照型 report（sidecar 缓存最新快照）。 */
+  intentId?: string;
+  status: "applied" | "rejected" | "snapshot";
+  summary?: LdapUiIntentSummary;
+}
 
 // -- audit event -------------------------------------------------------------
 

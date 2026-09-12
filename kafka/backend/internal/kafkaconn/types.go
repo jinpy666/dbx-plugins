@@ -526,6 +526,8 @@ type TopicsDeleteRequest struct {
 	ConfirmTopic string `json:"confirmTopic,omitempty"`
 	// ConfirmTopics 多 topic 删除的确认列表（与 Topics 逐一同名）。
 	ConfirmTopics []string `json:"confirmTopics,omitempty"`
+	// Source 操作来源标注（MCP 设计 §4：MCP 写路径 "mcp"；工作台不携带）。
+	Source string `json:"source,omitempty"`
 }
 
 // PartitionsUpdateRequest 对应 kafka/topics/partitions/update（只增）。
@@ -581,6 +583,8 @@ type TopicRecordsClearRequest struct {
 	// ConfirmTopic 必须与 topic 同名（复用 ensureTopicDeleteConfirm 单 topic
 	// 语义，防误清空）。
 	ConfirmTopic string `json:"confirmTopic,omitempty"`
+	// Source 操作来源标注（MCP 设计 §4：MCP 写路径 "mcp"；工作台不携带）。
+	Source string `json:"source,omitempty"`
 }
 
 // TopicRecordsClearRow 单分区清空结果行（Phase 3 §12.2.1）。
@@ -694,6 +698,8 @@ type GroupOffsetResetRequest struct {
 	// PartitionOffsets 仅 resetTo=partitionOffset 时使用：
 	// topic → partition → offset（分区号 JSON 序列化为字符串 key）。
 	PartitionOffsets map[string]map[int32]int64 `json:"partitionOffsets,omitempty"`
+	// Source 操作来源标注（MCP 设计 §4：MCP 写路径 "mcp"；工作台不携带）。
+	Source string `json:"source,omitempty"`
 }
 
 // OffsetResetRow 重置结果行。

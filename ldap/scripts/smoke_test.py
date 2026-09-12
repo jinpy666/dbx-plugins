@@ -735,7 +735,7 @@ def run_s17(client: SidecarClient) -> None:
             actual = sorted(entry["dn"] for entry in result["entries"])
             assert actual == sorted(expected), f"{filter_}: {actual} != {sorted(expected)}"
         count = domain(client, "ldap/count", {"baseDn": root, "filter": r"(cn=*\e7\a0\94*)"})
-        assert count["count"] == 2 and not count["truncated"], count
+        assert count["count"] == 2 and not count.get("truncated", False), count
         comma_dn = f"cn=comma\\,name,{root}"
         domain(client, "ldap/entry/add", {"dn": comma_dn, "attributes": {"objectClass": ["person"], "cn": ["comma,name"], "sn": ["Fixture"]}})
         count = domain(client, "ldap/count", {"baseDn": root, "filter": "(cn=comma,name)"})

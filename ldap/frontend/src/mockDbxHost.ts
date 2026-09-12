@@ -492,6 +492,13 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     if (!presets.some((preset) => preset.id === id)) throw new Error(`preset ${JSON.stringify(id)} is not found`);
     localStorage.setItem("ldap-mock-presets", JSON.stringify(presets.filter((preset) => preset.id !== id)));
     result = { success: true };
+  } else if (method === "ldap/ui/state/report") {
+    // MCP UI intent 回报（M1）：镜像 sidecar 校验——带 intentId 时 status
+    // 必须是 applied|rejected；无 intentId 为快照型（恒 success）。
+    const status = String(input.status ?? "");
+    const intentId = String(input.intentId ?? "").trim();
+    if (intentId && status !== "applied" && status !== "rejected") throw new Error("status must be applied or rejected");
+    result = { success: true };
   } else {
     throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });
   }
@@ -541,3 +548,14 @@ window.dbxPlugin = {
 };
 
 export { context, appearance };
+
+/** 测试/走查注入：按 sidecar `ldap/ui/intent` 事件形状发一条 intent
+ * （mock 与真实 emitter.Event 同面；useUiIntent 消费后回报
+ * ldap/ui/state/report）。 */
+export function emitUiIntent(message: { intentId: string; action: string; params?: Record<string, unknown> }) {
+  emitEvent("ldap/ui/intent", {
+    intentId: message.intentId,
+    action: message.action,
+    params: message.params ?? {},
+  });
+}

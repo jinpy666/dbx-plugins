@@ -11,6 +11,7 @@ package kafkaconn
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -464,6 +465,30 @@ func (r *StreamRegistry) Status(sessionID string) (*StreamStatus, error) {
 		BufferCapacity:   session.ring.Cap(),
 		PartitionOffsets: offsets,
 	}, nil
+}
+
+// StatusesFor 返回指定连接的全部流式会话状态快照（MCP kafka_ui_state 的
+// stream 附加段用；connectionId 空 = 全部连接）。按 sessionId 升序稳定排序。
+func (r *StreamRegistry) StatusesFor(connectionID string) []StreamStatus {
+	r.mu.Lock()
+	targets := make([]*streamSession, 0, len(r.sessions))
+	for _, session := range r.sessions {
+		if connectionID == "" || session.connectionID == connectionID {
+			targets = append(targets, session)
+		}
+	}
+	r.mu.Unlock()
+
+	statuses := make([]StreamStatus, 0, len(targets))
+	for _, session := range targets {
+		status, err := r.Status(session.sessionID)
+		if err != nil {
+			continue
+		}
+		statuses = append(statuses, *status)
+	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].SessionID < statuses[j].SessionID })
+	return statuses
 }
 
 // runLoop 消费主循环：节流 emit + ring 写入 + 指数退避（tinyrdm

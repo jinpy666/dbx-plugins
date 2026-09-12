@@ -31,6 +31,30 @@ interface DbxPluginTheme {
   tokens: Record<string, string>;
 }
 
+/**
+ * `<domain>/ui/intent` 事件载荷（M1 MCP UI intent 通道；sidecar `mcp/call`
+ * 经 emitter 下发，shared/frontend/uiIntent 消费并回报
+ * `<domain>/ui/state/report`）。
+ */
+interface DbxPluginUiIntentEvent {
+  intentId: string;
+  action: string;
+  params?: Record<string, unknown>;
+}
+
+/** `<domain>/ui/state/report` 的请求体（intent 回报或快照型）。 */
+interface DbxPluginUiStateReport {
+  intentId?: string;
+  status: "applied" | "rejected" | "snapshot";
+  summary?: {
+    count?: number;
+    truncated?: boolean;
+    rows?: Array<Record<string, unknown>>;
+    anchor?: string;
+    reason?: string;
+  };
+}
+
 interface DbxPluginAppearance {
   colorScheme: "light" | "dark";
   colors: {

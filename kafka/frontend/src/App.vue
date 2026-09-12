@@ -12,6 +12,7 @@ import { kafkaApi, setKafkaConnectionId, type KafkaStreamErrorEvent, type KafkaS
 import { friendlyKafkaError } from "./lib/kafkaErrors";
 import { decideModalKeydown, focusableElements } from "./lib/kafkaModel";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
+import { useUiIntent, type UiIntentOutcome } from "../../../shared/frontend/uiIntent";
 import TopicTree from "./components/TopicTree.vue";
 import MessagesPanel from "./components/MessagesPanel.vue";
 import StreamPanel from "./components/StreamPanel.vue";
@@ -62,6 +63,8 @@ function hasVisited(key: PanelKey): boolean {
 function openPanel(key: PanelKey) {
   visitedPanels.value.add(key);
   activePanel.value = key;
+  // MCP UI 快照（M3）：面板切换后主动上报（无 intentId，sidecar 覆盖最新快照）。
+  uiIntent.reportSnapshot({ panel: key, topic: selectedTopic.value || undefined });
 }
 
 const topics = ref<KafkaTopic[]>([]);
@@ -77,6 +80,47 @@ const selectedTopicPartitionCount = computed(() =>
 
 const streamRef = ref<InstanceType<typeof StreamPanel>>();
 const connectionsOpen = ref(false);
+
+// MessagesPanel ref（MCP intent 落表面：applyIntentConsume/applyIntentSelect
+// 经 defineExpose 暴露；面板常驻挂载（v-show），ref 恒可用）。
+const messagesRef = ref<InstanceType<typeof MessagesPanel>>();
+
+// -- MCP UI intent 通道（M3，shared/frontend/uiIntent 公共层） ----------------
+
+const INTENT_PANELS: Record<string, PanelKey> = { messages: "messages", topics: "topics", groups: "groups", schemas: "schemas" };
+
+const uiIntentHandlers = {
+  focus: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    const panel = INTENT_PANELS[String(params.panel ?? "")];
+    if (!panel) {
+      return { status: "rejected", reason: t("intent.unknownPanel") };
+    }
+    openPanel(panel);
+    return { status: "applied", summary: { panel } };
+  },
+  search: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    const topic = String(params.topic ?? "").trim();
+    if (topic && topic !== selectedTopic.value) selectTopic(topic);
+    await nextTick(); // 等 props.topic 传播（watch 会清空旧结果，避免串台）
+    if (!messagesRef.value) {
+      return { status: "rejected", reason: t("intent.noMessagesPanel") };
+    }
+    const outcome = await messagesRef.value.applyIntentConsume(params);
+    if (outcome.status === "applied") showNotice(t("intent.applied"));
+    else if (outcome.reason) showNotice(t("intent.rejected", { reason: outcome.reason }));
+    return outcome;
+  },
+  select: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    if (!messagesRef.value) {
+      return { status: "rejected", reason: t("intent.noMessagesPanel") };
+    }
+    return messagesRef.value.applyIntentSelect(params);
+  },
+};
+
+// intent 处理器引用 openPanel/selectTopic（上方函数声明提升），声明后装配；
+// 快照型 report 的上报点：面板切换（openPanel）、topic 选中（selectTopic）。
+const uiIntent = useUiIntent("kafka", uiIntentHandlers);
 
 // -- 连接弹窗交互（P1-2/P1-3）：Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素 --------
 // ConnectionsPanel 不可内改，keydown 在 App 壳层监听；决策逻辑走
@@ -247,6 +291,8 @@ async function loadTopics() {
 
 function selectTopic(topic: string) {
   selectedTopic.value = topic;
+  // MCP UI 快照（M3）：topic 选中后上报（consume-bar 下拉/树选中同源）。
+  uiIntent.reportSnapshot({ panel: activePanel.value, topic: topic || undefined });
 }
 
 // -- host bridge ------------------------------------------------------------------
@@ -362,6 +408,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
   window.clearTimeout(noticeTimer);
+  uiIntent.stop();
   for (const dispose of [...unsubscribeAppearance, ...unsubscribeLocale, ...unsubscribeContext, ...unsubscribeEvent]) dispose();
 });
 </script>
@@ -416,6 +463,7 @@ onBeforeUnmount(() => {
         <div class="divider" />
         <main class="main-pane">
           <MessagesPanel
+            ref="messagesRef"
             v-show="activePanel === 'messages'"
             :topic="selectedTopic"
             :topics="topics"

@@ -178,7 +178,7 @@ func (s *Service) ResetGroupOffsets(ctx context.Context, req GroupOffsetResetReq
 		return nil, errf("group is required")
 	}
 	if err := ensureWriteAllowed(profile, "groups/offsets/reset"); err != nil {
-		s.emitAudit(req.ConnectionID, "group-offsets-reset", group, "blocked", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "group-offsets-reset", group, "blocked", err.Error())
 		return nil, err
 	}
 
@@ -258,10 +258,10 @@ func (s *Service) ResetGroupOffsets(ctx context.Context, req GroupOffsetResetReq
 		return nil
 	})
 	if err != nil {
-		s.emitAudit(req.ConnectionID, "group-offsets-reset", group, "error", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "group-offsets-reset", group, "error", err.Error())
 		return nil, err
 	}
-	s.emitAudit(req.ConnectionID, "group-offsets-reset", group, "success", sprintf("resetTo=%s", mode))
+	s.emitAuditSource(req.Source, req.ConnectionID, "group-offsets-reset", group, "success", sprintf("resetTo=%s", mode))
 	return &result, nil
 }
 

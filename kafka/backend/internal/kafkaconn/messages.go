@@ -156,6 +156,9 @@ type ProduceRequest struct {
 	// sidecar 按 SR 元数据编码为载荷并打包 Confluent wire format
 	// （magic byte 0 + 4 字节大端 schemaID + 载荷）。
 	Schema *SchemaRef `json:"schema,omitempty"`
+
+	// Source 操作来源标注（MCP 设计 §4：MCP 写路径 "mcp"；工作台不携带）。
+	Source string `json:"source,omitempty"`
 }
 
 // ProduceResult 对应 kafka/messages/produce 返回。
@@ -195,7 +198,7 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 		return nil, errf("topic is required")
 	}
 	if err := ensureWriteAllowed(profile, "messages/produce"); err != nil {
-		s.emitAudit(req.ConnectionID, "produce", topic, "blocked", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "blocked", err.Error())
 		return nil, err
 	}
 	count := normalizeProduceCount(req.Count)
@@ -249,7 +252,7 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 
 	client, closeClient, err := s.consumeClient(req.ConnectionID, extraOpts...)
 	if err != nil {
-		s.emitAudit(req.ConnectionID, "produce", topic, "error", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "error", err.Error())
 		return nil, err
 	}
 	defer closeClient()
@@ -260,7 +263,7 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 		payload, schemaResult, err = encodeForProduce(produceCtx, schemaClient, req.Schema, payload)
 		cancel()
 		if err != nil {
-			s.emitAudit(req.ConnectionID, "produce", topic, "error", err.Error())
+			s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "error", err.Error())
 			return nil, err
 		}
 		schemaAuditDetail = sprintf(" schema=subject:%s,id:%d,version:%d", schemaResult.Subject, schemaResult.ID, schemaResult.Version)
@@ -285,10 +288,10 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 	defer cancel()
 	written, err := client.ProduceSync(produceCtx, records...).First()
 	if err != nil {
-		s.emitAudit(req.ConnectionID, "produce", topic, "error", err.Error())
+		s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "error", err.Error())
 		return nil, err
 	}
-	s.emitAudit(req.ConnectionID, "produce", topic, "success", sprintf("count=%d%s", count, schemaAuditDetail))
+	s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "success", sprintf("count=%d%s", count, schemaAuditDetail))
 	return &ProduceResult{
 		Topic:     written.Topic,
 		Partition: written.Partition,

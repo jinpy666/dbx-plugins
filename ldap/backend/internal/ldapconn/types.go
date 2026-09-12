@@ -247,6 +247,8 @@ type LDAPAddEntryRequest struct {
 	ConnectionID string              `json:"connectionId"`
 	DN           string              `json:"dn"`
 	Attributes   map[string][]string `json:"attributes"`
+	// Source 审计来源（内部传参，不进协议；"mcp" = MCP 写路径）。
+	Source string `json:"-"`
 }
 
 // LDAPModifyChange 单条修改（tiny-rdm :151-155）。
@@ -261,6 +263,8 @@ type LDAPModifyEntryRequest struct {
 	ConnectionID string             `json:"connectionId"`
 	DN           string             `json:"dn"`
 	Changes      []LDAPModifyChange `json:"changes"`
+	// Source 审计来源（内部传参，不进协议；"mcp" = MCP 写路径）。
+	Source string `json:"-"`
 }
 
 // LDAPDeleteEntryRequest 对应 ldap/entry/delete。
@@ -271,6 +275,8 @@ type LDAPDeleteEntryRequest struct {
 	// 控件，不支持时回退自底向上逐条删除，条目上限 1000）；缺省 false
 	// 保持单条语义，完全向后兼容。
 	Recursive bool `json:"recursive,omitempty"`
+	// Source 审计来源（内部传参，不进协议；"mcp" = MCP 写路径）。
+	Source string `json:"-"`
 }
 
 // LDAPChildrenCountRequest 对应 ldap/entry/childrenCount（N1：删除确认框
@@ -288,6 +294,8 @@ type LDAPModifyDNRequest struct {
 	NewRDN       string `json:"newRdn"`
 	DeleteOldRDN bool   `json:"deleteOldRdn"`
 	NewSuperior  string `json:"newSuperior,omitempty"`
+	// Source 审计来源（内部传参，不进协议；"mcp" = MCP 写路径）。
+	Source string `json:"-"`
 }
 
 // LDAPConnectionStatus 连接状态（tiny-rdm :176-184；ProfileID→ConnectionID）。
@@ -312,6 +320,9 @@ type AuditRecord struct {
 	Target       string `json:"target"`
 	Result       string `json:"result"` // success | blocked | error
 	Detail       string `json:"detail,omitempty"`
+	// Source 调用来源（M0 审计事件形状不变，新增可选字段）：缺省空 = 工作
+	// 台；"mcp" = MCP 写路径（设计 §4：所有 MCP 写审计记 source:"mcp"）。
+	Source string `json:"source,omitempty"`
 	// DeletedCount 仅 recursive 子树删除的聚合审计携带（删除条目数，含目标
 	// 自身；单条删除/拒绝路径不出现）。
 	DeletedCount int `json:"deletedCount,omitempty"`

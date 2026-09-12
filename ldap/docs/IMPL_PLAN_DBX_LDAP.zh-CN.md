@@ -293,12 +293,17 @@ src/
 | S7 | blocked_attributes（userPassword） | 结果中不含 |
 | S8 | 白名单外 DN 读 | 拒绝 |
 | S9 | disconnect → 再调用 | 报连接不存在 |
-| S10 | 非法 filter | 报错文案 |
+| S10 | 非法 filter（括号、缺失比较符、非法十六进制转义） | 拒绝并给出 filter 错误 |
+| S17 | UTF-8/字面星号过滤、RFC2307 数值比较、计数 | 转义匹配与数值顺序正确；超过 JS 安全整数的相邻值不混淆；转义逗号子条目计数一致 |
+| S18 | 别名四模式 × base/one/sub 范围 | 查找 base 与搜索阶段解引用区分；同目标去重、祖先别名解析、循环别名拒绝 |
 
 > S11–S16 为后续追加场景（rootDse namingContexts、{SSHA} 密码写 + bind 校验、
 > childrenCount + 递归子树删除、jpegPhoto 二进制、条目关联 member/memberOf
 > 反查、通用 DN 引用 managedBy 往返），随任务落地，清单以
 > `scripts/smoke_test.py` 头部为准。
+> S17/S18 为 review 第 7 轮追加的真实容器契约回归；mock 对实际别名解引用
+> 和未支持的 schema matching rules 仍明确报不支持，不把这些 smoke 当作
+> mock 已实现完整 LDAP 语义的证明。
 
 **集成**：`docker-compose.ldap-test.yml` + `ldap-seed`（初版改造自参照基线种子）；
 M3 增 `smoke_gssapi_test.py`（`ldap-gssapi-test.yml` + `scripts/ldap-gssapi-integration-test.sh`）。
@@ -332,10 +337,21 @@ M3 增 `smoke_gssapi_test.py`（`ldap-gssapi-test.yml` + `scripts/ldap-gssapi-in
 
 ### M4（MCP 工具）
 
-`internal/mcp/`：`mcp/tools`（14 个 ldap_* 定义，参数 schema 照参照基线
-tools_ldap.go）、`mcp/call`（lifecycle payload 转发 + connectionId 池化，照
-ssh-sftp mcp.rs 语义）、`mcp/settings/get|set`（写白名单策略）；敏感属性
-脱敏（ldap_redaction.go 移植）进工具返回。DoD：`scripts/smoke_mcp.py` 同款。
+> **状态（2026-09-12，M1 已落地）**：按 `shared/IMPL_PLAN_PLUGIN_MCP.zh-CN.md`
+> v2 实施，取代本节初版"14 个工具"规划（设计 v2 改为分层 8 工具：UI 驱动
+> 4 + 本地读 2 + 元发现 1 + 写 1）。协议与两阶段语义见
+> `docs/MCP.zh-CN.md`。
+
+`internal/mcp/`：`mcp/tools`（8 个 ldap_* 定义 + JSON Schema，只读连接不进
+写工具清单）、`mcp/call`（lifecycle payload 注册 + 工具分派，照 ssh-sftp
+mcp.rs 语义移植为 Go）、`mcp/settings/get|set`（digest 参数、截断宽度、
+report 等待时长、响应上限；`mcp-settings.json` 持久化）；UI intent 通道
+（事件 `ldap/ui/intent` + 方法 `ldap/ui/state/report` + 前端
+`shared/frontend/uiIntent.ts`）、`ldap_search_digest`/`ldap_cursor_next`
+本地读、`ldap_entry_write` 两阶段写（delete/modifyDn 强制，审计
+`source:"mcp"`）。DoD：`scripts/smoke_mcp.py`（M1–M10，未注册 SKIP）+
+intent/digest/cursor/confirmToken 单测（`internal/mcp/*_test.go`，用例
+清单进 shared/frontend/README）——已达成。
 
 ### M5/M6/M7（ADS + PLA 双标追赶）
 
@@ -423,6 +439,28 @@ R4-09 大目录保持仅评估；R4-10 树剩余键盘操作、R4-11 mock 搜索
 遇到 alias fixture 时明确不支持；完整 matching rules、扩展控制/认证矩阵等
 仍需专项契约夹具。R4-09 大目录继续只评估，前轮人工/真机与维持项不变。
 完整报告与失败原始日志见 `.goal-state/report-ldap-round6.md`。
+
+### Review 第 7 轮（2026-09-12，过滤器与 mock 契约跟进）
+
+从 R4-11 遗留的过滤器/别名面出发实施三组小修；新增 P2 源码过滤器校验缺口
+一并处理。只改 LDAP 源码/测试/文档，未改 Go 产品代码、manifest、宿主与
+公共层，无新增依赖，复用七语 `search.filterInvalid`。
+
+| 任务 | 内容 | 状态与验收 |
+|---|---|---|
+| R7-1 / 表单预检 | 拒绝仅括号平衡但缺属性/比较符/合法转义的源码过滤器；保留空断言、选项/OID、多段子串和扩展匹配合法形态 | [x] 纯解析回归 + 七语字段关联/门禁/纠正恢复 + 浏览器通过 |
+| R7-2 / R4-11 过滤与计数 | mock 复用 UTF-8 解码；uidNumber/gidNumber 用 BigInt 比较；未支持的匹配规则预先拒绝；count 复用解析和直接子条目判断 | [x] UTF-8/字面星号、数值精度、布尔短路、转义逗号 DN 回归通过；真实 S17 通过 |
+| R7-3 / R4-11 别名边界 | 仅在 base/祖先或实际搜索范围需要解引用时拒绝；无关 alias 不再让普通搜索失败 | [x] mock 有效范围回归通过；真实 S18 四态/范围矩阵、去重与循环拒绝通过。完整 mock 解引用引擎仍保留 |
+
+验证：前端 **37 文件 / 608 用例**（+54），UI **21/21**，Go vet 与
+`go test -count=1 ./...` 通过，Docker **19/19**（S15/S16 部分断言继续条件
+跳过），全套 `scripts/test.sh` 与当前 **0.1.58** 打包通过。首次新增回归
+43 处失败复现缺陷；首次扩展容器为 18/19，因 S17 断言未容忍 count 响应
+省略 `truncated:false`，修正测试后通过，未改截断语义。
+
+**未收敛**：完整 matching rules、别名解引用与服务器控制错误仍需独立夹具；
+R6-03 pageSize/sizeLimit 交互保留后端专项。大目录继续仅评估，其他指定
+维持项与真机/GUI e2e 项不变。完整证据见 `.goal-state/report-ldap-round7.md`。
 
 ## 10. 风险与备注
 

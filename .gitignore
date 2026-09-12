@@ -42,5 +42,6 @@ scroll-stress-result.json
 # git worktree 隔离工作区（skill 约定，不入库）
 .worktrees/
 
-# copilot-pool 运行时状态（凭据 token 永不入库，只存服务器）
-deploy/copilot-pool/state.json
+# 发布排除（2026-09-12 私有仓库发布决策，仅本地留存，已备份至仓库外）
+copilot-pool/
+docs/PRINTER_RESET_GITHUB_KB.zh-CN.md

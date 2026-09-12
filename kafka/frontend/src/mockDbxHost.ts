@@ -1118,6 +1118,13 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const before = subject.versions.length;
     subject.versions = subject.versions.filter((entry) => entry.version !== wanted);
     result = { success: subject.versions.length < before };
+  } else if (method === "kafka/ui/state/report") {
+    // MCP UI intent 回报（M3）：镜像 sidecar 校验——带 intentId 时 status
+    // 必须是 applied|rejected；无 intentId 为快照型（恒 success）。
+    const status = String(input.status ?? "");
+    const intentId = String(input.intentId ?? "").trim();
+    if (intentId && status !== "applied" && status !== "rejected") throw new Error("status must be applied or rejected");
+    result = { success: true };
   } else if (method === "kafka/audit") {
     // never emitted by the mock host itself (audit goes through events)
   }
@@ -1168,6 +1175,17 @@ window.dbxPlugin = {
 };
 
 export { context, appearance };
+
+/** 测试/走查注入：按 sidecar `kafka/ui/intent` 事件形状发一条 intent
+ * （mock 与真实 emitter.Event 同面；useUiIntent 消费后回报
+ * kafka/ui/state/report）。 */
+export function emitKafkaUiIntent(message: { intentId: string; action: string; params?: Record<string, unknown> }) {
+  emitEvent("kafka/ui/intent", {
+    intentId: message.intentId,
+    action: message.action,
+    params: message.params ?? {},
+  });
+}
 
 // -- audit 链夹具（?audit=denied）--------------------------------------------------
 // 宿主 onEvent 监听就绪后再注入（App.initialize 挂监听前的事件会丢失）：

@@ -17,6 +17,8 @@
 //	  versions/compare | compatibility/get | compatibility/set |
 //	  compatibility/check | register | delete | delete/version  （Phase 2；
 //	  Phase 3 起全部支持可选 registry:"confluent"|"glue"）
+//	kafka/ui/state/report                                            （MCP intent 回报，前端回调）
+//	mcp/tools | mcp/call | mcp/settings/get | mcp/settings/set       （M3 MCP 工具面，internal/mcp）
 //
 // 公共约定：参数/返回 camelCase；领域方法必填 connectionId
 // （kafka/connections/statuses 为全局视图可省）；参数错 -32602、业务错
@@ -35,6 +37,7 @@ import (
 
 	"io.dbx.kafka.plugin/internal/kafkaconn"
 	"io.dbx.kafka.plugin/internal/lifecycle"
+	"io.dbx.kafka.plugin/internal/mcp"
 	"io.dbx.kafka.plugin/internal/store"
 )
 
@@ -44,11 +47,12 @@ var version = "0.0.0-dev"
 
 // pluginHandler 实现 dbxpluginsdk.Handler。
 type pluginHandler struct {
-	svc *kafkaconn.Service
-	st  *store.Store
+	svc    *kafkaconn.Service
+	st     *store.Store
+	mcpSrv *mcp.Server
 
 	mu      sync.Mutex
-	emitter *dbxpluginsdk.Emitter // Serve 期间单例，用于 kafka/audit 与 stream 事件
+	emitter *dbxpluginsdk.Emitter // Serve 期间单例，用于 kafka/audit、stream 与 kafka/ui/intent 事件
 }
 
 func main() {
@@ -64,6 +68,21 @@ func main() {
 	svc.Audit = handler.auditRecord
 	svc.Presets = newPresetStore(st)
 	svc.Streams.Emitter = handler
+
+	// MCP 工具面（M3）：mcp/tools|call|settings + kafka/ui/state/report。
+	// intent 事件经当前 Emitter 下发（与 audit/stream 同一条持锁通道）。
+	mcpSrv := mcp.NewServer(svc, st)
+	mcpSrv.SetEmitter(func(method string, params any) {
+		handler.mu.Lock()
+		emitter := handler.emitter
+		handler.mu.Unlock()
+		if emitter != nil {
+			if err := emitter.Event(method, params); err != nil {
+				log.Printf("[dbx-plugin-kafka] %s event failed: %v", method, err)
+			}
+		}
+	})
+	handler.mcpSrv = mcpSrv
 
 	metadata := dbxpluginsdk.Metadata{
 		ID:           "io.dbx.kafka",
@@ -170,6 +189,18 @@ func (h *pluginHandler) Handle(
 
 	case "kafka/connections/statuses":
 		return h.connectionStatuses()
+
+	case "kafka/ui/state/report":
+		return h.uiStateReport(params)
+
+	case "mcp/tools":
+		return h.mcpTools(params)
+	case "mcp/call":
+		return h.mcpCall(params)
+	case "mcp/settings/get":
+		return h.mcpSrv.SettingsGet(), nil
+	case "mcp/settings/set":
+		return h.mcpSettingsSet(params)
 
 	// --- Phase 2/3：schema registry（Confluent 兼容 REST + AWS Glue，
 	// registry 参数显式选择后端，缺省自动探测） ---
@@ -803,9 +834,91 @@ func (h *pluginHandler) schemaDeleteVersion(params json.RawMessage) (any, *dbxpl
 	return result, nil
 }
 
-// --- StreamEmitter 适配（kafka/stream/messages、kafka/stream/error） ---
+// --- MCP 工具面（M3，internal/mcp） ---
 
-// EmitStreamMessages 实现 kafkaconn.StreamEmitter。
+// uiStateReport 处理 kafka/ui/state/report（前端回调）：带 intentId 回报
+// intent 终态；无 intentId 为快照型（sidecar 缓存最新快照）。
+func (h *pluginHandler) uiStateReport(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var body map[string]any
+	if err := json.Unmarshal(params, &body); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := h.mcpSrv.ReportUIState(body); err != nil {
+		return nil, bizError(err)
+	}
+	return map[string]any{"success": true}, nil
+}
+
+// mcpTools 处理 mcp/tools（DBX MCP 桥工具发现）：可选 connectionId，连接
+// 策略不满足的写工具不进清单（设计 §4）。
+func (h *pluginHandler) mcpTools(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var body struct {
+		ConnectionID string `json:"connectionId"`
+	}
+	_ = json.Unmarshal(params, &body)
+	return h.mcpSrv.Tools(strings.TrimSpace(body.ConnectionID)), nil
+}
+
+// mcpCall 处理 mcp/call（DBX MCP 桥 dbx_call_plugin_tool）：注册 lifecycle
+// payload（凭据由宿主转发，参数不携带）→ 分派工具。响应统一 MCP content
+// 信封（对齐 ssh / ldap mcp/call）。
+func (h *pluginHandler) mcpCall(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var body struct {
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+		Lifecycle json.RawMessage `json:"lifecycle"`
+	}
+	if err := json.Unmarshal(params, &body); err != nil {
+		return nil, invalidParams(err)
+	}
+	if strings.TrimSpace(body.Tool) == "" {
+		return nil, dbxpluginsdk.NewError(-32602, "Missing tool")
+	}
+	// 桥转发附带 lifecycle payload：注册/刷新连接配置（幂等覆盖），之后工具
+	// 调用只引用 connectionId。解析失败即拒绝（不静默丢凭据上下文）。
+	if len(body.Lifecycle) > 0 {
+		parsed, err := lifecycle.Parse(body.Lifecycle)
+		if err != nil {
+			return nil, invalidParams(err)
+		}
+		if err := h.svc.Connect(parsed); err != nil {
+			return nil, bizError(err)
+		}
+	}
+	var arguments map[string]any
+	if len(body.Arguments) > 0 {
+		if err := json.Unmarshal(body.Arguments, &arguments); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	result, err := h.mcpSrv.Call(strings.TrimSpace(body.Tool), arguments)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	payload, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return nil, dbxpluginsdk.NewError(-32603, marshalErr.Error())
+	}
+	return map[string]any{
+		"content": []map[string]any{{"type": "text", "text": string(payload)}},
+		"isError": false,
+	}, nil
+}
+
+// mcpSettingsSet 处理 mcp/settings/set（白名单部分更新 + 持久化）。
+func (h *pluginHandler) mcpSettingsSet(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var body map[string]any
+	if err := json.Unmarshal(params, &body); err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := h.mcpSrv.SettingsSet(body)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
+}
+
+// --- StreamEmitter 适配（kafka/stream/messages、kafka/stream/error） ---// EmitStreamMessages 实现 kafkaconn.StreamEmitter。
 func (h *pluginHandler) EmitStreamMessages(batch kafkaconn.StreamMessageBatch) {
 	h.mu.Lock()
 	emitter := h.emitter
@@ -844,6 +957,7 @@ func (h *pluginHandler) auditRecord(rec kafkaconn.AuditRecord) {
 			Action:       auditAction(rec.Action),
 			Target:       rec.Target,
 			Result:       auditResultForStore(rec.Result),
+			Source:       rec.Source,
 		}); err != nil {
 			log.Printf("[dbx-plugin-kafka] audit write failed: %v", err)
 		}

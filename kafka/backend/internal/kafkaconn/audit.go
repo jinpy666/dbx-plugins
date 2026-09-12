@@ -12,4 +12,7 @@ type AuditRecord struct {
 	Target       string `json:"target"`
 	Result       string `json:"result"` // success | blocked | error | warning
 	Detail       string `json:"detail,omitempty"`
+	// Source 操作来源标注（MCP 设计 §4）：MCP 写路径记 "mcp"；工作台路径
+	// 不携带（旧记录/事件无此字段，additive 兼容）。
+	Source string `json:"source,omitempty"`
 }

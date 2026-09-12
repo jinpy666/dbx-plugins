@@ -670,3 +670,51 @@ SKIP 语义三层）✓；对标/清单（本节 + PROGRESS-B §9 + PROGRESS-P �
 - **验证**：`scripts/test.sh` 全绿（前端三件套 + go vet/test 3 包 +
   package + smoke `total=15 PASS=11 FAIL=0 SKIP=4`，S10/S13 按 -32602
   断言 PASS）。
+
+
+## 13. MCP 工具面（M3，2026-09-12 落地）
+
+> 设计来源：`shared/IMPL_PLAN_PLUGIN_MCP.zh-CN.md`（v2）§1–§4/§6.3；
+> 本节为设计文档 §6.3 对 kafka IMPL_PLAN 的补录（此前 kafka 是三插件中
+> 唯一无 MCP 规划段落的）。实现与运行形态详见 `docs/MCP.zh-CN.md`，
+> 协议形状见 `PROTOCOL_KAFKA.zh-CN.md` §6.4 / §3.10。
+
+### 13.1 规划要点（设计 §2/§3/§4/§6.3 摘录）
+
+- **读：UI 优先 + 强本地化**。MCP 不订阅 stream；`kafka_messages_digest`
+  复用一次性 Consume 的 `maxScanRecords` 扫描语义与 filter 各通道，
+  sidecar 本地聚合（per-partition 计数、key groupBy ≤20、时间直方图
+  ≤12 桶、`fields` JSON-path 投影 distinct/topN ≤10），默认
+  `format:"digest"`，`rows` clamp ≤20；`kafka_cursor_next` 会话翻页
+  （TTL 10 分钟 / LRU ≤8 / 物化 ≤1 万行，定位字段
+  topic-partition-offset 不截断）。
+- **UI intent**：事件 `kafka/ui/intent`（search/focus/select）+
+  方法 `kafka/ui/state/report`（intent 回报 + 快照型）；前端统一走
+  `shared/frontend/useUiIntent("kafka")`（公共层单点），落表挂
+  MessagesPanel consume 表单，锚点 = partition+offset；`kafka_ui_state`
+  快照附带 stream 会话状态段。
+- **写：两阶段确认**。`kafka_messages_produce` 单阶段直执行（MCP 载荷
+  ≤64 KiB）；`kafka_topics_delete`、`kafka_groups_offsets_reset`、
+  `kafka_topics_records_clear` 强制 preview + 一次性 confirmToken
+  （60s TTL、参数 hash 绑定）。审计 `source:"mcp"`；连接只读（及
+  allow_delete 对删除类）时写工具不进 `mcp/tools` 清单。
+- **骨架**：`mcp/tools`、`mcp/call`、`mcp/settings/get|set`
+  （8 字段，`digestScanLimit` 为 kafka 域内扩展）；单响应 16 KiB 截断。
+
+### 13.2 工具表（11 个）
+
+UI 驱动 4（`kafka_ui_focus/search/select/state`）+ 元发现 1
+（`kafka_ui_topics`，硬上限 50）+ 本地读 2（`kafka_messages_digest` /
+`kafka_cursor_next`）+ 写 4（`kafka_messages_produce` /
+`kafka_topics_delete` / `kafka_groups_offsets_reset` /
+`kafka_topics_records_clear`）。参数/语义全表见 `docs/MCP.zh-CN.md`。
+
+### 13.3 验收（完成定义四件套）
+
+- 单测：`backend/internal/mcp/*_test.go`（对照 shared/frontend/README
+  「MCP 验收用例清单」S-SET/S-INT/S-CUR/S-CONF/S-DIG(kafka 变体)/S-SRV）。
+- smoke：`scripts/smoke_mcp.py` K1–K11（未注册 SKIP；容器场景无集群
+  SKIP；dev 集群在跑时全 PASS，含两阶段写与 audit source=mcp 断言）。
+- 前端：`useUiIntent` 接线用例 + mock 契约镜像 + 七语 `intent.*` 文案。
+- 文档：本节 + `docs/MCP.zh-CN.md`（新增）+ PROTOCOL §6.4/§3.10 +
+  PROGRESS-P M3 记录。

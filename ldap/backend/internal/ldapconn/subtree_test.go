@@ -185,7 +185,7 @@ func TestChildrenCountValidation(t *testing.T) {
 }
 
 func TestSubtreeDeleteAuditRecordShape(t *testing.T) {
-	rec := subtreeDeleteAuditRecord("conn-1", "ou=tree,dc=example,dc=com", 3)
+	rec := subtreeDeleteAuditRecord("conn-1", "ou=tree,dc=example,dc=com", 3, "")
 	if rec.Action != "subtree_delete" || rec.Result != "ok" || rec.DeletedCount != 3 {
 		t.Fatalf("record = %+v", rec)
 	}

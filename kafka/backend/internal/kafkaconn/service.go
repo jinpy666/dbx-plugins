@@ -273,6 +273,12 @@ func (s *Service) profileOf(connectionID string) Profile {
 // emitAudit 触发审计回调（nil 安全）。领域层写操作成功/拒绝后调用；
 // Target 只含资源名，Detail 不含消息值/凭据。
 func (s *Service) emitAudit(connectionID, action, target, result, detail string) {
+	s.emitAuditSource("", connectionID, action, target, result, detail)
+}
+
+// emitAuditSource 与 emitAudit 相同，但允许调用方标注来源（MCP 设计 §4：
+// MCP 写路径 source="mcp"；工作台路径传空串不携带该字段）。
+func (s *Service) emitAuditSource(source, connectionID, action, target, result, detail string) {
 	if s.Audit == nil {
 		return
 	}
@@ -282,7 +288,16 @@ func (s *Service) emitAudit(connectionID, action, target, result, detail string)
 		Target:       target,
 		Result:       result,
 		Detail:       detail,
+		Source:       source,
 	})
+}
+
+// PolicyOf 返回连接策略字段（只读 / 允许删除），供 MCP 工具清单剔除写工具
+// （MCP 设计 §4：不注册而非注册了再报错）。未连接连接按只读兜底（与
+// profileOf 一致）。
+func (s *Service) PolicyOf(connectionID string) (readOnly, allowDelete bool) {
+	profile := s.profileOf(connectionID)
+	return profile.ReadOnly, profile.AllowDelete
 }
 
 // --- 预设（kafka/presets/*，照 ldap/presets 形态） ---

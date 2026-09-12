@@ -302,10 +302,10 @@ func (s *Service) AddEntry(ctx context.Context, req LDAPAddEntryRequest) error {
 		return conn.Add(addReq)
 	})
 	if err != nil {
-		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "add-entry", Target: dn, Result: "error", Detail: err.Error()})
+		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "add-entry", Target: dn, Result: "error", Detail: err.Error(), Source: req.Source})
 		return err
 	}
-	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "add-entry", Target: dn, Result: "ok", Detail: "attributes: " + strings.Join(attrNames, ",")})
+	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "add-entry", Target: dn, Result: "ok", Detail: "attributes: " + strings.Join(attrNames, ","), Source: req.Source})
 	return nil
 }
 
@@ -344,10 +344,10 @@ func (s *Service) ModifyEntry(ctx context.Context, req LDAPModifyEntryRequest) e
 		return conn.Modify(modReq)
 	})
 	if err != nil {
-		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-entry", Target: dn, Result: "error", Detail: err.Error()})
+		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-entry", Target: dn, Result: "error", Detail: err.Error(), Source: req.Source})
 		return err
 	}
-	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-entry", Target: dn, Result: "ok", Detail: "attributes: " + strings.Join(attrs, ",")})
+	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-entry", Target: dn, Result: "ok", Detail: "attributes: " + strings.Join(attrs, ","), Source: req.Source})
 	return nil
 }
 
@@ -369,16 +369,16 @@ func (s *Service) DeleteEntry(ctx context.Context, req LDAPDeleteEntryRequest) e
 		return err
 	}
 	if req.Recursive {
-		return s.deleteSubtree(ctx, req.ConnectionID, dn)
+		return s.deleteSubtree(ctx, req.ConnectionID, dn, req.Source)
 	}
 	err = s.WithConn(ctx, req.ConnectionID, func(conn *ldap.Conn) error {
 		return conn.Del(ldap.NewDelRequest(dn, nil))
 	})
 	if err != nil {
-		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "delete-entry", Target: dn, Result: "error", Detail: err.Error()})
+		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "delete-entry", Target: dn, Result: "error", Detail: err.Error(), Source: req.Source})
 		return err
 	}
-	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "delete-entry", Target: dn, Result: "ok"})
+	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "delete-entry", Target: dn, Result: "ok", Source: req.Source})
 	return nil
 }
 
@@ -387,7 +387,7 @@ func (s *Service) DeleteEntry(ctx context.Context, req LDAPDeleteEntryRequest) e
 // 服务端返回不支持类错误（unavailableCriticalExtension/unavailable/
 // unwillingToPerform）时回退「先序自底向上」逐条删除（深度倒序，先子后父，
 // 最后删目标自身）。两条路径均只发一条聚合审计记录。
-func (s *Service) deleteSubtree(ctx context.Context, connectionID, dn string) error {
+func (s *Service) deleteSubtree(ctx context.Context, connectionID, dn, source string) error {
 	var deletedCount int
 	err := s.WithConn(ctx, connectionID, func(conn *ldap.Conn) error {
 		dns, listErr := listSubtreeDNs(conn, dn)
@@ -416,10 +416,10 @@ func (s *Service) deleteSubtree(ctx context.Context, connectionID, dn string) er
 		return nil
 	})
 	if err != nil {
-		s.EmitAudit(AuditRecord{ConnectionID: connectionID, Action: "subtree_delete", Target: dn, Result: "error", Detail: err.Error()})
+		s.EmitAudit(AuditRecord{ConnectionID: connectionID, Action: "subtree_delete", Target: dn, Result: "error", Detail: err.Error(), Source: source})
 		return err
 	}
-	s.EmitAudit(subtreeDeleteAuditRecord(connectionID, dn, deletedCount))
+	s.EmitAudit(subtreeDeleteAuditRecord(connectionID, dn, deletedCount, source))
 	return nil
 }
 
@@ -527,12 +527,13 @@ func orderDeepestFirst(dns []string) ([]string, error) {
 
 // subtreeDeleteAuditRecord 递归删除成功的聚合审计记录（一条；target 为目标
 // DN，deletedCount 为删除条目数含目标自身；不含任何属性值）。
-func subtreeDeleteAuditRecord(connectionID, dn string, deletedCount int) AuditRecord {
+func subtreeDeleteAuditRecord(connectionID, dn string, deletedCount int, source string) AuditRecord {
 	return AuditRecord{
 		ConnectionID: connectionID,
 		Action:       "subtree_delete",
 		Target:       dn,
 		Result:       "ok",
+		Source:       source,
 		DeletedCount: deletedCount,
 	}
 }
@@ -569,10 +570,10 @@ func (s *Service) ModifyDN(ctx context.Context, req LDAPModifyDNRequest) error {
 		return conn.ModifyDN(ldap.NewModifyDNRequest(dn, newRDN, req.DeleteOldRDN, strings.TrimSpace(req.NewSuperior)))
 	})
 	if err != nil {
-		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-dn", Target: dn, Result: "error", Detail: err.Error()})
+		s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-dn", Target: dn, Result: "error", Detail: err.Error(), Source: req.Source})
 		return err
 	}
-	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-dn", Target: dn, Result: "ok", Detail: "destinationDn: " + destinationDN})
+	s.EmitAudit(AuditRecord{ConnectionID: req.ConnectionID, Action: "modify-dn", Target: dn, Result: "ok", Detail: "destinationDn: " + destinationDN, Source: req.Source})
 	return nil
 }
 
@@ -770,4 +771,10 @@ func ldapEntryToType(entry *ldap.Entry) LDAPEntry {
 		attrs[attr.Name] = values
 	}
 	return LDAPEntry{DN: entry.DN, Attributes: attrs}
+}
+
+// ModifyDNDestinationDN 导出 modifyDn 目标 DN 计算（MCP 写路径 preview 用，
+// 与 operations.go 内部实现同一语义）。
+func ModifyDNDestinationDN(rawDN, rawNewRDN, rawNewSuperior string) (string, error) {
+	return ldapModifyDNDestinationDN(rawDN, rawNewRDN, rawNewSuperior)
 }

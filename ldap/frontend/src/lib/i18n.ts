@@ -4,6 +4,12 @@ export type WorkbenchLocale = "en" | "es" | "it" | "ja" | "pt-BR" | "zh-CN" | "z
 
 export const messages = {
   en: {
+    intent: {
+      applied: "MCP intent applied to the workbench",
+      rejected: "MCP intent rejected: {reason}",
+      selectMissing: "DN not found in the current results",
+      unknownPanel: "Unknown panel",
+    },
     ldap: {
       passwordEditor: {
         scheme: "Hash scheme",
@@ -306,6 +312,12 @@ export const messages = {
     },
   },
   "zh-CN": {
+    intent: {
+      applied: "MCP 意图已应用到工作台",
+      rejected: "MCP 意图被拒绝：{reason}",
+      selectMissing: "当前结果中未找到该 DN",
+      unknownPanel: "未知面板",
+    },
     ldap: {
       passwordEditor: {
         scheme: "哈希方案",
@@ -608,6 +620,12 @@ export const messages = {
     },
   },
   "zh-TW": {
+    intent: {
+      applied: "MCP 意圖已套用到工作台",
+      rejected: "MCP 意圖被拒絕：{reason}",
+      selectMissing: "目前結果中找不到該 DN",
+      unknownPanel: "未知面板",
+    },
     ldap: {
       passwordEditor: {
         scheme: "雜湊方案",
@@ -910,6 +928,12 @@ export const messages = {
     },
   },
   es: {
+    intent: {
+      applied: "Intención de MCP aplicada al espacio de trabajo",
+      rejected: "Intención de MCP rechazada: {reason}",
+      selectMissing: "No se encontró el DN en los resultados actuales",
+      unknownPanel: "Panel desconocido",
+    },
     ldap: {
       passwordEditor: {
         scheme: "Esquema de hash",
@@ -1212,6 +1236,12 @@ export const messages = {
     },
   },
   it: {
+    intent: {
+      applied: "Intent MCP applicato all'area di lavoro",
+      rejected: "Intent MCP rifiutato: {reason}",
+      selectMissing: "DN non trovato nei risultati correnti",
+      unknownPanel: "Pannello sconosciuto",
+    },
     ldap: {
       passwordEditor: {
         scheme: "Schema di hash",
@@ -1514,6 +1544,12 @@ export const messages = {
     },
   },
   ja: {
+    intent: {
+      applied: "MCP インテントをワークベンチに適用しました",
+      rejected: "MCP インテントを拒否しました：{reason}",
+      selectMissing: "現在の結果にその DN が見つかりません",
+      unknownPanel: "不明なパネル",
+    },
     ldap: {
       passwordEditor: {
         scheme: "ハッシュ方式",
@@ -1816,6 +1852,12 @@ export const messages = {
     },
   },
   "pt-BR": {
+    intent: {
+      applied: "Intenção do MCP aplicada ao espaço de trabalho",
+      rejected: "Intenção do MCP rejeitada: {reason}",
+      selectMissing: "DN não encontrado nos resultados atuais",
+      unknownPanel: "Painel desconhecido",
+    },
     ldap: {
       passwordEditor: {
         scheme: "Esquema de hash",

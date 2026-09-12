@@ -15,6 +15,14 @@ export const messages = {
     save: "Save",
     delete: "Delete",
     copied: "Copied",
+    intent: {
+      applied: "MCP intent applied to the workbench",
+      rejected: "MCP intent rejected: {reason}",
+      unknownPanel: "Unknown panel",
+      selectMissing: "partition+offset not found in the current results",
+      consumeInProgress: "Another consume is already running",
+      noMessagesPanel: "Messages panel is not ready yet",
+    },
     err: {
       auth: "Authentication failed: check SASL user, password and mechanism",
       tls: "TLS certificate check failed: install the CA in connection settings or disable certificate verification",
@@ -601,6 +609,14 @@ export const messages = {
     save: "保存",
     delete: "删除",
     copied: "已复制",
+    intent: {
+      applied: "MCP 意图已落到工作台",
+      rejected: "MCP 意图被拒绝：{reason}",
+      unknownPanel: "未知面板",
+      selectMissing: "当前结果中未找到该 partition+offset",
+      consumeInProgress: "已有消费在进行中",
+      noMessagesPanel: "消息面板尚未就绪",
+    },
     err: {
       auth: "认证失败：请检查 SASL 用户名、密码与机制",
       tls: "TLS 证书校验失败：可在连接配置安装 CA 证书，或关闭「跳过 TLS 校验」",
@@ -1187,6 +1203,14 @@ export const messages = {
     save: "儲存",
     delete: "刪除",
     copied: "已複製",
+    intent: {
+      applied: "MCP 意圖已落到工作台",
+      rejected: "MCP 意圖被拒絕：{reason}",
+      unknownPanel: "未知面板",
+      selectMissing: "目前結果中找不到該 partition+offset",
+      consumeInProgress: "已有消費在進行中",
+      noMessagesPanel: "訊息面板尚未就緒",
+    },
     err: {
       auth: "認證失敗：請檢查 SASL 使用者名稱、密碼與機制",
       tls: "TLS 憑證校驗失敗：可在連線設定安裝 CA 憑證，或關閉「跳過 TLS 校驗」",
@@ -1773,6 +1797,14 @@ export const messages = {
     save: "Guardar",
     delete: "Eliminar",
     copied: "Copiado",
+    intent: {
+      applied: "Intención MCP aplicada al banco de trabajo",
+      rejected: "Intención MCP rechazada: {reason}",
+      unknownPanel: "Panel desconocido",
+      selectMissing: "partition+offset no encontrado en los resultados actuales",
+      consumeInProgress: "Ya hay un consumo en curso",
+      noMessagesPanel: "El panel de mensajes aún no está listo",
+    },
     err: {
       auth: "Falló la autenticación: revise el usuario, la contraseña y el mecanismo SASL",
       tls: "Fallo la verificación del certificado TLS: instale la CA en la configuración de conexión o desactive la verificación",
@@ -2359,6 +2391,14 @@ export const messages = {
     save: "Salva",
     delete: "Elimina",
     copied: "Copiato",
+    intent: {
+      applied: "Intent MCP applicato al workbench",
+      rejected: "Intent MCP rifiutato: {reason}",
+      unknownPanel: "Pannello sconosciuto",
+      selectMissing: "partition+offset non trovato nei risultati correnti",
+      consumeInProgress: "Un altro consumo è già in corso",
+      noMessagesPanel: "Il pannello messaggi non è ancora pronto",
+    },
     err: {
       auth: "Autenticazione non riuscita: verifica utente, password e meccanismo SASL",
       tls: "Verifica del certificato TLS non riuscita: installa la CA nelle impostazioni di connessione o disattiva la verifica",
@@ -2945,6 +2985,14 @@ export const messages = {
     save: "保存",
     delete: "削除",
     copied: "コピーしました",
+    intent: {
+      applied: "MCP インテントをワークベンチに適用しました",
+      rejected: "MCP インテントは拒否されました: {reason}",
+      unknownPanel: "不明なパネル",
+      selectMissing: "現在の結果に該当する partition+offset がありません",
+      consumeInProgress: "別のコンシュームが実行中です",
+      noMessagesPanel: "メッセージパネルはまだ準備ができていません",
+    },
     err: {
       auth: "認証に失敗しました：SASL ユーザー・パスワード・メカニズムを確認してください",
       tls: "TLS 証明書の検証に失敗しました：接続設定で CA 証明書を導入するか、証明書検証を無効にしてください",
@@ -3531,6 +3579,14 @@ export const messages = {
     save: "Salvar",
     delete: "Excluir",
     copied: "Copiado",
+    intent: {
+      applied: "Intenção MCP aplicada ao workbench",
+      rejected: "Intenção MCP rejeitada: {reason}",
+      unknownPanel: "Painel desconhecido",
+      selectMissing: "partition+offset não encontrado nos resultados atuais",
+      consumeInProgress: "Outro consume já está em andamento",
+      noMessagesPanel: "O painel de mensagens ainda não está pronto",
+    },
     err: {
       auth: "Falha na autenticação: verifique o usuário, a senha e o mecanismo SASL",
       tls: "Falha na verificação do certificado TLS: instale a CA nas configurações de conexão ou desative a verificação",

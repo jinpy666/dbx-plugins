@@ -851,3 +851,80 @@ Python **3 个测试方法**（含 6 个异常/SKIP 子例）；独立 Go vet / 
 mock 保真度仍待分批推进；分页问题单列后端专项。大目录仅评估、truncated、
 AssociationPanel inline style、真机认证、GUI e2e 与 plugin-cli 建议继续维持。
 未执行 commit/push/PR/stash/reset/checkout。
+
+## review 第 7 轮：过滤器校验与 mock 边界三组小修（2026-09-12，goal-state round7）
+
+完整报告：`.goal-state/report-ldap-round7.md`；任务清单 IMPL_PLAN R7-1～R7-3。
+本轮无 Go 产品代码/宿主/公共层/manifest 改动，无新增依赖，复用七语文案：
+
+- 源码过滤器补属性、比较符与十六进制转义校验，保留合法空断言、子串、OID
+  和扩展匹配；七语即时错误关联、提交门禁与纠正恢复通过。
+- mock 复用 UTF-8 解码，uidNumber/gidNumber 使用 BigInt 比较；未支持的
+  matching rules 在遍历前拒绝，避免布尔短路掩盖。count 与搜索共用直接
+  子条目判断，修正转义逗号 DN 计数遗漏。
+- alias 不再让无关查询误报未实现；仅在实际需解引用时拒绝。真实容器 S18
+  覆盖四种模式/三种范围、祖先别名、目标去重与循环，完整 mock 引擎仍保留。
+
+验证：前端 **37 文件 / 608 用例**（+54）、UI **21/21**、独立 Go vet 与
+`go test -count=1 ./...`、全套 `scripts/test.sh` 及 **0.1.58** 打包通过。
+新增 S17/S18 后容器 **19/19 PASS**；S15/S16 的部分断言条件跳过沿袭，
+容器和临时数据已清理。新增回归修复前有 43 个失败；首次扩展容器 18/19，
+原因是 S17 未容忍 count 响应省略 `truncated:false`，修正测试后通过。
+
+执行期间外部 HEAD 更新为 `685db04`，本轮内容仍在；改动按起始哈希归因，
+未执行任何提交或回退命令。**未达成无剩余可执行项**：完整匹配规则/别名
+夹具、R6-03 分页控制交互留专项；大目录仅评估及其他指定维持/真机项不变。
+
+## M1 MCP 工具面落地（2026-09-12，shared/IMPL_PLAN_PLUGIN_MCP v2 §1–§4/§6.1）
+
+实施 shared MCP 设计 M1（ldap 先行样板），工作来源为该设计文档与本次任务
+边界（独占 ldap/backend、ldap/frontend、ldap/docs、ldap/scripts、
+shared/frontend）。宿主未改动。
+
+**backend（Go，internal/mcp/ 新包）**：
+- `mcp/tools`：8 工具 + JSON Schema（UI 驱动 4：ldap_ui_focus/search/
+  select/state；本地读 2：ldap_search_digest/ldap_cursor_next；元发现 1：
+  ldap_ui_schema；写 1：ldap_entry_write）。可选 `connectionId` 给到只读
+  连接时写工具不进清单并附 `omittedWriteTools` 原因（设计 §4）。
+- `mcp/call`：分派 + 16 KiB 响应上限（超限按 sample→rows→stats 丢弃置
+  truncated）；桥 lifecycle payload 经 `svc.Connect` 注册（幂等）。
+- `mcp/settings/get|set`：reportWaitMs/cellWidth/digestGroupLimit/
+  digestTopN/digestSampleRows/digestRowLimit/responseLimitBytes 白名单
+  部分更新 + `mcp-settings.json` 持久化（损坏回落默认，越界 clamp）。
+- UI intent：`ldap/ui/intent` 事件 + intent 状态表（TTL 60s、LRU 20）+
+  `ldap_ui_state/report` 方法（intent 回报与快照型双形态）。
+- 本地读：`ldap_search_digest`（filter 服务端执行 + objectClass 分布
+  ≤20 组/子树计数/distinct 值域/样本 ≤5/cursor 物化 ≤1 万行）+
+  `ldap_cursor_next`（TTL 10min、LRU ≤8、n≤20 续读）。
+- 两阶段写：add/modify 单阶段直执行；delete（recursive 沿用子树 1000
+  上限）/modifyDn 强制 preview+confirmToken（一次性、60s TTL、参数 hash
+  绑定）；所有 MCP 写审计 `source:"mcp"`（AuditRecord/store 新增可选
+  Source 字段，M0 形状不变）。
+- `main.go` 新增方法：mcp/tools、mcp/call、mcp/settings/get|set、
+  ldap/ui/state/report。
+
+**shared/frontend**：新增 `uiIntent.ts`（useUiIntent(domain, handlers)
+公共 composable：事件归一化 + handler 分派 + report 回报 +
+reportSnapshot）；README 增模块行与「MCP 两阶段/digest/cursor 验收用例
+清单」（S-SET/S-INT/S-CUR/S-CONF/S-DIG/S-SRV，Go 测试按编号覆盖）。
+
+**frontend**：App.vue 接 useUiIntent（search 填表触发搜索/focus 面板/
+select 定位开条目；搜索完成与条目打开后报快照）；SearchForm 新增
+`applyIntentSearch`（走既有 preset 反序列化路径）；mockDbxHost 镜像
+`ldap/ui/state/report` + 导出 emitUiIntent；env.d.ts 补
+DbxPluginUiIntentEvent/DbxPluginUiStateReport；api.ts 补 uiStateReport；
+i18n 新增 `intent.*` 四键 × 七语。
+
+**scripts/docs**：新增 `scripts/smoke_mcp.py`（M1–M10：离线 9 场景 +
+容器 digest/cursor/两阶段删除往返；未注册 SKIP 不 FAIL）；新增
+`docs/MCP.zh-CN.md`（协议章节：ui/intent 事件、ui/state/report 方法、
+8 工具表、两阶段语义、settings 表、降级矩阵）；IMPL_PLAN §9 M4 状态
+更新（v2 分层 8 工具取代初版 14 工具规划）。
+
+**验证（真实输出）**：`go vet ./...` 通过；`go test ./... -count=1` 全绿
+（mcp 包 26 用例 + 既有包）；`pnpm typecheck` 通过；`pnpm test`
+**38 文件 / 614 用例**（+6 uiIntent spec）；smoke_mcp.py **10/10 PASS**
+（临时 OpenLDAP 容器 14389；无容器时 M10 按设计 SKIP）。未跑完整
+test.sh 打包段（本轮未动 manifest/构建链），UI 走查 ui_test.mjs 未加
+intent 场景——剩余风险：真实宿主桥下 intent 事件与 report 时序未真机
+复验；打包不受影响（无 manifest 变更）。未执行任何 git 提交。

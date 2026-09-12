@@ -1034,3 +1034,80 @@ TopicTree 57.89 / MessagesPanel 61.75 / api 70.17 / ProducePanel 72.86。
   Go 与协议零改动）。观察登记：showFullBase64 裸 pre 无上限、
   truncatedValuePreview 生产死代码（有护栏）。
 - 收敛判定不变：无剩余 subagent 可执行项，仅剩真机复核/维持豁免项。
+
+
+## M3 MCP 工具面（2026-09-12：io.dbx.kafka MCP 全栈落地）
+
+> 设计来源 `shared/IMPL_PLAN_PLUGIN_MCP.zh-CN.md`（v2）§1–§4/§6.3；形状
+> 对齐 ldap M1 Go 版（`ldap/backend/internal/mcp/`）与 files M2 Rust 版。
+> 本轮落在 `kafka/backend/**`（internal/mcp + kafkaconn 最小增量 + main 接线）、
+> `kafka/frontend/**`（useUiIntent 接线）、`kafka/scripts/smoke_mcp.py`、
+> `kafka/docs/MCP.zh-CN.md`（新增）+ `PROTOCOL_KAFKA.zh-CN.md`（§6.4 事件、
+> §3.10 方法、审计 source 标注）。
+
+### 后端（internal/mcp，11 工具）
+
+- 骨架：`mcp/tools`（11 工具 JSON Schema）、`mcp/call`（分派 + MCP content
+  信封）、`mcp/settings/get|set`（8 字段白名单持久化，`digestScanLimit` 为
+  kafka 域内扩展）。UI intent 4 工具（`kafka_ui_focus/search/select/state`）
+  + 元发现 `kafka_ui_topics`（硬上限 50）。
+- 本地读：`kafka_messages_digest`（一次性 Consume 复用 `maxScanRecords`
+  扫描语义与 filter 全通道，本地聚合 per-partition 计数 / key groupBy ≤20 /
+  时间直方图 ≤12 桶 / `fields` JSON-path 投影 distinct+topN ≤10；默认
+  digest，`rows` clamp ≤20；超 512KB value 出占位符 + partition/offset
+  定位指引，正文不出 sidecar；MCP 不订阅 stream）+ `kafka_cursor_next`
+  （TTL 10 分钟 / LRU ≤8 / 物化 ≤1 万行）。
+- 写：`kafka_messages_produce` 单阶段直执行（MCP 载荷 ≤64 KiB）；
+  `kafka_topics_delete`、`kafka_groups_offsets_reset`、
+  `kafka_topics_records_clear` 强制两阶段（preview + 一次性 confirmToken，
+  60s TTL、参数 hash 绑定；执行层内部仍带同名 confirmTopic 满足
+  kafkaconn 防误删门禁）。只读连接 4 写工具全剔除、`allow_delete=false`
+  追加剔除删除类两工具（`omittedWriteTools` 附原因，`mcp/call` 侧
+  `PolicyOf` 纵深防御）。
+- kafkaconn 最小增量（additive）：`AuditRecord`/`store.AuditRecord` 增
+  `source` 字段；`ProduceRequest`/`TopicsDeleteRequest`/
+  `GroupOffsetResetRequest`/`TopicRecordsClearRequest` 增 `Source`（MCP
+  写路径 `"mcp"`，对应 emitAudit 调用点改 `emitAuditSource`）；
+  `Service.PolicyOf`、`StreamRegistry.StatusesFor`（kafka_ui_state 快照
+  附带 stream 状态段）。
+- 单测（对照 shared/frontend/README「MCP 验收用例清单」编号）：S-SET ×4、
+  S-INT ×5、S-CUR ×5、S-CONF ×3、S-DIG kafka 变体 ×8（per-partition、
+  key groupBy 截断、直方图桶、字段投影 distinct/topN、非 JSON 跳过、
+  单元格截断与定位字段保真、大 value 占位、sample/rows clamp）、S-SRV ×8
+  （settings 往返、16KiB 截断序、intent/快照/streams、cursor 错误、定位
+  参数校验、只读与 allow_delete 剔除矩阵、两阶段 preview/hash 绑定/一次性）。
+  `go vet` 0 告警，`go test ./...` 全绿。
+
+### 前端（照 ldap 样板接线）
+
+- `App.vue` 挂 `useUiIntent("kafka", handlers)`：focus 切 messages/topics/
+  groups/schemas 面板；search → `MessagesPanel.applyIntentConsume`（表单
+  填入 + 触发消费，回报 summary 含 count + 前 5 行 + `topic-p{o}` 锚点）；
+  select → `applyIntentSelect`（partition+offset 定位 + 详情抽屉）。
+  面板切换 / topic 选中后 `reportSnapshot` 上报快照；卸载 stop()。
+- `MessagesPanel.vue`：`buildParams(topicOverride)` 时序兜底、
+  `applyIntentConsume/applyIntentSelect` 经 defineExpose 暴露（复用既有
+  校验/竞态守卫/capRows 落地路径）。
+- `mockDbxHost.ts` 镜像新事件/方法（`kafka/ui/intent` 经
+  `emitKafkaUiIntent` 注入；`kafka/ui/state/report` 校验同 sidecar）；
+  `env.d.ts` 同步 `DbxPluginUiIntentEvent`/`DbxPluginUiStateReport`。
+- 七语文案：`intent.*` 6 键 × 7 语言（en/zh-CN/zh-TW/es/it/ja/pt-BR）。
+- 新增用例：`lib/uiIntent.spec.ts`（5）、`App.spec.ts` MCP 接线（2）、
+  `MessagesPanel.spec.ts` intent 集成（3）；`pnpm typecheck` 0 错，
+  `pnpm test` **271 用例全绿**。
+
+### smoke 与验证证据
+
+- `scripts/smoke_mcp.py`（K1–K11）：**dev 测试集群在跑时 11/11 PASS**——
+  K11 真实集群覆盖 digest 聚合（perPartition/keys/timeHistogram/fields
+  投影）、cursor 翻页定位字段行、单阶段 produce、topics/delete 与
+  groups/offsets/reset 与 topics/records/clear 三个两阶段全流程（含参数
+  改动作废、token 复用 unknown）、audit.jsonl 四动作 `source:"mcp"` 且
+  工作台路径（topics/create）不带 source。无容器时 K11 SKIP、其余 10 离线
+  场景全 PASS。
+- 复跑：`go vet ./... && go test ./...`（backend）、`pnpm typecheck && 
+  pnpm test`（frontend）全绿。
+- 遗留/风险：`scripts/test.sh` 未追加 smoke_mcp 调用（与 ldap 保持同构，
+  手动跑）；digest 扫描依赖一次性 Consume 超时窗（timeoutMs 缺省 5s，超大
+  扫描量场景建议在 `maxScanRecords` 内收敛）；ui_test.mjs 未覆盖 intent
+  真机流（与 ldap 同待 host-e2e）。

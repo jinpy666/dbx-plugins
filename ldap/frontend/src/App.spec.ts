@@ -100,7 +100,10 @@ describe("App request feedback and recovery", () => {
     expect(resultsPane().props("searched")).toBe(false);
     resultsPane().vm.$emit("retry");
     await flushPromises();
-    expect(host.invoke.mock.calls.at(-1)?.[1]).toMatchObject({ connectionId: "first", filter: searchModel.filter, baseDn: searchModel.baseDn });
+    // 搜索成功后 App 会追加一条 ldap/ui/state/report 快照（M1 intent 通道），
+    // 这里按方法过滤取最近一次 ldap/search。
+    const searchCalls = host.invoke.mock.calls.filter(([method]) => method === "ldap/search");
+    expect(searchCalls.at(-1)?.[1]).toMatchObject({ connectionId: "first", filter: searchModel.filter, baseDn: searchModel.baseDn });
     expect(resultsPane().props()).toMatchObject({ error: "", searched: true, loading: false });
   });
 
@@ -137,7 +140,9 @@ describe("App request feedback and recovery", () => {
     host.invoke.mockResolvedValue({ entry: { dn: "cn=alice,dc=first", attributes: {} } });
     editor().vm.$emit("retry");
     await flushPromises();
-    expect(host.invoke.mock.calls.at(-1)?.[1]).toMatchObject({ dn: "cn=alice,dc=first" });
+    // 条目打开成功后 App 会上报 entry 快照（M1 intent 通道），按方法过滤。
+    const entryCalls = host.invoke.mock.calls.filter(([method]) => method === "ldap/entry/get");
+    expect(entryCalls.at(-1)?.[1]).toMatchObject({ dn: "cn=alice,dc=first" });
     expect(editor().props()).toMatchObject({ open: true, loading: false, loadError: "", initialTab: "assoc", entry: { dn: "cn=alice,dc=first" } });
   });
 
@@ -175,7 +180,8 @@ describe("App current host bridge contract", () => {
     wrapper?.unmount();
     wrapper = undefined;
     expect(host.offContext).toHaveBeenCalledOnce();
-    expect(host.offEvent).toHaveBeenCalledOnce();
+    // M1：App 挂两个 onEvent 订阅（audit 流 + useUiIntent），卸载各退订一次。
+    expect(host.offEvent).toHaveBeenCalledTimes(2);
   });
 
   it("accepts the native env locale envelope alongside backend audit events", async () => {

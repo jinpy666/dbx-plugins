@@ -174,6 +174,9 @@ type AuditRecord struct {
 	Action       string `json:"action"`       // 如 kafka/topics/delete
 	Target       string `json:"target"`       // 资源名（topic/group/acl 描述，不记值）
 	Result       string `json:"result"`       // ok | denied | error
+	// Source 操作来源（MCP 设计 §4：MCP 写路径 "mcp"；工作台路径缺省不写，
+	// additive 字段，旧读取方忽略未知键）。
+	Source string `json:"source,omitempty"`
 }
 
 // AppendAudit 追加一条审计记录；rec.Time 为空时取当前时间（RFC3339）。

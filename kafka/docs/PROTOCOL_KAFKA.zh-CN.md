@@ -454,6 +454,18 @@ DeleteSchemaVersions / DeleteSchema）：
 AWS Glue schema management is available"；双配置歧义/未知 registry →
 `-32602`；未配置任何 SR → `-32000`。
 
+### 3.10 MCP UI intent 回报（M3）
+
+`kafka/ui/state/report`（前端 → sidecar；§6.4 事件的回报通道）：
+
+- **intent 回报**：`{intentId, status: "applied"|"rejected", summary?,
+  reason?}`。summary = `{count, truncated?, rows[≤5], anchor?, reason?}`，
+  anchor 形如 `orders-p0-o42`（定位字段不截断）。未知/已过期 intentId →
+  -32000；status 非 applied/rejected → -32602。
+- **快照型**：无 `intentId`、`status:"snapshot"` —— `{summary:{panel?,
+  topic?, count?, anchor?}}`，sidecar 覆盖最新快照。
+- 返回 `{success: true}`。
+
 ### 3.9 流式会话约束（IMPL_PLAN §5.5）
 
 - ring buffer 固定容量 **10000** 条（事件 + `kafka/stream/messages` 分页共用）；
@@ -557,7 +569,27 @@ fetch 循环按指数退避（500ms→30s）重试；不可恢复错误（topic 
 
 M0 审计记录（同 ldap/audit 形状）：全部写操作 + 策略拒绝事件，
 同时落 `store.AppendAudit`（audit.jsonl）并推送本事件；凭据字段
-（sasl_password、tls_client_key）不进 result。
+（sasl_password、tls_client_key）不进 result。MCP 写路径（M3 起）同条
+携带 `source:"mcp"`（additive 字段；工作台路径不携带）。
+
+### 6.4 `kafka/ui/intent`（MCP UI intent 通道，M3）
+
+sidecar 收到 MCP UI 驱动类工具（`kafka_ui_search` / `kafka_ui_focus` /
+`kafka_ui_select`）时下发；intent 状态表 TTL 60s、LRU 20 条：
+
+```
+{ "intentId": string, "action": "search" | "focus" | "select", "params": {} }
+```
+
+| action | params | 前端行为 |
+| --- | --- | --- |
+| `search` | `topic` 必填；`offsetStrategy?`、`limit?`、`filter?`、`keyFilter?`、`valueFilter?`、`headerFilter?`、`matchMode?`、`groupId?`、`partitions?[]`、`offsetTime?` | 消息面板 consume 表单填条件并触发消费 |
+| `focus` | `panel`（messages \| topics \| groups \| schemas） | 切换/聚焦面板 |
+| `select` | `partition`、`offset` 必填；`topic?` | 当前结果中按 partition+offset 定位并打开详情 |
+
+前端消费统一走 `shared/frontend/uiIntent.ts` 的 `useUiIntent("kafka",
+handlers)`；回报走 §3.10 的 `kafka/ui/state/report`。工具面全表与两阶段
+语义见 `docs/MCP.zh-CN.md`。
 
 ## 7. 策略语义（policy.go，错误均 `-32000` blocked）
 
@@ -579,6 +611,8 @@ schema 写操作审计 action：`kafka/schema-register`、`kafka/schema-compatib
   `manifest.json` 做七语与字段契约校验（含 Phase 2 新字段/GSSAPI 选项）。
 - smoke（`scripts/smoke_test.py`）按本文件场景编号 S1-S11（S11 = Phase 2
   SR 场景，SR 不可达时 SKIP）；未注册方法（`-32601`）单场景 SKIP。
+  MCP 工具面场景 K1-K11 见 `scripts/smoke_mcp.py`（离线 + 容器场景，
+  未注册 SKIP）。
 
 ## 9. manifest 连接字段（Phase 1 + Phase 2 + Phase 3(Glue) 汇总）
 

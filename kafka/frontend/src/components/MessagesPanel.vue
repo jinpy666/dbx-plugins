@@ -61,6 +61,7 @@ import {
   type ValueFormat,
 } from "../lib/kafkaModel";
 import { t } from "../lib/i18n";
+import type { UiIntentOutcome, UiIntentSummary } from "../../../../shared/frontend/uiIntent";
 
 const props = defineProps<{
   topic: string;
@@ -425,12 +426,12 @@ function removeFieldFilter(index: number) {
 
 // -- params build / validation ---------------------------------------------------
 
-function buildParams(): ConsumeParams {
+function buildParams(topicOverride?: string): ConsumeParams {
   const offsetTime = offsetStrategy.value === "timestamp" ? offsetTimeToParam(offsetTimeText.value) : null;
   const partitions = parsePartitionList(partitionsText.value);
   const partitionOffsets = parsePartitionOffsetsText(partitionOffsetsText.value);
   const params: ConsumeParams = {
-    topic: props.topic,
+    topic: topicOverride ?? props.topic,
     offsetStrategy: offsetStrategy.value,
     isolationLevel: isolationLevel.value,
     limit: positiveInt(limit.value, 100),
@@ -480,7 +481,7 @@ function buildParams(): ConsumeParams {
 // 与当前序号比对，不一致即丢弃，避免旧 topic 消息串台到新选中 topic 名下。
 let consumeSeq = 0;
 
-async function runConsume() {
+async function runConsume(options: { topicOverride?: string } = {}) {
   if (consuming.value || !props.topic) return;
   const issues = validateConsumeForm({
     commit: commit.value,
@@ -498,7 +499,7 @@ async function runConsume() {
   const seq = ++consumeSeq;
   emit("error", "");
   try {
-    const response = await kafkaApi.messagesConsume(buildParams());
+    const response = await kafkaApi.messagesConsume(buildParams(options.topicOverride));
     if (seq !== consumeSeq) return; // 竞态守卫：在途期间切了 topic / 重新消费 → 旧响应丢弃
     applyResult(response);
     // 消费成功后收起条件抽屉，结果表格立即可见（开合记忆仍由 watch(formOpen) 落盘）。
@@ -514,6 +515,130 @@ async function runConsume() {
     if (seq === consumeSeq) consuming.value = false;
   }
 }
+
+// -- MCP UI intent（M3，shared/frontend/uiIntent 公共层调用方） ----------------
+// App 的 useUiIntent("kafka") handlers 经组件 ref 调用：applyIntentConsume
+// 填消费表单并触发查询（结果留 UI，回报摘要：count + 前 5 行 + partition/
+// offset 锚点）；applyIntentSelect 按 partition+offset 在当前结果中定位并
+// 打开详情抽屉。表单填充走既有 ref / preset 同款路径，UI 可视可撤销。
+
+const INTENT_CELL_WIDTH = 120;
+
+const INTENT_STRATEGIES: OffsetStrategy[] = ["latest", "earliest", "committed", "timestamp", "offset"];
+
+function truncateIntentCell(value: string): string {
+  return [...value].length > INTENT_CELL_WIDTH ? `${[...value].slice(0, INTENT_CELL_WIDTH).join("")}…` : value;
+}
+
+function summarizeIntentResult(response: ConsumeResult): UiIntentSummary {
+  const messages = response.messages ?? [];
+  const rows = messages.slice(0, 5).map((message) => ({
+    topic: message.topic,
+    partition: message.partition,
+    offset: message.offset,
+    key: truncateIntentCell(message.key ?? ""),
+    value: truncateIntentCell(messageFullValueText(message)),
+  }));
+  const anchor = messages.length > 0 ? `${messages[0].topic}-p${messages[0].partition}-o${messages[0].offset}` : undefined;
+  return {
+    count: messages.length,
+    truncated: response.hasMore === true,
+    rows,
+    ...(anchor ? { anchor } : {}),
+  };
+}
+
+/** kafka_ui_search（action=search）落表：条件填入消费表单 → 触发消费 →
+ *  返回 applied 摘要或 rejected 原因。topic 以 intent 参数为准（App 已先行
+ *  selectTopic；此处再用 topicOverride 兜底时序竞态）。 */
+async function applyIntentConsume(params: Record<string, unknown>): Promise<UiIntentOutcome> {
+  if (consuming.value) {
+    return { status: "rejected", reason: t("intent.consumeInProgress") };
+  }
+  const topic = String(params.topic ?? "").trim();
+  if (!topic && !props.topic) {
+    return { status: "rejected", reason: t("messages.topicRequired") };
+  }
+  const strategy = INTENT_STRATEGIES.find((candidate) => candidate === params.offsetStrategy);
+  if (strategy) offsetStrategy.value = strategy;
+  if (params.limit !== undefined && params.limit !== null) limit.value = String(params.limit);
+  if (params.groupId !== undefined) groupId.value = String(params.groupId ?? "");
+  if (params.offsetTime !== undefined) offsetTimeText.value = String(params.offsetTime ?? "");
+  if (Array.isArray(params.partitions)) partitionsText.value = (params.partitions as unknown[]).join(",");
+  if (params.filter !== undefined) filterText.value = String(params.filter ?? "");
+  if (params.keyFilter !== undefined) keyFilterText.value = String(params.keyFilter ?? "");
+  if (params.valueFilter !== undefined) valueFilterText.value = String(params.valueFilter ?? "");
+  if (params.headerFilter !== undefined) headerFilterText.value = String(params.headerFilter ?? "");
+  const matchModes: MatchMode[] = ["contains", "prefix", "exact", "regex"];
+  const matchModeIntent = matchModes.find((candidate) => candidate === params.matchMode);
+  if (matchModeIntent) matchMode.value = matchModeIntent;
+
+  const issues = validateConsumeForm({
+    commit: commit.value,
+    groupId: groupId.value,
+    partitionsText: partitionsText.value,
+    offsetStrategy: offsetStrategy.value,
+    offsetTimeText: offsetTimeText.value,
+    partitionOffsetsText: partitionOffsetsText.value,
+    hasFilters: hasFilters.value,
+  }).map((issue) => t(`messages.${issue.key}`));
+  formIssues.value = issues;
+  if (issues.length > 0) {
+    return { status: "rejected", reason: issues.join("; ") };
+  }
+
+  consuming.value = true;
+  const seq = ++consumeSeq;
+  emit("error", "");
+  try {
+    const response = await kafkaApi.messagesConsume(buildParams(topic || undefined));
+    if (seq !== consumeSeq) {
+      return { status: "rejected", reason: t("intent.consumeInProgress") };
+    }
+    applyResult(response);
+    formOpen.value = false;
+    await nextTick();
+    resultMetaEl.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return { status: "applied", summary: summarizeIntentResult(response) };
+  } catch (cause) {
+    if (seq !== consumeSeq) {
+      return { status: "rejected", reason: t("intent.consumeInProgress") };
+    }
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    emit("error", reason);
+    return { status: "rejected", reason };
+  } finally {
+    if (seq === consumeSeq) consuming.value = false;
+  }
+}
+
+/** kafka_ui_select（action=select）定位：按 partition+offset（可选 topic 校验）
+ *  在当前结果行中查找，命中行打开详情抽屉。 */
+async function applyIntentSelect(params: Record<string, unknown>): Promise<UiIntentOutcome> {
+  const partition = Number.parseInt(String(params.partition ?? ""), 10);
+  const offset = Number.parseInt(String(params.offset ?? ""), 10);
+  if (!Number.isFinite(partition) || !Number.isFinite(offset) || partition < 0 || offset < 0) {
+    return { status: "rejected", reason: "partition and offset are required (non-negative integers)" };
+  }
+  const topic = String(params.topic ?? "").trim();
+  const row = messageRows.value.find(
+    (candidate) => candidate.raw.partition === partition && candidate.raw.offset === offset && (!topic || candidate.raw.topic === topic),
+  );
+  if (!row) {
+    return { status: "rejected", reason: t("intent.selectMissing") };
+  }
+  openDetail(row);
+  return {
+    status: "applied",
+    summary: {
+      count: 1,
+      anchor: `${row.raw.topic}-p${row.raw.partition}-o${row.raw.offset}`,
+      rows: [{ partition: row.raw.partition, offset: row.raw.offset, key: truncateIntentCell(row.raw.key ?? "") }],
+    },
+  };
+}
+
+defineExpose({ applyIntentConsume, applyIntentSelect });
 
 // -- presets ---------------------------------------------------------------------
 
@@ -784,7 +909,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         type="button"
         :disabled="consuming || !topic || tsRangeReversed"
         data-testid="consume-run"
-        @click="runConsume"
+        @click="runConsume()"
       >
         <Play aria-hidden="true" />{{ consuming ? t("messages.running") : t("messages.run") }}
       </button>
@@ -1120,7 +1245,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       </div>
       <span class="footer-spacer" />
       <button class="toolbar-button" type="button" @click="toggleFormOpen">{{ t("messages.uiHideFilters") }}</button>
-      <button class="primary-button primary-button--lg" type="button" :disabled="consuming || !topic || tsRangeReversed" @click="runConsume">
+      <button class="primary-button primary-button--lg" type="button" :disabled="consuming || !topic || tsRangeReversed" @click="runConsume()">
         <Play aria-hidden="true" />{{ consuming ? t("messages.running") : t("messages.run") }}
       </button>
     </div>

@@ -27,6 +27,7 @@ import { deriveSchemaMetadata, useLdapSchemaCache } from "./lib/schemaCache";
 import { deriveDnValuedAttributes } from "./lib/dnAttributes";
 import type { LdapSchema } from "./lib/newEntryTemplates";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
+import { useUiIntent, type UiIntentOutcome, type UiIntentSummary } from "../../../shared/frontend/uiIntent";
 
 interface ConnectionSummary {
   name?: string;
@@ -128,6 +129,69 @@ async function ensureDnAttributes() {
 // 审计事件流（ldap/audit → 最近操作面板）；横幅/通知仍保留作为即时反馈。
 const auditItems = ref<AuditFeedItem[]>([]);
 let auditSeq = 0;
+
+// -- MCP UI intent 通道（M1，shared/frontend/uiIntent 公共层） -----------------
+
+const INTENT_CELL_WIDTH = 120;
+
+// 结果摘要：count + 前 5 行（每 cell 截 120 字符，DN 定位字段不截断），
+// 与 sidecar ldap_search_digest 的 summary 形状一致。
+function summarizeResults(): UiIntentSummary {
+  const rows = results.value.slice(0, 5).map((entry) => {
+    const cells: Record<string, unknown> = { dn: entry.dn };
+    for (const [name, values] of Object.entries(entry.attributes)) {
+      if (Object.keys(cells).length >= 4) break;
+      const value = values?.[0] ?? "";
+      cells[name] = [...value].length > INTENT_CELL_WIDTH ? `${[...value].slice(0, INTENT_CELL_WIDTH).join("")}…` : value;
+    }
+    return cells;
+  });
+  const anchor = typeof rows[0]?.dn === "string" ? rows[0].dn : undefined;
+  return { count: resultCount.value, truncated: resultTruncated.value, rows, ...(anchor ? { anchor } : {}) };
+}
+
+const uiIntentHandlers = {
+  focus: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    const panel = String(params.panel ?? "");
+    if (panel === "schema") {
+      schemaOpen.value = true;
+      uiIntent.reportSnapshot({ panel: "schema" });
+      return { status: "applied", summary: { panel } };
+    }
+    if (panel === "tree" || panel === "search") {
+      // 主区常驻（树/搜索面板无独立开关）；关闭弹窗让目标面板可见。
+      deleteOpen.value = false;
+      modifyDnOpen.value = false;
+      wizardOpen.value = false;
+      return { status: "applied", summary: { panel } };
+    }
+    return { status: "rejected", reason: t("intent.unknownPanel") };
+  },
+  search: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    if (!searchRef.value || busy.value || searching.value) {
+      return { status: "rejected", reason: "search form is not ready" };
+    }
+    const model = searchRef.value.applyIntentSearch(params);
+    await runSearch(model);
+    if (searchError.value) {
+      return { status: "rejected", reason: searchError.value };
+    }
+    showNotice(t("intent.applied"));
+    return { status: "applied", summary: summarizeResults() };
+  },
+  select: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    const dn = String(params.dn ?? "").trim();
+    const row = results.value.find((entry) => entry.dn.toLowerCase() === dn.toLowerCase());
+    if (!row) {
+      return { status: "rejected", reason: t("intent.selectMissing") };
+    }
+    void openEntry(row.dn);
+    return { status: "applied", summary: { count: 1, anchor: row.dn, rows: [{ dn: row.dn }] } };
+  },
+};
+
+// intent 处理器引用 uiIntent.reportSnapshot（快照型 report），声明后装配。
+const uiIntent = useUiIntent("ldap", uiIntentHandlers);
 
 let noticeTimer = 0;
 const unsubscribeAppearance: Array<() => void> = [];
@@ -287,6 +351,17 @@ async function runSearch(model: SearchFormModel) {
     resultTruncated.value = result.truncated === true;
     resultAtLimit.value = sizeLimit !== undefined && resultCount.value === sizeLimit;
     lastSizeLimit.value = sizeLimit;
+    // 快照型 report（设计 §1）：搜索完成后上报工作台状态，`ldap_ui_state`
+    // 不带 intentId 时取用。
+    const anchorDn = results.value[0]?.dn;
+    uiIntent.reportSnapshot({
+      panel: "search",
+      baseDn: model.baseDn,
+      filter: model.filter,
+      count: resultCount.value,
+      truncated: resultTruncated.value,
+      ...(anchorDn ? { anchor: anchorDn } : {}),
+    });
   } catch (cause) {
     if (request === searchRequestSeq) showError(cause, "search");
   } finally {
@@ -337,6 +412,7 @@ async function openEntry(dn: string, initialTab?: "ldif" | "assoc") {
     editorEntry.value = result.entry;
     editorParentDn.value = "";
     editorOpen.value = true;
+    uiIntent.reportSnapshot({ panel: "entry", anchor: dn });
   } catch (cause) {
     if (request === entryRequestSeq) showError(cause, "entry");
   } finally {
@@ -644,6 +720,7 @@ onBeforeUnmount(() => {
   searchRequestSeq++;
   entryRequestSeq++;
   window.clearTimeout(noticeTimer);
+  uiIntent.stop();
   for (const dispose of [...unsubscribeAppearance, ...unsubscribeLocale, ...unsubscribeContext, ...unsubscribeEvent]) dispose();
 });
 </script>

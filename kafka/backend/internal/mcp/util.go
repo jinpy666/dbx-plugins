@@ -5,6 +5,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -22,12 +24,82 @@ func stringField(params map[string]any, key string) string {
 	return ""
 }
 
-// intArg 读取整数参数（float64 = JSON number；缺失/非法返回 0）。
-func intArg(raw any) int {
-	if number, ok := raw.(float64); ok {
-		return int(number)
+// missingRequired 一次枚举全部缺失的 required 参数（ssh 同款语义，
+// MCP_ACCEPTANCE §3.9）：`Missing required parameters: a, b`——LLM 调用方
+// 一轮补齐所有缺口，而不是逐个 fail-fast 往返。keys 按 schema required
+// 顺序传入，报错顺序即该顺序。缺失判定 = 键不存在或显式 null；present-but
+// 类型错误（空串/类型不符）不在此点名，由后续各参数的精确校验单独报出。
+func missingRequired(args map[string]any, keys ...string) error {
+	missing := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, present := args[key]; !present || value == nil {
+			missing = append(missing, key)
+		}
 	}
-	return 0
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("Missing required parameters: %s", strings.Join(missing, ", "))
+}
+
+// coerceInt 整数参数宽容解析：JSON number、整数字符串（LLM 常见把整数写成
+// 字符串的变体，如 partition:"0"）都接受；无法解析返回 (0,false)，由调用方
+// 决定报错还是走缺省——绝不静默按 0 执行。
+func coerceInt(raw any) (int, bool) {
+	switch value := raw.(type) {
+	case float64:
+		return int(value), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
+}
+
+// coerceInt64 coerceInt 的 int64 版（timestampMs / 时间窗等大整数）。
+func coerceInt64(raw any) (int64, bool) {
+	switch value := raw.(type) {
+	case float64:
+		return int64(value), true
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
+}
+
+// coerceBool 布尔参数宽容解析：bool、字符串 "true"/"false"/"1"/"0"/
+// "yes"/"no"/"on"/"off"（大小写不敏感；变体面与 ssh arg_bool 同族一致）；
+// 其余返回 (false,false)。
+func coerceBool(raw any) (bool, bool) {
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off":
+			return false, true
+		}
+		return false, false
+	default:
+		return false, false
+	}
+}
+
+// intArg 读取整数参数（JSON number 或整数字符串；缺失/非法返回 0）。
+func intArg(raw any) int {
+	value, _ := coerceInt(raw)
+	return value
 }
 
 // boolArg 读取布尔参数（缺省 false）。

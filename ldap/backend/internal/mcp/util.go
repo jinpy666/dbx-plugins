@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"io.dbx.ldap.plugin/internal/ldapconn"
@@ -26,12 +27,69 @@ func stringField(params map[string]any, key string) string {
 	return ""
 }
 
-// intArg 读取整数参数（float64 = JSON number；缺失/非法返回 0）。
-func intArg(raw any) int {
-	if number, ok := raw.(float64); ok {
-		return int(number)
+// missingRequired 一次枚举全部缺失的 required 参数（ssh 同款语义，
+// MCP_ACCEPTANCE §3.9）：`Missing required parameters: a, b`——LLM 调用方
+// 一轮补齐所有缺口，而不是逐个 fail-fast 往返。keys 按 schema required
+// 顺序传入，报错顺序即该顺序。缺失判定 = 键不存在或显式 null；present-but
+// 类型错误（空串/类型不符）不在此点名，由后续各参数的精确校验单独报出。
+func missingRequired(args map[string]any, keys ...string) error {
+	missing := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, present := args[key]; !present || value == nil {
+			missing = append(missing, key)
+		}
 	}
-	return 0
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("Missing required parameters: %s", strings.Join(missing, ", "))
+}
+
+// intArg 读取整数参数：JSON number（float64）或字符串数字（LLM 常见变体，
+// 如 sizeLimit:"50"）；缺失/非法返回 0（调用方按各自的缺省语义兜底）。
+func intArg(raw any) int {
+	number, ok := numberArg(raw)
+	if !ok {
+		return 0
+	}
+	return int(number)
+}
+
+// numberArg 数字参数宽容解析：JSON number 直通；字符串 TrimSpace 后按
+// float 解析（"20"/"20.0" 都接受）；其他类型不接受（返回 false，由调用方
+// 决定报错还是缺省）。
+func numberArg(raw any) (float64, bool) {
+	switch value := raw.(type) {
+	case float64:
+		return value, true
+	case string:
+		text := strings.TrimSpace(value)
+		if text == "" {
+			return 0, false
+		}
+		number, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return 0, false
+		}
+		return number, true
+	default:
+		return 0, false
+	}
+}
+
+// scalarString 标量（字符串/数字/布尔）→ 字符串（LDAP 属性值本质是字符串，
+// 数字如 employeeNumber:[123] 应转写而非报错）；其他类型不转换。
+func scalarString(raw any) (string, bool) {
+	switch value := raw.(type) {
+	case string:
+		return value, true
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64), true
+	case bool:
+		return strconv.FormatBool(value), true
+	default:
+		return "", false
+	}
 }
 
 // boolArg 读取布尔参数（缺省 false）。
@@ -49,22 +107,38 @@ func offsetArg(args map[string]any) int {
 	return intArg(args["offset"])
 }
 
-// stringSlice 读取字符串数组参数。
+// stringSlice 读取字符串数组参数（宽容变体）：数组元素接受字符串/数字/布尔
+// （非字符串标量转字符串，防 LLM 传 mail:[123] 被静默丢值）；顶层字符串按
+// 逗号拆分（LLM 常见 "cn,mail" 形态）。空白项丢弃。
 func stringSlice(raw any) []string {
-	items, ok := raw.([]any)
-	if !ok {
+	switch value := raw.(type) {
+	case []any:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			text, ok := scalarString(item)
+			if !ok {
+				continue
+			}
+			if trimmed := strings.TrimSpace(text); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	case string:
+		out := make([]string, 0)
+		for _, part := range strings.Split(value, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	default:
 		return nil
 	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-			out = append(out, strings.TrimSpace(text))
-		}
-	}
-	return out
 }
 
-// attributeMap 解析 add 的 attributes（attr → values[]）。
+// attributeMap 解析 add 的 attributes（attr → values[]）。宽容变体：单字符串
+// 值折算单元素数组（LLM 常见单值形态）、数组元素接受字符串/数字/布尔。
 func attributeMap(raw any) (map[string][]string, error) {
 	object, ok := raw.(map[string]any)
 	if !ok || len(object) == 0 {
@@ -76,21 +150,40 @@ func attributeMap(raw any) (map[string][]string, error) {
 		if attr == "" {
 			return nil, fmt.Errorf("attribute name cannot be empty")
 		}
-		list, ok := values.([]any)
-		if !ok || len(list) == 0 {
+		list, err := stringValuesList(values)
+		if err != nil {
+			return nil, fmt.Errorf("attribute %q %v", attr, err)
+		}
+		if len(list) == 0 {
 			return nil, fmt.Errorf("attribute %q requires a non-empty values array", attr)
 		}
-		parsed := make([]string, 0, len(list))
-		for _, item := range list {
-			text, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("attribute %q values must be strings", attr)
-			}
-			parsed = append(parsed, text)
-		}
-		out[attr] = parsed
+		out[attr] = list
 	}
 	return out, nil
+}
+
+// stringValuesList 属性值列表宽容解析：单字符串 → 单元素数组；数组元素接受
+// 字符串/数字/布尔；其他形状明确报错（不静默吞值）。
+func stringValuesList(raw any) ([]string, error) {
+	switch value := raw.(type) {
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return nil, nil
+		}
+		return []string{value}, nil
+	case []any:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			text, ok := scalarString(item)
+			if !ok {
+				return nil, fmt.Errorf("values must be strings")
+			}
+			out = append(out, text)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("values must be an array of strings")
+	}
 }
 
 // changeList 解析 modify 的 changes。
@@ -142,6 +235,38 @@ func containsFold(names []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// normalizePanelArg UI focus 面板名归一化（大小写不敏感；schema 声明 enum
+// search|tree|schema）：非法值报错并列出合法值——与其发一个必然被前端
+// rejected 的 intent 浪费一轮，不如本地直接给出可行动错误。
+func normalizePanelArg(raw string) (string, error) {
+	switch panel := strings.ToLower(strings.TrimSpace(raw)); panel {
+	case "search", "tree", "schema":
+		return panel, nil
+	default:
+		return "", fmt.Errorf("panel must be search, tree, or schema (got %q)", strings.TrimSpace(raw))
+	}
+}
+
+// normalizeScopeArg 搜索 scope 归一化（大小写不敏感 + 常见别名；schema 声明
+// enum base|one|sub）：空串返回空（由连接/服务端按缺省 sub）；非法值报错
+// 并列出合法值，不静默回退——scope 决定结果集范围，含糊兜底会让 AI 误判
+// 匹配数量。
+func normalizeScopeArg(raw string) (string, error) {
+	scope := strings.ToLower(strings.TrimSpace(raw))
+	switch scope {
+	case "":
+		return "", nil
+	case "base", "baseobject":
+		return "base", nil
+	case "one", "singlelevel", "single-level":
+		return "one", nil
+	case "sub", "subtree", "whole-subtree", "wholesubtree":
+		return "sub", nil
+	default:
+		return "", fmt.Errorf("scope must be base, one, or sub (aliases baseObject/singleLevel/subtree accepted; got %q)", strings.TrimSpace(raw))
+	}
 }
 
 // projectCursorAttributes cursor 行的投影属性（仅显式请求的属性；DN 定位

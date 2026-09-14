@@ -4,6 +4,7 @@ package mcp
 // shared/frontend/README.zh-CN.md）。
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -81,6 +82,32 @@ func TestAggregateSubtreeCountsAndDistinct(t *testing.T) {
 	}
 }
 
+// S-DIG-ZERO filter 命中 0：stats 的 objectClass/subtrees 键恒在（空 map
+// 也输出 {}，不带 omitempty 吞键）——AI 的响应形状在零命中时不漂移；
+// distinct 段缺省省略（可选）。
+func TestAggregateZeroMatchKeepsShapeKeys(t *testing.T) {
+	result := AggregateDigest(DigestInput{Entries: nil, BaseDN: "dc=a", Filter: "(uid=nope)", GroupLimit: 20, TopN: 10, SampleRows: 5})
+	if result.Matched != 0 || len(result.Sample) != 0 {
+		t.Fatalf("zero match mismatch: %d %d", result.Matched, len(result.Sample))
+	}
+	payload, err := json.Marshal(result.Stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	objectClass, hasObjectClass := decoded["objectClass"].(map[string]any)
+	subtrees, hasSubtrees := decoded["subtrees"].(map[string]any)
+	if !hasObjectClass || len(objectClass) != 0 || !hasSubtrees || len(subtrees) != 0 {
+		t.Fatalf("zero match must keep empty objectClass/subtrees objects: %s", payload)
+	}
+	if _, hasDistinct := decoded["distinct"]; hasDistinct {
+		t.Fatal("distinct must stay absent without distinctAttr")
+	}
+}
+
 func TestCellTruncationWidth(t *testing.T) {
 	long := strings.Repeat("值", 200)
 	truncated := DigestCellTruncate(long, 120)
@@ -119,5 +146,25 @@ func TestAggregateSampleClamped(t *testing.T) {
 	few := AggregateDigest(DigestInput{Entries: entries[:2], GroupLimit: 20, TopN: 10, SampleRows: 5})
 	if len(few.Sample) != 2 {
 		t.Fatalf("sample below cap mismatch: %d", len(few.Sample))
+	}
+}
+
+// S-DIG-PROJ digest 远端投影组装：投影 + objectClass + distinctAttr 三者
+// 去重合流——distinctAttr 单独给（不带 attributes）时必须进投影，否则
+// distinct 聚合恒空（容器实测 M15 的单测锚点）。
+func TestBuildDigestSearchAttrs(t *testing.T) {
+	onlyDistinct := buildDigestSearchAttrs(nil, "mail")
+	if len(onlyDistinct) != 2 || !containsFold(onlyDistinct, "objectClass") || !containsFold(onlyDistinct, "mail") {
+		t.Fatalf("distinct-only must project distinctAttr + objectClass: %v", onlyDistinct)
+	}
+	// 投影里已有时不重复追加（大小写不敏感）。
+	deduped := buildDigestSearchAttrs([]string{"Mail", "cn"}, "mail")
+	if len(deduped) != 3 {
+		t.Fatalf("duplicate distinctAttr must not repeat: %v", deduped)
+	}
+	// 无 distinctAttr：保持「投影 + objectClass」既有形状。
+	plain := buildDigestSearchAttrs([]string{"cn"}, "")
+	if len(plain) != 2 || !containsFold(plain, "objectClass") || plain[0] != "cn" {
+		t.Fatalf("plain projection mismatch: %v", plain)
 	}
 }

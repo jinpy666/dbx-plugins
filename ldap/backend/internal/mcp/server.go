@@ -34,14 +34,17 @@ type Server struct {
 }
 
 // NewServer 构造 MCP Server（settings 从数据目录加载，损坏回落默认）。
+// cursor 会话参数随加载的 settings 初始化（cursorTtlSecs/maxCursorSessions/
+// maxCursorRows，同族 files 对齐）。
 func NewServer(svc *ldapconn.Service, st *store.Store) *Server {
+	settings := LoadSettings(st)
 	return &Server{
 		svc:      svc,
 		st:       st,
 		intents:  NewIntentStore(0, 0),
-		cursors:  NewCursorStore(0, 0, 0),
+		cursors:  NewCursorStore(time.Duration(settings.CursorTtlSecs)*time.Second, settings.MaxCursorSessions, settings.MaxCursorRows),
 		confirms: NewConfirmStore(),
-		settings: LoadSettings(st),
+		settings: settings,
 		now:      time.Now,
 	}
 }
@@ -62,7 +65,8 @@ func (s *Server) SettingsGet() map[string]any {
 	}
 }
 
-// SettingsSet 处理 `mcp/settings/set`：白名单部分更新 + 持久化。
+// SettingsSet 处理 `mcp/settings/set`：白名单部分更新 + 持久化 + cursor
+// 会话参数即时生效（下一次 digest 物化按新 TTL/容量/行上限执行）。
 func (s *Server) SettingsSet(updates map[string]any) (map[string]any, error) {
 	if updates == nil {
 		return nil, errors.New("updates object is required")
@@ -76,6 +80,8 @@ func (s *Server) SettingsSet(updates map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.cursors.Configure(time.Duration(settings.CursorTtlSecs)*time.Second, settings.MaxCursorSessions, settings.MaxCursorRows)
+	s.confirms.SetTTL(time.Duration(settings.ConfirmTtlSecs) * time.Second)
 	if err := SaveSettings(s.st, settings); err != nil {
 		return nil, fmt.Errorf("persist mcp settings: %w", err)
 	}
@@ -106,7 +112,10 @@ func (s *Server) ReportUIState(params map[string]any) error {
 		return fmt.Errorf("status must be applied or rejected")
 	}
 	if !s.intents.Report(intentID, intentState, summary, strings.TrimSpace(stringField(params, "reason")), s.now()) {
-		return fmt.Errorf("intent %q is unknown or expired", intentID)
+		// 未知/过期 intentId 给自纠指引（对齐 files uiState 同款语义）：
+		// intent 是进程内状态（60s 过期），重发 ldap_ui_* 或省略 intentId
+		// 读最新快照。
+		return fmt.Errorf("intent %q is unknown or expired (intents are per-process and expire after 60s); re-issue the ldap_ui_* call, or omit intentId to read the latest snapshot", intentID)
 	}
 	return nil
 }
@@ -138,7 +147,7 @@ func (s *Server) Call(tool string, arguments map[string]any) (map[string]any, er
 	case "ldap_entry_write":
 		result, err = s.entryWrite(arguments)
 	default:
-		return nil, fmt.Errorf("unknown tool: %s", tool)
+		return nil, fmt.Errorf("unknown tool: %s (available: %s)", tool, strings.Join(toolNames(), ", "))
 	}
 	if err != nil {
 		return nil, err
@@ -152,41 +161,52 @@ func (s *Server) Call(tool string, arguments map[string]any) (map[string]any, er
 // 生成 intentId → 状态表登记 pending → 发 `ldap/ui/intent` 事件 → 等
 // report（ReportWaitMs）→ 返回 {intentId, state, summary}。
 func (s *Server) uiSearch(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "filter"); err != nil {
+		return nil, err
+	}
 	filter := strings.TrimSpace(stringField(args, "filter"))
 	if filter == "" {
-		return nil, errors.New("filter is required")
+		return nil, errors.New("filter is required (RFC 4515, e.g. (objectClass=inetOrgPerson))")
 	}
+	scope, err := normalizeScopeArg(stringField(args, "scope"))
+	if err != nil {
+		return nil, err
+	}
+	// intent params 归一化后再下发（scope 小写、attributes 去重、sizeLimit
+	// 转整数），前端拿到即可用的形状，不再各自做变体兼容；空值省键。
 	params := map[string]any{
 		"baseDn":       strings.TrimSpace(stringField(args, "baseDn")),
 		"filter":       filter,
-		"scope":        strings.TrimSpace(stringField(args, "scope")),
-		"sizeLimit":    args["sizeLimit"],
 		"connectionId": strings.TrimSpace(stringField(args, "connectionId")),
 	}
-	if attributes, ok := args["attributes"].([]any); ok {
-		names := make([]string, 0, len(attributes))
-		for _, raw := range attributes {
-			if name := strings.TrimSpace(fmt.Sprintf("%v", raw)); name != "" {
-				names = append(names, name)
-			}
-		}
-		params["attributes"] = names
+	if scope != "" {
+		params["scope"] = scope
+	}
+	if attrs := normalizedAttrNames(stringSlice(args["attributes"])); len(attrs) > 0 {
+		params["attributes"] = attrs
+	}
+	if sizeLimit := intArg(args["sizeLimit"]); sizeLimit > 0 {
+		params["sizeLimit"] = sizeLimit
 	}
 	return s.runIntent("search", params), nil
 }
 
 func (s *Server) uiFocus(args map[string]any) (map[string]any, error) {
 	panel := strings.TrimSpace(stringField(args, "panel"))
-	if panel == "" {
-		return nil, errors.New("panel is required (search | tree | schema)")
+	normalized, err := normalizePanelArg(panel)
+	if err != nil {
+		return nil, err
 	}
 	return s.runIntent("focus", map[string]any{
-		"panel":        panel,
+		"panel":        normalized,
 		"connectionId": strings.TrimSpace(stringField(args, "connectionId")),
 	}), nil
 }
 
 func (s *Server) uiSelect(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "dn"); err != nil {
+		return nil, err
+	}
 	dn := strings.TrimSpace(stringField(args, "dn"))
 	if dn == "" {
 		return nil, errors.New("dn is required")
@@ -269,9 +289,16 @@ func (s *Server) uiState(args map[string]any) (map[string]any, error) {
 
 // --- 元发现 ---
 
+// schemaNameLimit ldap_ui_schema 的名称清单截断上限（防响应膨胀）。
+const schemaNameLimit = 300
+
 // uiSchema 工具 `ldap_ui_schema`：schema 缓存的 objectClass/attributeType
-// 名称清单（帮 AI 构造合法 filter；名称截到 300 个防响应膨胀）。
+// 名称清单（帮 AI 构造合法 filter；名称截到 schemaNameLimit 个防响应膨胀，
+// 截断以 *Truncated 标志明示）。形状归 renderSchemaNames（纯函数可测）。
 func (s *Server) uiSchema(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "connectionId"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	if connectionID == "" {
 		return nil, errors.New("connectionId is required")
@@ -280,56 +307,83 @@ func (s *Server) uiSchema(args map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	const nameLimit = 300
-	attributeNames := clampStrings(metadata.AttributeNames, nameLimit)
+	return renderSchemaNames(metadata), nil
+}
+
+// renderSchemaNames 把 schema 元数据折算为 ldap_ui_schema 响应形状：
+// attributeNames 保持服务端顺序、objectClassNames 排序输出，各自按
+// schemaNameLimit 截断并带截断标志。
+func renderSchemaNames(metadata ldapconn.LDAPSchemaMetadata) map[string]any {
+	attributeNames := clampStrings(metadata.AttributeNames, schemaNameLimit)
 	classNames := make([]string, 0, len(metadata.ObjectClassAttributes))
 	for name := range metadata.ObjectClassAttributes {
 		classNames = append(classNames, name)
 	}
 	sortStrings(classNames)
-	classNames = clampStrings(classNames, nameLimit)
+	classNames = clampStrings(classNames, schemaNameLimit)
 	return map[string]any{
 		"attributeNames":          attributeNames,
-		"attributeNamesTruncated": len(metadata.AttributeNames) > nameLimit,
+		"attributeNamesTruncated": len(metadata.AttributeNames) > schemaNameLimit,
 		"objectClassNames":        classNames,
-		"objectClassTruncated":    len(metadata.ObjectClassAttributes) > nameLimit,
-	}, nil
+		"objectClassTruncated":    len(metadata.ObjectClassAttributes) > schemaNameLimit,
+	}
 }
 
 // --- 本地读（设计 §3） ---
 
-// digestScanLimit 未显式给 sizeLimit 时的扫描上限（本地聚合在 sidecar 完成，
-// 上限只约束远端扫描量）。
-const digestScanLimit = 1000
+// buildDigestSearchAttrs 组装 digest 远端投影：显式请求的投影 + objectClass
+// （objectClass 分布聚合依赖）+ distinctAttr（distinct 聚合依赖——LLM 只传
+// distinctAttr 不传 attributes 时，缺投影会让 distinct 恒空，这里补齐）。
+func buildDigestSearchAttrs(projected []string, distinctAttr string) []string {
+	searchAttrs := append([]string{}, projected...)
+	if !containsFold(searchAttrs, "objectClass") {
+		searchAttrs = append(searchAttrs, "objectClass")
+	}
+	if distinctAttr != "" && !containsFold(searchAttrs, distinctAttr) {
+		searchAttrs = append(searchAttrs, distinctAttr)
+	}
+	return searchAttrs
+}
 
 // searchDigest 工具 `ldap_search_digest`：filter 服务端执行 + 本地聚合 +
 // 物化 cursor。
 func (s *Server) searchDigest(args map[string]any) (map[string]any, error) {
+	// 缺参一次枚举（schema required = [connectionId, filter]，ssh 同款）：
+	// filter 缺失不再静默回退 (objectClass=*) 全扫——schema 已声明 required，
+	// 回退会让"忘传 filter"变成整树扫描（准确性 + 成本）。
+	if err := missingRequired(args, "connectionId", "filter"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	if connectionID == "" {
 		return nil, errors.New("connectionId is required")
 	}
 	filter := strings.TrimSpace(stringField(args, "filter"))
 	if filter == "" {
-		filter = "(objectClass=*)"
+		return nil, errors.New("filter is required (RFC 4515, e.g. (objectClass=inetOrgPerson))")
 	}
+	scope, err := normalizeScopeArg(stringField(args, "scope"))
+	if err != nil {
+		return nil, err
+	}
+	distinctAttr := strings.TrimSpace(stringField(args, "distinctAttr"))
 	requested := stringSlice(args["attributes"])
 	projected := normalizedAttrNames(requested)
-	// objectClass 供本地聚合； projected 保持"显式请求的投影"。
-	searchAttrs := append([]string{}, projected...)
-	if !containsFold(searchAttrs, "objectClass") {
-		searchAttrs = append(searchAttrs, "objectClass")
-	}
+	searchAttrs := buildDigestSearchAttrs(projected, distinctAttr)
+
+	s.mu.Lock()
+	settings := s.settings
+	s.mu.Unlock()
 
 	sizeLimit := intArg(args["sizeLimit"])
 	if sizeLimit <= 0 {
-		sizeLimit = digestScanLimit
+		sizeLimit = settings.DigestScanLimit
 	}
 	result, err := s.svc.Search(getContext(), ldapconn.LDAPSearchRequest{
 		ConnectionID: connectionID,
 		BaseDN:       strings.TrimSpace(stringField(args, "baseDn")),
 		Filter:       filter,
-		Scope:        strings.TrimSpace(stringField(args, "scope")),
+		Scope:        scope,
 		Attributes:   searchAttrs,
 		SizeLimit:    sizeLimit,
 		PageSize:     500,
@@ -337,10 +391,6 @@ func (s *Server) searchDigest(args map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	s.mu.Lock()
-	settings := s.settings
-	s.mu.Unlock()
 
 	// 物化 cursor：DN + 投影属性（DN 不截断，属性值过截断宽度）。
 	rows := make([]CursorRow, 0, len(result.Entries))
@@ -374,7 +424,7 @@ func (s *Server) searchDigest(args map[string]any) (map[string]any, error) {
 		Entries:      result.Entries,
 		BaseDN:       result.BaseDN,
 		Filter:       result.Filter,
-		DistinctAttr: strings.TrimSpace(stringField(args, "distinctAttr")),
+		DistinctAttr: distinctAttr,
 		Width:        settings.CellWidth,
 		GroupLimit:   settings.DigestGroupLimit,
 		TopN:         settings.DigestTopN,
@@ -386,21 +436,36 @@ func (s *Server) searchDigest(args map[string]any) (map[string]any, error) {
 	return baseDigest, nil
 }
 
-// cursorNext 工具 `ldap_cursor_next`：分批取定位字段行（n ≤20/批）。
+// cursorNext 工具 `ldap_cursor_next`：分批取定位字段行（n ≤20/批）。错误
+// 消息携带实际生效的 TTL/容量（mcp/settings 可调，files 同款「报文携带实际
+// 生效值」语义），指引始终可行动。
 func (s *Server) cursorNext(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "cursorId"); err != nil {
+		return nil, err
+	}
 	cursorID := strings.TrimSpace(stringField(args, "cursorId"))
 	if cursorID == "" {
 		return nil, errors.New("cursorId is required")
 	}
+	s.mu.Lock()
+	cursorTTL := s.settings.CursorTtlSecs
+	cursorSessions := s.settings.MaxCursorSessions
+	s.mu.Unlock()
 	result, status := s.cursors.Next(cursorID, NextRequest{N: intArg(args["n"]), Offset: offsetArg(args)}, s.now())
 	switch status {
 	case LookupExpired:
-		return nil, errors.New("cursor expired (10 minutes); re-run ldap_search_digest")
+		return nil, fmt.Errorf("cursor expired (TTL %ds); re-run ldap_search_digest to materialize a fresh cursor", cursorTTL)
 	case LookupUnknown:
-		return nil, fmt.Errorf("unknown cursorId: %s", cursorID)
+		return nil, fmt.Errorf("unknown cursorId: %s — the cursor may have expired (TTL %ds) or been evicted (at most %d digest sessions are kept); re-run ldap_search_digest", cursorID, cursorTTL, cursorSessions)
+	}
+	// 空批（读尽/越界 clamp）也返回 [] 而非 null——JSON null 会破坏 AI 客户端
+	// 对 rows 数组的形状假设。
+	rows := result.Rows
+	if rows == nil {
+		rows = []CursorRow{}
 	}
 	return map[string]any{
-		"rows":       result.Rows,
+		"rows":       rows,
 		"offset":     result.Offset,
 		"nextOffset": result.NextOffset,
 		"done":       result.Done,
@@ -410,8 +475,10 @@ func (s *Server) cursorNext(args map[string]any) (map[string]any, error) {
 // --- 写（设计 §4 两阶段） ---
 
 // writeRequest 两阶段 hash 绑定的 canonical 形状（json.Marshal 结构体输出
-// 确定，hash 稳定）。
+// 确定，hash 稳定）。ConnectionID 参与 hash：token 换连接复用即作废（防
+// preview 在连接 A 签发、confirm 在连接 B 执行的跨连接误删）。
 type writeRequest struct {
+	ConnectionID string                      `json:"connectionId,omitempty"`
 	Action       string                      `json:"action"`
 	DN           string                      `json:"dn"`
 	Recursive    bool                        `json:"recursive,omitempty"`
@@ -427,6 +494,11 @@ const sourceMCP = "mcp"
 // entryWrite 工具 `ldap_entry_write`：add/modify 单阶段直执行；delete（含
 // recursive）与 modifyDn 强制两阶段（preview + confirmToken）。
 func (s *Server) entryWrite(args map[string]any) (map[string]any, error) {
+	// 缺参一次枚举（schema required = [connectionId, action, dn]，按声明
+	// 顺序全点名，ssh 同款）；present-but-空串仍由下方逐参数精确点名。
+	if err := missingRequired(args, "connectionId", "action", "dn"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	dn := strings.TrimSpace(stringField(args, "dn"))
 	action := strings.ToLower(strings.TrimSpace(stringField(args, "action")))
@@ -443,8 +515,19 @@ func (s *Server) entryWrite(args map[string]any) (map[string]any, error) {
 	if profile.ReadOnly {
 		return nil, fmt.Errorf("connection %q is read-only; write tools are refused", profile.Name)
 	}
+	// 预检前置（MCP_ACCEPTANCE §5）：DN 结构校验与写白名单在两阶段 preview
+	// 签发一次性令牌之前完成——注入风格 DN（换行/空字节）与越白名单目标
+	// 不再"预览成功 → 确认才报错"地白烧令牌，读只读/白名单下的 preview
+	// 同样拒绝（第二道门在执行期门之前再加一道，纵深防御）。
+	normalizedDN, err := ldapconn.NormalizeWriteDN(dn)
+	if err != nil {
+		return nil, err
+	}
+	if err := ldapconn.EnsureWriteBaseAllowed(profile, normalizedDN); err != nil {
+		return nil, err
+	}
 
-	req := writeRequest{Action: action, DN: dn}
+	req := writeRequest{ConnectionID: connectionID, Action: action, DN: dn}
 	switch action {
 	case "add":
 		attributes, err := attributeMap(args["attributes"])
@@ -548,7 +631,7 @@ func (s *Server) twoPhaseWrite(connectionID string, req writeRequest, args map[s
 		}
 		return out, nil
 	case ConfirmExpired:
-		return nil, errors.New("confirmToken expired (60s); request a new preview")
+		return nil, fmt.Errorf("confirmToken expired (TTL %ds); request a new preview", int(s.confirms.TTL().Seconds()))
 	case ConfirmHashMismatch:
 		return nil, errors.New("arguments changed since the preview; request a new confirmToken")
 	default:

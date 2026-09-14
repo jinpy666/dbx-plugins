@@ -153,3 +153,27 @@
 
 - 补记：Mimosa L3 拦截 auth_dial_m3_test.go krb_password 哨兵字面量（非真实凭据，
   形态触线）——改为 fmt.Sprintf 运行时拼装（krbSentinel），go 四包复测全绿。
+
+- **MCP × ZCode 测试体系沉淀（2026-09-14，接入真机测试两轮后）**：新增
+  `shared/TEST_PLAN_MCP_ZCODE.zh-CN.md`（L0-L4 五层矩阵、现状基线、缺口
+  登记 G1-G9、ZCode 真机接入可重复清单、回归触发矩阵）。落地处置：G1
+  `mcp_schema_check.py` 新增 A+ 严格宿主透镜（zod 口径核对 tools/list 原始
+  信封，`required:null` 类形状问题在离线层拦截——本轮 required:null 真机
+  事故的根因即旧静态校验把非 list required 静默折算为空；正/负向用例均验
+  证，三插件复跑 CLEAN）；G2 `test-all.sh` 补 kafka 段（原仅三插件，kafka
+  完全不在族级编排；bash -n 过）；G4 `MCP_ACCEPTANCE` §2 改错误形状按模式
+  分流（桥 -32000 / stdio isError）+ 严格宿主红线小节。待办登记：stderr
+  凭据泄漏检查自动化（G5，已手工实证 ldap happy path 干净）、容器造数全面
+  run 前缀化（G6）、深水区（G7）、ssh 按 §5 清单复验（G9）。未 git commit。
+
+- **分插件 MCP 快速调用 skills（2026-09-14，参考 ssh 用户级 skill 的「MCP 侧
+  约定」模式）**：新增 `.agents/skills/dbx-files-mcp` / `dbx-ldap-mcp` /
+  `dbx-kafka-mcp` 三个任务导向 skill（意图→工具地图、连接寻址标准顺序、硬
+  限制表、高频坑），与跨插件 `dbx-mcp-usage`（配置+通用坑+测试入口）互补；
+  AGENTS.md skill 表已注册并交叉引用。**准确性门槛：所有写入 skill 的调用
+  模式均经 zcode 内真实工具抽验**，抽验纠正两处易错点并回写 skill：ldap
+  modify 用 `changes:[{operation∈add|replace|delete,attribute,values}]`（精
+  确小写，非 attributes 整包）、默认投影只带 objectClass 读值必须传
+  `attributes` 列表；另实测 files glob `**/*.txt`、kafka fieldFilters
+  `$.from` eq 过滤符合文档。测试数据已清理（ldap modify-test 两阶段删除）。
+  未 git commit。

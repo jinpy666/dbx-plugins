@@ -16,6 +16,11 @@ func TestSettingsDefaultsAndClamp(t *testing.T) {
 	if settings.ReportWaitMs != 5000 || settings.CellWidth != 120 || settings.ResponseLimitBytes != 16*1024 {
 		t.Fatalf("unexpected defaults: %+v", settings)
 	}
+	// 同族对齐字段默认值（files cursor 三件套 + kafka digestScanLimit）。
+	if settings.DigestScanLimit != 1000 || settings.MaxCursorRows != 10000 ||
+		settings.CursorTtlSecs != 600 || settings.MaxCursorSessions != 8 {
+		t.Fatalf("unexpected cursor/scan defaults: %+v", settings)
+	}
 	// 越界值一律收敛回设计硬上限（损坏文件 / 手改文件不可放大限制）。
 	clamped := Settings{
 		ReportWaitMs:       999999,
@@ -24,11 +29,17 @@ func TestSettingsDefaultsAndClamp(t *testing.T) {
 		DigestTopN:         50,
 		DigestSampleRows:   99,
 		DigestRowLimit:     1000,
+		DigestScanLimit:    1 << 20,
+		MaxCursorRows:      1 << 21,
+		CursorTtlSecs:      1 << 20,
+		MaxCursorSessions:  999,
 		ResponseLimitBytes: 1 << 30,
 	}.Sanitized()
 	if clamped.ReportWaitMs != 30000 || clamped.CellWidth != 1 ||
 		clamped.DigestGroupLimit != 20 || clamped.DigestTopN != 10 ||
 		clamped.DigestSampleRows != 5 || clamped.DigestRowLimit != 20 ||
+		clamped.DigestScanLimit != 100000 || clamped.MaxCursorRows != 100000 ||
+		clamped.CursorTtlSecs != 3600 || clamped.MaxCursorSessions != 32 ||
 		clamped.ResponseLimitBytes != 1024*1024 {
 		t.Fatalf("clamp mismatch: %+v", clamped)
 	}
@@ -76,6 +87,26 @@ func TestSettingsUpdateWhitelistAndClamp(t *testing.T) {
 	// 拒绝不污染当前值：再次 set 合法值仍然成功。
 	if _, err := applySettingsUpdate(updated, map[string]any{"digestRowLimit": float64(5)}); err != nil {
 		t.Fatal(err)
+	}
+	// 同族对齐字段在白名单内可 set（字符串数字变体同样接受），越界拒绝。
+	tuned, err := applySettingsUpdate(updated, map[string]any{
+		"digestScanLimit":   "500",
+		"maxCursorRows":     float64(5000),
+		"cursorTtlSecs":     float64(120),
+		"maxCursorSessions": float64(4),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tuned.DigestScanLimit != 500 || tuned.MaxCursorRows != 5000 ||
+		tuned.CursorTtlSecs != 120 || tuned.MaxCursorSessions != 4 {
+		t.Fatalf("cursor/scan tuning mismatch: %+v", tuned)
+	}
+	if _, err := applySettingsUpdate(updated, map[string]any{"maxCursorSessions": float64(33)}); err == nil {
+		t.Fatal("maxCursorSessions above ceiling must be rejected")
+	}
+	if _, err := applySettingsUpdate(updated, map[string]any{"cursorTtlSecs": "long"}); err == nil {
+		t.Fatal("non-numeric cursorTtlSecs must be rejected")
 	}
 }
 

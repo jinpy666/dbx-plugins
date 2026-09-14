@@ -40,6 +40,15 @@ type Settings struct {
 	// DigestScanLimit kafka 域内扩展：digest 扫描上限（maxScanRecords 语义，
 	// 默认 1000；本地聚合在 sidecar 完成，上限只约束集群扫描量）。
 	DigestScanLimit int `json:"digestScanLimit"`
+	// CursorTtlSecs digest 会话翻页游标 TTL（缺省 600s；同族 files
+	// cursorTtlSecs 同款语义，过期报文携带实际生效值）。
+	CursorTtlSecs int `json:"cursorTtlSecs"`
+	// MaxCursorSessions cursor 会话 LRU 容量（缺省 8；同族 files
+	// maxCursorSessions 同款语义）。
+	MaxCursorSessions int `json:"maxCursorSessions"`
+	// ConfirmTtlSecs 两阶段 confirmToken TTL（缺省 60s；mcp/settings/set
+	// 可调 10–600，files/ldap 同名同范围——已签发令牌的过期点不追溯）。
+	ConfirmTtlSecs int `json:"confirmTtlSecs"`
 	// ResponseLimitBytes 单工具响应上限（缺省 16 KiB）。
 	ResponseLimitBytes int `json:"responseLimitBytes"`
 }
@@ -54,27 +63,34 @@ func DefaultSettings() Settings {
 		DigestSampleRows:   5,
 		DigestRowLimit:     20,
 		DigestScanLimit:    1000,
+		CursorTtlSecs:      600,
+		MaxCursorSessions:  8,
+		ConfirmTtlSecs:     60,
 		ResponseLimitBytes: defaultResponseLimitBytes,
 	}
 }
 
-// settingsField 声明一个可 set 字段的取值边界（1..ceiling）。
+// settingsField 声明一个可 set 字段的取值边界（min..ceiling；min 缺省 1）。
 type settingsField struct {
 	name    string
 	ceiling int
+	min     int
 }
 
 // settingsFields mcp/settings/set 的白名单字段表：不在表内的字段一律拒绝
 // （白名单而非黑名单，对齐 ssh settings_set 语义）。
 var settingsFields = []settingsField{
-	{"reportWaitMs", 30000},
-	{"cellWidth", 2000},
-	{"digestGroupLimit", 20},
-	{"digestTopN", 10},
-	{"digestSampleRows", 5},
-	{"digestRowLimit", 20},
-	{"digestScanLimit", 100000},
-	{"responseLimitBytes", 1024 * 1024},
+	{"reportWaitMs", 30000, 1},
+	{"cellWidth", 2000, 1},
+	{"digestGroupLimit", 20, 1},
+	{"digestTopN", 10, 1},
+	{"digestSampleRows", 5, 1},
+	{"digestRowLimit", 20, 1},
+	{"digestScanLimit", 100000, 1},
+	{"cursorTtlSecs", 3600, 10},
+	{"maxCursorSessions", 32, 1},
+	{"confirmTtlSecs", 600, 10},
+	{"responseLimitBytes", 1024 * 1024, 1},
 }
 
 // Sanitized 把每个字段收敛进 1..上限（加载与 set 后都执行，越界配置不可达）。
@@ -95,6 +111,15 @@ func (s Settings) Sanitized() Settings {
 	s.DigestSampleRows = clamp(s.DigestSampleRows, 5)
 	s.DigestRowLimit = clamp(s.DigestRowLimit, 20)
 	s.DigestScanLimit = clamp(s.DigestScanLimit, 100000)
+	s.CursorTtlSecs = clamp(s.CursorTtlSecs, 3600)
+	if s.CursorTtlSecs < 10 {
+		s.CursorTtlSecs = 10
+	}
+	s.MaxCursorSessions = clamp(s.MaxCursorSessions, 32)
+	s.ConfirmTtlSecs = clamp(s.ConfirmTtlSecs, 600)
+	if s.ConfirmTtlSecs < 10 {
+		s.ConfirmTtlSecs = 10
+	}
 	s.ResponseLimitBytes = clamp(s.ResponseLimitBytes, 1024*1024)
 	return s
 }
@@ -138,6 +163,9 @@ func LoadSettings(st *store.Store) Settings {
 	if persisted.ResponseLimitBytes > 0 {
 		settings.ResponseLimitBytes = persisted.ResponseLimitBytes
 	}
+	if persisted.ConfirmTtlSecs > 0 {
+		settings.ConfirmTtlSecs = persisted.ConfirmTtlSecs
+	}
 	return settings.Sanitized()
 }
 
@@ -161,8 +189,8 @@ func applySettingsUpdate(settings Settings, updates map[string]any) (Settings, e
 			return settings, fmt.Errorf("%s must be a positive integer", field.name)
 		}
 		value := int(number)
-		if value < 1 || value > field.ceiling {
-			return settings, fmt.Errorf("%s must be between 1 and %d", field.name, field.ceiling)
+		if value < field.min || value > field.ceiling {
+			return settings, fmt.Errorf("%s must be between %d and %d", field.name, field.min, field.ceiling)
 		}
 		switch field.name {
 		case "reportWaitMs":
@@ -179,6 +207,12 @@ func applySettingsUpdate(settings Settings, updates map[string]any) (Settings, e
 			settings.DigestRowLimit = value
 		case "digestScanLimit":
 			settings.DigestScanLimit = value
+		case "cursorTtlSecs":
+			settings.CursorTtlSecs = value
+		case "maxCursorSessions":
+			settings.MaxCursorSessions = value
+		case "confirmTtlSecs":
+			settings.ConfirmTtlSecs = value
 		case "responseLimitBytes":
 			settings.ResponseLimitBytes = value
 		}

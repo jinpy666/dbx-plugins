@@ -1111,3 +1111,583 @@ TopicTree 57.89 / MessagesPanel 61.75 / api 70.17 / ProducePanel 72.86。
   手动跑）；digest 扫描依赖一次性 Consume 超时窗（timeoutMs 缺省 5s，超大
   扫描量场景建议在 `maxScanRecords` 内收敛）；ui_test.mjs 未覆盖 intent
   真机流（与 ldap 同待 host-e2e）。
+
+### 补充（2026-09-12 晚）：真机 host-e2e 验收
+
+- smoke_mcp 纳入 `scripts/test.sh`（smoke 段后自动重建 sidecar 并运行，
+  dev 集群用例自动 SKIP）；实测 10 PASS + 1 SKIP（无集群）。
+- `ui_test.mjs` 新增 intent 走查用例（3/3 全绿）：mockDbxHost 暴露
+  `emitKafkaUiIntent`，用例验证 emit → MessagesPanel consume 表单 →
+  `kafka/ui/state/report` applied 全链（topic=codec-lab, earliest）。
+- 重新打包 v0.1.29 装入隔离 app-data；插件中心显示 DBX Kafka v0.1.29
+  兼容。桌面 HTTP MCP 工具面验证待服务开启，
+  见 shared/PROGRESS-HOST-SUBREPO.zh-CN.md §27。
+
+### 补充（2026-09-12）：standalone `--mcp` stdio 模式（设计 §0.2/§5）
+
+真机验证确认独立 stdio 是插件 MCP 工具被 AI 客户端调用的现实暴露路径
+（ssh 基线同款；ldap Go 版先行，kafka 同构移植）：
+
+- **入口与互斥**：`main.go` 新增 `--mcp` 标志分发（`mcpStdioRequested`
+  精确匹配）→ `runMcpStdio` 进入 stdio MCP 服务器模式，不装配
+  dbxpluginsdk.Server/Emitter/流式会话（同一进程只跑插件协议或 stdio MCP
+  其一；MCP 仍不订阅 stream）。
+- **`internal/mcp/stdio.go`**（ssh `run_mcp_stdio` 的 Go 移植，与 ldap
+  同构）：MCP 2024-11-05 换行分隔 JSON-RPC；initialize
+  （serverInfo.name=io.dbx.kafka）、notifications/initialized（不回包）、
+  tools/list、tools/call、ping；未知方法 -32601、坏行 -32700 不崩；每请求
+  一个 goroutine（慢 digest 不阻塞 ping/tools/list），stdin EOF 后 drain
+  ≤300s。
+- **tools/list 复用注册表**：11 工具照常列出；连接类工具
+  （messages_digest/messages_produce/topics_delete/groups_offsets_reset/
+  topics_records_clear）inputSchema 显式补内联连接参数（严格 MCP 宿主会
+  丢未声明参数，ssh 同因），required 的 connectionId 放宽为 anyOf
+  （connectionId ∥ 内联 brokers）；UI 工具 schema 不动。
+- **UI 工具 UNAVAILABLE**：`kafka_ui_*` 5 个（含元发现 kafka_ui_topics）
+  tools/call 一律 isError content「UNAVAILABLE: 此工具需要 DBX 工作台
+  （工作台模式可用）…」，不假死。
+- **内联凭据连接**：camelCase 字段（brokers 数组/逗号换行分隔/
+  securityProtocol/saslMechanism/saslUsername/saslPassword/tlsCaCert/
+  tlsClientCert/tlsClientKey/tlsInsecureSkipVerify/schemaRegistry/
+  schemaRegistryUrl/schemaRegistryUsername/schemaRegistryPassword/clientId/
+  readOnly/allowDelete）→ 归一结构体 canonical JSON sha256 池化
+  （`mcp-<hash>`，上限 8 FIFO 淘汰即 svc.Disconnect）；readOnly/allowDelete
+  按表单默认解析（缺省 true/false，显式同值同池键）；toLifecycle 折算标准
+  lifecycle params 走 `svc.Connect` 同一条路径（admin client 指纹失效重建
+  语义保持）；凭据不落盘不持久化。本轮不做宿主 TCP 桥接兜底（未知
+  connectionId 报引导错误，见 docs/MCP.zh-CN.md「桥接兜底」）。
+- **工具语义零复制**：stdio tools/call 注入池化 connectionId 后直接走
+  `Server.Call`（digest maxScanRecords/cursor/produce 单阶段/三写两阶段
+  confirmToken/审计 source=mcp 全部复用）；写审计经 runMcpStdio 注入回调
+  落 audit.jsonl（无 Emitter）。
+- 单测：`internal/mcp/stdio_test.go`（S-STDIO-1..10：协议循环/UNAVAILABLE/
+  池化键+表单默认归一/brokers 解析+toLifecycle/池淘汰/连接门/Serve 端到端）
+  + `main_test.go`（--mcp 分发互斥）。
+- smoke：`scripts/smoke_mcp.py` 新增 K12（离线 stdio：initialize/tools-list
+  11 工具+内联 schema/ui UNAVAILABLE/连接门/未知方法）与 K13（容器：stdio
+  内联凭据 produce×2 → digest matched=2 → cursor 翻页 → 两阶段 delete 真删
+  → token 一次性 → audit source=mcp；scratch topic 经工作台协议预建——
+  stdio 工具面无 topic/create）。
+- 文档：`docs/MCP.zh-CN.md` 新增「方式二：独立 stdio 模式」章节（用法/
+  凭据参数表/stdio 未覆盖字段/语义差异/桥接兜底未做/ZCode 接入），
+  降级矩阵补 stdio 行，smoke 段更新 K1–K13。
+
+**验证（真实输出）**：`go vet ./...` 通过；`go test ./...` 全绿（mcp 包
++10 用例）；dev 测试集群在跑时 `python3 scripts/smoke_mcp.py`
+**13/13 PASS**（K13 stdio produce=2 → digest matched=2 → 两阶段 delete
+真删 + token 单次 + audit source=mcp）。未跑 test.sh 打包段（无 manifest/
+构建链变更，打包不受影响）。未尽：stdio 桥接兜底（connectionId 转发
+DBX app）、ZK 源/Kerberos/OAUTHBEARER/Glue 族表单字段的内联支持；未执行
+任何 git 提交。
+
+## MCP 测试覆盖专项（2026-09-13：AI agent 调用易用性/准确性/容错性审计与修复）
+
+对本轮 M3 MCP 工具面（11 工具）做六维覆盖审计（参数校验/错误消息质量/
+成功路径/降级路径/两阶段确认/文档一致性），以"补测试 → 跑出缺口 → 修实现
+→ 立即回归"循环收敛。digest clamp 全链核对结论：样本 ≤5 / rows ≤20 /
+单元格 120 字符 / 响应 16 KiB / cursor 1 万条·TTL 10min·LRU ≤8 / 直方图
+≤12 桶 / groupBy ≤20 组 / topN ≤10 全部与文档一致（settings.Sanitized
+双保险），未动。两阶段清单（topics/delete、groups/offsets/reset、
+topics/records/clear）与 confirmToken 一次性/60s/hash 绑定均验证无缺口。
+
+**修复的问题（现象 → 根因 → 修复）**：
+
+1. **字符串数字静默改语义（准确性，最重要）**：LLM 常把整数写成字符串。
+   `partition:"0"` 在 produce 里被静默忽略 → 消息落错分区；`partitions:
+   ["0","1"]` 在 digest 里被静默丢弃 → 变成全分区扫描；`timestampMs:"17e11"`
+   在 offsets reset 里被 `int64(intArg())` 折算为 **0** → 等价重置到纪元；
+   `n:"5"` 静默变 20；`kafka_ui_select` 的字符串数字被误导性报错
+   "partition is required"（前端 `Number.parseInt(String(...))` 本可接受）。
+   修复：`util.go` 新增 `coerceInt/coerceInt64/coerceBool` 宽容解析；
+   `parseIntList`（JSON number 数组/整数字符串数组/逗号分隔串三形态）替代
+   静默丢弃的 `intSlice`；存在但非法一律带原值报错，绝不静默折算后执行。
+   `uiSearch.partitions` 原走 `stringSlice`（数字数组反而全被丢弃），同修。
+2. **digest 对不存在 topic 静默 matched=0（准确性/易用性）**：franz-go
+   消费不存在的 topic 返回空结果，与空 topic 无差别，AI 会把"名字打错"误读
+   成"没有数据"。修复：扫描为 0 时自动补 `DescribeTopic` 存在性校验
+   （kadm 层报 `UNKNOWN_TOPIC_OR_PARTITION`，与 kafkaconn `topic %q not
+   found` 两种文本都匹配；非空路径零额外成本，校验自身网络失败不掩盖结果），
+   报错附 `kafka_ui_topics` 定位指引。真机探针确认修复前后行为。
+3. **offsets reset 二阶段才失败白烧令牌（易用性/容错性）**：resetTo 配套
+   参数（topics/timestampMs/partitionOffsets）原在执行层（确认之后）才被
+   kafkaconn 校验——预览签发令牌 → 确认烧掉令牌 → 才报"topics is required"。
+   修复：新增 `validateResetRequest` 预检（归一规则与 kafkaconn
+   `normalizeResetMode` 同源），预览前拒绝且不签发令牌；`timestampMs<=0`
+   明确拒绝（0 等价重置到纪元，几乎必是参数缺失产物）。
+4. **stdio 字符串布尔静默回落表单默认（容错性）**：`readOnly:"false"` /
+   `allowDelete:"true"` 字符串被忽略 → 写连接静默降级只读（或反之），报错
+   与原因脱节。修复：`parseInlineConn` 接受 `"true"/"false"/"1"/"0"`
+   （大小写不敏感），其余值报错（签名加 error 返回）。
+5. **可行动错误消息（易用性）**：未知连接 digest 报错附 "verify the
+   connectionId (or pass inline connection parameters in standalone stdio
+   mode)"；topic 疑似不存在附 `kafka_ui_topics` 指引（`annotateReadError`
+   + `topicNotFoundish` 单点判定）；`format` 报错回显原值；produce 超限报错
+   带实际字节数（`65537 > 65536`）；`kafka_ui_focus` panel、digest offset
+   时间窗等枚举/字段在 sidecar 侧提前校验（枚举大小写归一：format/panel/
+   offsetStrategy/matchMode/resetTo 统一 lower）。
+6. **测试环境封闭性**：`TestServerTwoPhasePreviewAndConsume` 隐式依赖
+   "本机 9092 无 broker"（dev 集群拉起后该测试真的对集群执行了 delete；
+   幸而 `orders` topic 不存在无副作用）。修复：`connect2At` 显式 bootstrap，
+   执行类断言指向 `127.0.0.1:1`；`TestServerProducePartitionVariants` 借
+   "超预算值在解析后、拨号前被拦"的顺序做封闭断言（不付 30s 拨号超时）。
+7. 杂项：`confirm.go` 头注释残留 ldap 语言（delete recursive/modifyDn）
+   改为 kafka 三写工具；tools.go/stdioConnectionProperties 的 schema 描述
+   同步容错语义（numeric strings tolerated / string booleans accepted /
+   resetTo 各模式配套要求）。
+
+**新增覆盖**：Go 单测 `tolerance_test.go` 9 个（coerce 变体/定位字符串
+数字/digest 参数变体含 partitions 报错与时间窗校验/cursor 字符串 n/panel
+枚举/reset 预检+字符串 timestampMs 折算进 canonical/produce partition
+变体/读错误指引/超预算报错带字节数），mcp 包 45→54 个；smoke 新增断言：
+K5 未知面板报错、K7 字符串定位、K8 非法 partitions/cursor 字符串 n/未知
+连接 hint/format 回显、K10 reset 四模式预检、K11 字符串 partition 钉分区
+（produce partition="1" → 落分区 1）+ 不存在 topic 指引 + cursor 字符串 n
++ reset 字符串 timestampMs 折算、K12 字符串布尔报错。文档
+`docs/MCP.zh-CN.md` 新增「容错语义」小节 + digest/reset 工具行更新 +
+smoke 段更新。
+
+**验证（真实输出）**：`go vet ./...` 通过；`go test ./...` 全绿（mcp 包
+`-count=1` 54/54 PASS）；`CGO_ENABLED=0 go build -trimpath -o
+bin/dbx-plugin-kafka .` 通过；dev 集群（`scripts/dev-cluster.sh up`）
+在跑时 `DBX_PLUGIN_SIDECAR=… python3 scripts/smoke_mcp.py` **13/13 PASS
+（FAIL=0 SKIP=0）**，其中 K11/K13 为容器场景。未注册方法/工具路径保持
+SKIP 语义（smoke 框架 `is_method_not_registered`，本轮未触发）。
+
+**剩余风险**：① 三插件同构观察——ldap/files 的 digest/cursor 尚未对齐
+本轮 kafka 的宽容解析与预检语义（shared/ 只读未动，建议后续在公共验收
+清单单点收敛）；② `annotateReadError`/`topicNotFoundish` 依赖上游错误
+文本匹配（已单点化 + 宽松匹配，franz-go 大版本升级时需复核）；③ stdio
+桥接兜底（未知 connectionId 转发 DBX app）仍为后续项；④ 未执行任何 git
+提交（工作区含他人 WIP，未回退未触碰）。
+
+## MCP 测试覆盖专项·第二轮（2026-09-13：真集群深水区实测 + 消费池复用 P0 修复）
+
+基于第一轮工作树继续，目标从"参数容错/预检"推进到"真集群行为 + 聚合边界
++ 会话容量 + 边界矩阵"，六项任务全部落地。**本轮最重要的产出是任务外发现的
+P0 准确性 bug**：消费池复用路径的 seek 失效——同一 topic 第二次
+earliest digest 恒静默返回 0 条（详见下文问题 1）。
+
+**新增真集群覆盖（smoke K14/K15，均需容器，K14 另需 Schema Registry）**：
+
+- **K14 schema 解码投影**：SR 注册 JSON schema → MCP produce 挂载编码
+  wire format 入集群 → digest 断言六段：① 无 schema 走 raw 通道（wire
+  字节原样、matched 照常计数）；② 挂载解码后 `fields` JSON path 投影
+  distinct/topN 命中真实值（`$.user.id` valueCount=2、top u0=3）且样本
+  value 是解码 JSON、带 `schemaId`/`schemaSubject`/`schemaVersion`；
+  ③ 投影字段全不命中（raw 字节非 JSON）→ `fieldsNote` 指引；④ 坏
+  schema 版本（version=999）→ `decodeFailures` 计数 + `decodeNote`
+  指引 + 样本行 `decodeError`（含 HTTP 404）；⑤ 未配置 SR 的连接挂
+  schema → 门禁显式报错；⑥ 投影部分命中时无 fieldsNote。
+- **K15 聚合边界 + reset 落点 + 边界矩阵**：4 分区 45 条真实多 key 数据
+  断言 keys 45→20 且 `keysLimit:true`、topN 45→10 且 `truncated:true`、
+  直方图 ≤12 桶、perPartition 求和=total、cursor 不截断；cursor 以缺省
+  n=20 连续翻页到 `done`（45=20+20+5，`nextOffset`=总数）；**reset
+  timestampMs 真实落点**——两批消息 + 分界时间戳 cut_ms → 两阶段 reset
+  → `kafka/groups/offsets/list` 核验 committedOffset 精确落在 batch1
+  条数（与 broker ListOffsetsAfterMilli 语义一致；字符串 timestampMs
+  宽容折算同验）；produce partition=99 与不存在 topic 的错误文本断言。
+
+**发现并修复的问题（现象 → 根因 → 修复 → 验证）**：
+
+1. **消费池复用 seek 失效（P0，准确性）**：同连接同 signature 的第二次
+   earliest `kafka_messages_digest` 恒 `matched=0` 且无任何错误——AI 会把
+   "第二次扫描"误读成"数据没了"（第一轮加的存在性校验还因 topic 存在而
+   不报错，完全静默）。根因：`resetConsumeClientForReuse` 用哨兵值
+   （-2=start）**只 seek `seenParts` 里"有记录的分区"**；franz-go v1.20.7
+   直接消费下 `SetOffsets` 的 map 未覆盖全部在消费分区时**整个 seek 静默
+   丢失**（真集群最小复现：全分区 seek → 重扫成功；只 seek p0 → 0 记录
+   0 错误）。修复：reset 改为经 kadm `ListStartOffsets/ListEndOffsets`
+   拉 topic **全部分区**的具体边界 offset（含 leader epoch）后一次性
+   `SetOffsets`；一次 broker 往返换正确性，池化提速语义保留。验证：真机
+   连续 4 次 earliest digest 均 matched=6（修复前 #2 起全 0）；latest
+   复用 reset 到新 end（新消息被正确跳过，语义与新建 client 一致）。
+2. **digest 无法挂载 schema（功能缺口）**：工具描述与 digest.go 注释承诺
+   "schema 解码后投影"，但 `kafka_messages_digest` 没有 `schema` 参数、
+   `messagesDigest` 也不解析——wire format 消息的投影全部静默 0，传入的
+   schema 参数被静默丢弃。修复：新增 `parseSchemaRef`（produce/digest
+   共形；digest 允许缺 subject 按 wire id 查 SR，version 宽容字符串数字、
+   非法/负数报错——静默折 0 会把"版本打错"变"取最新"），digest 接入
+   `ConsumeParams.Schema`；样本行带 `schemaId`/`schemaSubject`/
+   `schemaVersion` 与 `decodeError`（独立 200 字符截断上限——SR 错误的
+   subject 路径 + HTTP 状态码在 120 单元格宽度下常被截掉）；聚合层带
+   `decodeFailures`/`decodeNote`。真机探针前后对照确认。
+3. **投影零命中静默（易用性）**：`fields` 全不命中时 valueCount=0 无任何
+   提示，AI 无法区分"路径错"与"载荷非 JSON"。修复：matched>0 且全部请求
+   字段 0 命中时带 `fieldsNote`（提示两者都查；部分命中不提示）。
+4. **produce headers 非法形状静默丢弃（容错红线）**：数组/标量形状的
+   `headers` 被类型断言静默忽略，"想带 header"的消息无 header 落盘；嵌套
+   值被 `fmt.Sprintf` 折成 `[a b c]` 乱码。修复：headers 存在但非 object
+   或值非标量（string/number/boolean/null）显式报错并回显原值。
+5. **produce schema.version 静默折 0**：沿用 `intArg`（非法→0=取最新），
+   与第一轮"绝不静默折算"原则冲突。修复：统一走 `parseSchemaRef` 报错。
+6. **cursor TTL/容量硬编码（同族漂移）**：files 的 `cursorTtlSecs`/
+   `maxCursorSessions` 是可调 settings 且过期报文携带实际生效 TTL；
+   kafka 硬编码 "10 minutes"。修复：settings 新增 `cursorTtlSecs`
+   （600，10–3600）/`maxCursorSessions`（8，1–32），`SettingsSet` 同步
+   运行中 store（新 `SetTTL`/`SetCapacity`，容量 set 后立即收敛），过期
+   报文改为 `cursor expired (TTL <n>s)`。
+7. **同族一致性对齐 ssh 基线（任务 6）**：① 字符串布尔变体面——ssh
+   `arg_bool` 接受 `yes/no/on/off`，kafka `coerceBool` 原只有
+   `true/false/1/0`，补齐（stdio 内联 readOnly/allowDelete 同步，非法值
+   仍报错）；② 未注册工具名——ssh 有 `Unknown tool` + `Did you mean`
+   建议，kafka 原只有裸文本，补 `unknownToolMessage`（分隔符/大小写
+   compact 变体建议注册名 + 指向 `mcp/tools` 与工具数）。
+8. **produce 不存在 topic 无定位指引**：读路径第一轮已加 `kafka_ui_topics`
+   指引，写路径没有。修复：`annotateReadError` 更名 `annotateClusterError`
+   （读写共用），produce 错误同样标注。
+
+**别家形状漂移（只读对照 ssh/ldap/files MCP 文档，未动别家）**：ldap/
+files 的 digest/cursor/两阶段/settings 形状与 kafka 同构（16 KiB 响应、
+120 字符 cell、≤20 rows、confirmToken 一次性/60s/hash 绑定）；ldap
+`ldap_search_digest` 尚无 kafka 本轮的 schema/投影零命中提示等价物
+（其 distinctAttr 语义本身闭环，无静默缺口）；files/ldap stdio 均已有
+桥接兜底，kafka 仍为后续项（见第一轮剩余风险 ③）。
+
+**新增覆盖**：Go 单测 `boundary_test.go`（MCP 第二轮：parseSchemaRef
+变体/digest schema 参数校验/decodeFailures+fieldsNote 纯函数/cursor
+TTL 与 LRU 的 Server 层注入时钟报文/produce 边界矩阵/unknown tool 建议/
+coerceBool 宽变体）9 个 + 既有用例更新（tolerance_test 的 annotate
+改名与 yes 变体、stdio_test 的布尔变体、cursor TTL 报文随 settings），
+mcp 包 54→**63** 个全绿；smoke K14/K15 新增（13→15 场景）+ K12 字符串
+布尔宽变体断言更新。文档 `docs/MCP.zh-CN.md` 同步：digest 工具行
+（schema 挂载/decodeFailures/fieldsNote）、cursor 行（TTL/LRU 可调）、
+produce 行（headers/schema 形状）、容错语义小节（字符串布尔变体、
+schema 参数、unknown tool 建议）、settings 表两行、smoke 段 K14/K15。
+
+**验证（真实输出）**：`go vet ./...` 通过；`go test ./... -count=1` 全绿
+（mcp 包 63/63 PASS）；`CGO_ENABLED=0 go build -trimpath -o
+bin/dbx-plugin-kafka .` 通过；dev 集群在跑时 `DBX_PLUGIN_SIDECAR=…
+python3 scripts/smoke_mcp.py` **15/15 PASS（FAIL=0 SKIP=0）**。测试探针
+与遗留数据已清理（/tmp 探针目录删除；dev 集群 probe/smoke 一次性 topic
+与 SR 测试 subject 删除，仅剩 seed 基础 topic：dbx-smoke-events/binary/
+export/filter/stream）。集群按脚本设计保留运行（127.0.0.1:9092 +
+Schema Registry :19081，docker Up 9h+）。
+
+**剩余风险**：① franz-go 升级时 reset 的 kadm 全分区 seek 语义需复核
+（本轮实测钉死 v1.20.7 行为；上游 CHANGELOG 提及 SetOffsets 部分分区
+语义变更史）；② cursor TTL 调整只影响新物化会话（既有会话 ExpiresAt
+已物化，文档未另行承诺）；③ stdio 宿主 TCP 桥接兜底仍为后续项；
+④ K14 依赖 SR 的 `/subjects` 探测，Redpanda/AWS Glue 兼容实现上
+Glue 走工作台表单（与既有 schemaMountSupported 门禁一致）；⑤ 未执行
+任何 git 提交（工作区含他人 WIP，未回退未触碰）。
+
+## MCP 测试覆盖专项·第三轮（2026-09-13：stdio 桥接兜底收敛，对齐 ssh/ldap 同构）
+
+**主题**：把 stdio `--mcp` 模式「未知 connectionId → DBX 本地桥转发」兜底
+补齐到 ssh/ldap 同构水平（消第二轮剩余风险 ③）。ldap
+`appbridge.go`/`appbridge_test.go`（wave 2 刚落地）的 kafka 同构移植，
+源头是 ssh `backend/src/app_bridge.rs`（只读参照）。
+
+### 交付
+
+1. **`backend/internal/mcp/appbridge.go`（新增）**：DBX 桌面应用本地 TCP
+   桥客户端——端口发现（`<app_data_dir>/mcp-bridge-port`，
+   `DBX_APP_DATA_DIR` 覆盖 / macOS 缺省）、TCP 探测防陈旧端口、
+   `DBX_APP_LAUNCH_CMD` 尽力拉起、500ms 轮询 ensure 30s 预算、
+   `POST /call-plugin-tool` snake_case 五字段契约
+   （`plugin_id:"io.dbx.kafka"`）、200 envelope 逐字透传、64 KiB 单写上限、
+   超时随转发 timeout + 150s 审批读余量、fail-closed 错误统一
+   `DBX app bridge` 前缀。与 ldap 逐行为同构，仅 pluginID 与注释域措辞
+   kafka 化。
+2. **`backend/internal/mcp/stdio.go`**：`resolveConnection` →
+   `resolveConnectionOrForward`（优先级 ldap 同构：内联凭据 > 已池化 id >
+   未池化 id 桥转发 > fail-closed 合并错误）；新增 `forwardViaBridge`
+   （timeoutSecs clamp 5–300 缺省 300，整数字符串宽容折算走既有
+   `intArg`；envelope 逐字 / 非 envelope 防御性包装）；`StdioServer` 增
+   `bridgeEnsureWait`（缺省 `DefaultBridgeEnsureWait` 30s）；未池化
+   connectionId 错误改为桥失败原因 + 内联凭据出路（brokers/securityProtocol/
+   sasl*/schemaRegistry*）合并文案；connectionId schema 描述同步（pooled
+   or DBX saved connection id）。kafka 特化差异仅一处：内联凭据出路文案
+   用 kafka 连接参数族（ldap 为 host/tlsMode/bindDn 族）。
+3. **测试**：`backend/internal/mcp/appbridge_test.go`（新增 9 用例，对齐
+   ldap appbridge_test 用例集：端口解析/垃圾文件拒绝/五字段契约/ensure
+   fail-closed 预算/端口发布拾取/mock 桥转发契约+envelope/非 envelope
+   包装/会话类工具不触桥；转发集成用例 envelope 形状与 ldap 同表）； 
+   `stdio_test.go` S-STDIO-5 连接门用例更新（无桥 fail-closed 断言 + 
+   `resolveConnectionOrForward` 直通断言）。mcp 包 63→**72** 用例全绿。
+4. **smoke**：`scripts/smoke_mcp.py` 新增 **K16** stdio 桥接兜底场景
+   （离线段：空 app-data + no-op launch → 30s ensure 预算跑满 → fail-closed
+   可行动错误含 `mcp-nope` 回显；mock 段：本地 MockBridge 转发契约
+   `/call-plugin-tool` + 五字段 + `plugin_id=io.dbx.kafka` + envelope 逐字
+   + timeoutSecs:"30"→timeout_ms==30000；404 表面化段）；`McpStdioClient.start`
+   增 `extra_env`（ldap 同款）；K12 摘除旧「no DBX bridge fallback」断言
+   （对齐 ldap M11/M14 分工，未知 connectionId 归 K16 专场景）。15→**16**
+   场景，SKIP 语义不变（未注册方法仍 SKIP）。
+5. **顺手核对（任务 6，只查未改）**：cursor 过期报文已带实际生效 TTL——
+   `server.go` cursorNext 的 `LookupExpired` 分支取 `settings.CursorTtlSecs`
+   实际值（第二轮已修），`boundary_test.go` `TestServerCursorTTLExpiryMessage`
+   覆盖缺省 600s 与 settings 调整后 30s 两种报文；无漏网。
+6. **文档**：`docs/MCP.zh-CN.md`「桥接兜底」节由「本轮未做」改写为落地
+   描述（对照 ldap/docs/MCP.zh-CN.md 写法：转发决策/发现与契约/fail-closed/
+   两阶段透传/测试）、内联凭据节补「保存连接 id 走桥接兜底」、降级矩阵
+   stdio 行补桥接兜底、smoke 段 K1–K15→K1–K16。
+
+### 验证（真实输出）
+
+- `cd backend && go vet ./...` 通过。
+- `go test ./... -count=1` 全绿：`io.dbx.kafka.plugin` /
+  `internal/kafkaconn` / `internal/lifecycle` / `internal/mcp`（72 用例，
+  含 Bridge 9 用例）/ `internal/store` 全 ok。
+- `CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-kafka .` 通过。
+- dev 集群在跑（dbx-kafka-test 127.0.0.1:9092 + SR :19081）时
+  `DBX_PLUGIN_SIDECAR=$PWD/backend/bin/dbx-plugin-kafka python3
+  scripts/smoke_mcp.py`：**total=16 PASS=16 FAIL=0 SKIP=0**（K1–K16 全
+  PASS，K16 detail「fail-closed without the app; mock-bridge forward
+  contract + envelope verbatim; 404 surfaced」）。
+
+### 剩余风险
+
+① 真实 DBX.app 桥回环未在本轮验证（本机无运行中的 DBX.app；契约形状由
+mock 桥按宿主 `/call-plugin-tool` 契约钉死，与 ldap wave 2 同一契约表，
+宿主契约若有异动按 AGENTS.md 规则 7 走 `shared/frontend`/桥客户端单点
+跟进）；② 桥转发路径的 kafka 工具参数不含 `timeoutSecs` 声明（转发的
+timeoutSecs 仅客户端折算用，会随 arguments 透传给应用侧；应用侧 mcp/call
+按键取值、未知键无害，与 ldap 传法一致）；③ 未执行任何 git 提交。
+
+## 第四轮（2026-09-13）桥回环：真机 DBX.app 端到端验证
+
+（接上节遗留项①）本机隔离 app-data（`shared/host-e2e/app-data`）+
+测试 DBX.app（host debug bundle，经 launch.sh 注入 `DBX_DATA_DIR`），
+kafka 0.1.35 随四插件装入同一 app-data；桥端口发布后 TCP 探测通过。
+
+- **转发契约（核心验收）**：standalone `dbx-plugin-kafka --mcp`
+  （`DBX_APP_DATA_DIR` 指向隔离 app-data）`tools/call
+  kafka_messages_digest {connectionId:"no-such-kafka-conn",
+  topic:"probe"}` → 未池化 connectionId 经桥转发 → 宿主
+  resolve_connection 404 `{"error":"Connection with id
+  'no-such-kafka-conn' not found"}` 并入引导错误——转发路径端到端通。
+  注意 `kafka_ui_*` 族在 standalone 判定下先短路 UNAVAILABLE（设计如此，
+  文案含「经 DBX MCP 桥调用」引导），不参与桥兜底，回环探针须选
+  `kafka_messages_digest` 这类连接级本地读工具。
+- **fail-closed 对照**：同调用换空 `DBX_APP_DATA_DIR` → `DBX app bridge
+  unreachable after 30s` 本地 fail-closed，与「app 侧 returned HTTP
+  404」明确区分。
+- **app-data 内无 kafka 保存连接**（仅 ssh 的 vagrant 固件），「转发 →
+  宿主 → kafka workbench sidecar → 真实结果」全链路未覆盖，待后续
+  seed（可用 kafka dev 测试集群地址）后补。
+- **沉淀**：`shared/host-e2e/mcp_bridge_e2e.sh`（四插件统一回环脚本，
+  本轮真机 4/4 全绿；kafka 探针为其中一环）。遗留项①闭环。
+- 本轮插件源码只读，未改代码。
+
+**剩余风险**：全链路真实结果层待 seed 连接补齐；偶发观察到跨插件转发
+调用偶发 90s 无响应、单独重跑立即成功（疑似宿主侧/GUI 渲染竞态）。
+
+## 第五轮（2026-09-13）可靠性纵深：stdio 传输 / 会话 churn / 写门对抗输入
+
+三类主题（对照本轮任务书与 `shared/MCP_ACCEPTANCE.zh-CN.md` §2/§5/§8）：
+
+**① stdio 传输层健壮性（实现 + 单测 + smoke K17）**
+
+- `internal/mcp/stdio.go` `handleLine` 重构为 RawMessage 形状分派（ldap
+  同构）：解析失败 -32700（id null）；非法请求 -32600——缺 id（非通知）、
+  id 为 object/array/布尔、method 缺失/空/非字符串、jsonrpc 存在且非
+  "2.0"（字段缺失容忍，照 ssh 基线）。原实现缺 method 折 -32601、method
+  非字符串误档 -32700、id object 原样回显，全部修正。`Serve` 增加 16 MiB
+  单行上限（超限 -32700 拒该行继续服务）。已知家族差异（登记）：ssh 对
+  缺 method 仍回 -32601，本轮 ldap/kafka 按 -32600 分档，待家族拉齐。
+- 新增 `stdio_robust_test.go` 6 用例（S-STDIO-R1..R6，ldap 同表）。
+- smoke K17（真进程离线）覆盖同表全矩阵。
+
+**② 会话/存储 churn（churn_test.go，S-CHURN-*）**
+
+- **ConfirmStore 修复真缺陷**：过期未消费令牌（preview 弃单）原无任何
+  清理路径，大量「只要预览不确认」的调用无界撑大令牌表——Issue 时顺手
+  prune（S-CHURN-CONF-1）。
+- **confirmTtlSecs 补齐（契约缺口）**：MCP_ACCEPTANCE §8 声明
+  files/ldap/kafka 同构键族，kafka 此前缺 `confirmTtlSecs`——Settings
+  增字段（缺省 60，10–600 与 ldap/files 同范围）+ `SettingsSet` 接线
+  `confirms.SetTTL` + `ConfirmStore` 增 ttl/SetTTL/TTL（≤0 忽略）；
+  `twoPhase` 过期报文改携实际生效 TTL（原硬编码 "expired (60s)"）。
+  不追溯契约钉测（S-CHURN-CONF-2：旧令牌按原 60s 过期、新令牌按新 TTL）。
+- **CursorStore 修复语义偏差**：淘汰原为纯插入序 FIFO（活跃会话误逐），
+  `Next` 命中 `touchLocked` 顶队尾改真 LRU（S-CHURN-CUR-1/2）；
+  `kafka_cursor_next` 的 unknown cursorId 报文对齐 ldap 质量（带 TTL/
+  容量/重发 digest 指引，原仅 "unknown cursorId: x"）。
+- IntentStore churn 500 轮收敛 + 快照不污染（S-CHURN-INT-1，ldap 同构）。
+- **消费池 churn（kafkaconn/consume_pool_churn_test.go，S-POOL-CHURN-*）**：
+  7 种 signature × 2 连接交替 30 轮（200+ 次 acquire/put/release）——
+  key 与 entry 的签名/连接恒一致（不串台）、release 后收敛在 8 上限
+  （不泄漏）、resetFailed 条目不复用且被同 key 替换恢复；异连接同签名
+  永不共享条目。全离线（client nil，Close 对 nil 安全）。
+- smoke K18（dev 集群）：同一连接 earliest/latest 交替 **50 轮** digest，
+  earliest 恒 matched=造数条数、latest 恒 0——第四轮 P0 修复（复用前
+  kadm 全分区边界重置）的回归面，收尾两阶段删除 churn topic。
+
+**③ 写门对抗输入（writegate_test.go，S-WGATE-1..4）**
+
+- 写门策略矩阵：只读连接 produce/clear/reset/delete 全拒（补 reset 只读
+  拒绝）；allow_delete=false 拒 delete/clear 而 reset（写非删）进两阶段；
+  未注册连接按只读兜底且不签发令牌（S-WGATE-1）。
+- reset timestampMs 越界：0/负数预检拒绝（0 等价重置到纪元，几乎必是
+  参数缺失；不白烧令牌）、非整数点名带原值、远未来（2100 年）合法进
+  两阶段且确认到达执行层（S-WGATE-2）。
+- records_clear 两阶段：参数被改 hash mismatch 作废、正确确认到达执行层、
+  token 一次性（S-WGATE-3）。
+- **produce 头部预算（新增）**：header 名空/超 1024 字节/条数超 64 显式
+  报错带实际上限与实测值（不静默截断丢弃）；≤64 个与空对象 headers 通过
+  解析（借 64 KiB 预算检查封闭验证，不触拨号）；produce 单阶段永不签发
+  令牌（S-WGATE-4）。
+
+**回归（真实输出）**
+
+- `cd backend && go vet ./...` 通过；`go test ./... -count=1` 全绿
+  （internal/mcp 由 72 函数增至 **87 函数**，本轮新增 15：stdio_robust 6
+  + churn 5 + writegate 4；internal/kafkaconn 增 churn 3）；
+  `CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-kafka .` 成功。
+- dev 集群（dbx-kafka-test 127.0.0.1:9092 + SR :19081）：
+  `DBX_PLUGIN_SIDECAR=$PWD/backend/bin/dbx-plugin-kafka python3
+  scripts/smoke_mcp.py` → **total=18 PASS=18 FAIL=0 SKIP=0**
+  （K1–K18 全 PASS，新增 K17/K18；K18 detail「50 alternating rounds:
+  earliest matched=10 stable, latest matched=0 (pool reuse resets)」）。
+
+**smoke 客户端两处修复（与 ldap M18 同源，测试面缺陷而非 sidecar 缺陷）**
+
+1. McpStdioClient 响应读取丢弃不匹配 id 的帧——逐请求 goroutine 响应
+   乱序时先到的帧被丢，后续读取永远等不到（挂死）。改为 `pending`
+   缓冲（通知帧除外）。
+2. `select` 直接探测 BufferedReader 的 fd：上一帧已把后续数据拉进用户态
+   缓冲时管道为空，select 满超时假报"响应丢失"。改为 `os.read` + 自管
+   行缓冲，超时语义为真。
+
+**剩余风险**：(1) ssh 侧缺 method 的 -32601 分档差异待家族拉齐（shared/
+契约表本轮不可改）；(2) K18 的 50 轮交替在慢集群上会线性拉长 smoke 时长
+（每轮一次 digest 往返）；(3) stdio `pending` 缓冲只服务单客户端顺序
+消费，多路复用同一 stdio 的客户端理论可乱序取帧（现状无影响）。
+
+### 2026-09-14 ZCode MCP 接入与真机 agent 调用测试（MCP 集成会话）
+
+- **ZCode 接入**：用户级 zcode config 新增 `dbx-kafka`（`backend/bin/
+  dbx-plugin-kafka --mcp` + 专属 `DBX_PLUGIN_DATA_DIR`；与 dbx-files/
+  dbx-ldap 同轮接入，形状镜像既有 dbx-ssh 条目）。
+- **只读/删除门与未知 topic 错误补可行动提示**（真机 agent 实测卡点）：
+  stdio 内联连接默认 `readOnly:true`，produce/写族被拒后 AI 调用方无从
+  知道如何解除——`ensureWritable`/`ensureDeleteAllowed` 拒绝消息点名
+  `"readOnly": false`（删除类叠加 `"allowDelete": true`）；未知 topic
+  的 `kafka_ui_topics` hint 补注 stdio 无 topic 列表能力（annotate 与
+  digest 存在性校验两处）。`writegate_test.go`/`tolerance_test.go` 加
+  提示文案断言；go test mcp 包全绿。
+- **真机 agent 调用测试**：dev 集群（dev-cluster.sh up）+ 内联 brokers
+  全链路——digest/produce（readOnly:false 后）/cursor/两阶段 topics_delete
+  /未注册 topic/错误 broker/只读拒绝，均按预期；改进后复验提示文案生效。
+  smoke 终态 **total=18 PASS=18 FAIL=0 SKIP=0**（K17 修复见上文，本轮
+  复跑两次全绿；首次全量运行曾复现 K17 挂死，即上节客户端缺陷实证）。
+
+### 2026-09-14 续：zcode 真机接入发现 required:null 拒收并修复
+
+- 同 ldap 轮：`toolEntry` nil `required` → `"required":null` 被 zcode
+  tools/list zod 校验拒收（整个服务器不出现）；`tools[1]` 即
+  `kafka_ui_focus` 触发。修复空 required 省略键 + `tools_schema_test.go`
+  红线测试；strict-shape 全字段检查通过；mcp 包单测全绿，smoke
+  **18/18**，二进制已重建。`dbx-kafka` 待会话重启后以 `mcp__dbx-kafka__*`
+  出现。
+- 同轮 zcode 内真实工具身份首跑（dbx-files，schema/isError 均为新态）：
+  内联 localFs digest → write → rows+cursor 翻页 → 两阶段 delete →
+  UI UNAVAILABLE（isError 经 zcode 以 "MCP tool returned an error" 透出，
+  文本可行动）全链路按预期。
+
+## 第七轮（2026-09-14）并发安全 -race 验证 + 缺参枚举口径拉齐 + enum 在线钉桩
+
+三类主题（任务书：并发安全与口径拉齐轮；对齐 `shared/MCP_ACCEPTANCE.zh-CN.md`
+§3.3/§3.9；ldap 同表落地）：
+
+**① go test -race 全量首验（本轮最高优先级）**
+
+- `cd backend && go test -race -count=1 ./...` 首跑即全绿、**race 零告警**
+  （6 包：根/kafkaconn/lifecycle/mcp/store + gen-protobuf-fixture 无测试）。
+  前六轮 churn/边界测试全部顺序执行，本轮以真并发补上竞争检测器验证面。
+- **补真并发压力测试**（`internal/mcp/concurrency_test.go`，S-CONC-*，3 个
+  ——Confirm/Cursor/Intent 三张表各一，与 ldap 逐字同构仅行形状差异；
+  全部离线 + 原子注入时钟 `concClock` + 互斥错误收集器 `concErrs`）：
+  - S-CONC-CONF-1：16 goroutine × 40 轮混合 issue→即时消费（必须 OK）/
+    4 方竞争消费同一令牌（**恰好一方 OK，其余 unknown——一次性语义并发下
+    不得双重消费**）/ 远期消费（expired）/ 弃单；阶段 2 短 TTL 弃单洪泛，
+    收敛后跨 TTL 签发触发 prune → 表收敛为 1（>2000 次操作）。
+  - S-CONC-CUR-1：24 goroutine × 8 会话物化（16 行确定性
+    topic/partition/offset）× 每会话 4 读者固定窗口并发翻页——命中必须
+    逐行精确（Anchor 逐项核对，不得串行/丢行/错位），被淘汰报 unknown
+    合法；终态 sessions/order 一致且收敛在容量 4（960 次操作）。
+  - S-CONC-INT-1：12 goroutine × 50 登记双投递给 6 回报池（双回报竞争）+
+    快照写入方持续覆盖——存活条目终态必不是 pending（无丢更新）、表收敛在
+    容量 32、快照读取永得完整写形状；跨 TTL prune 收敛为 1
+    （600 登记 + 1200 回报）。
+- 三者在 -race 下全过，无数据竞争、无双重消费、容量收敛。
+
+**② 缺参报错枚举式拉齐（对齐 ssh，§3.9）**
+
+- `util.go` 新增 `missingRequired(args, keys...)`（ldap 同构）：一次枚举
+  全部缺失 required 参数（`Missing required parameters: a, b`，按 schema
+  `required` 声明顺序；缺失判定 = 键不存在或显式 null）。present-but-类型
+  错误（空串/空数组/非法值）不混入枚举，仍由逐参数校验精确点名。
+- 落地点（server.go 九处）：`uiSearch`（topic）、`locatorOf`/ui_select
+  （partition+offset）、`uiTopics`（connectionId）、`messagesDigest`
+  （connectionId+topic）、`cursorNext`（cursorId）、`messagesProduce`
+  （connectionId+topic）、`topicsDelete`（connectionId+topics）、
+  `groupsOffsetsReset`（connectionId+group+resetTo）、
+  `topicsRecordsClear`（connectionId+topic）。
+- **边界保持**：`topics: []`（present-but-空数组）仍精确报
+  `topics is required`；resetTo 各模式配套参数（topics/timestampMs/
+  partitionOffsets）属条件必填，保持 validateResetRequest 按模式精确点名
+  （K10/K15 预检语义不变）；`ui_focus` 的 panel 不在 schema required 内，
+  维持原提前校验语义。
+- 单测 +3（新建 util_test.go）：helper 三缺全点名/单缺只其一/null 视同
+  缺失；digest 入口接线（双缺按 schema 顺序 + 空串精确点名）；
+  写族入口（reset 三缺全点名、topics_delete 空数组精确点名）。
+  既有 `TestServerLocatorValidation` 断言同步更新为枚举语义。
+- smoke K6（ui_select 双缺全点名）+ K8（digest 单缺/双缺、ui_topics）
+  断言同步更新。
+
+**③ enum 非法值在线冒烟（离线探针不可达段，§3.3）**
+
+- kafkaconn 对 `offsetStrategy` 非法值的报错已列全 schema enum
+  （`offsetStrategy must be latest, earliest, committed, timestamp, or
+  offset`），`resetTo` 同（`resetTo must be earliest, latest, timestamp,
+  or partitionOffset (got …)`）——本轮核对无需改文案，补在线钉桩。
+- smoke 新增 **K19**（dev 集群在线段）：真实连接下
+  `offsetStrategy:"bogus"` / `resetTo:"bogus"` 报错逐项列出 schema enum
+  全部合法值（含 got 实际值）；`offsetStrategy:"EARLIEST"` 大小写归一
+  在线钉桩（自建 topic produce 1 条 → matched≥1；收尾两阶段删除保持
+  dev 集群整洁）。
+
+**回归（真实输出）**
+
+- `go vet ./...` 通过；`go test -race -count=1 ./...` 全绿 race 零告警；
+  internal/mcp 测试函数 88 → **94**（本轮 +6：并发压力 3 + 缺参枚举 3），
+  kafkaconn 184 不变。
+- `CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-kafka .` 成功
+  （-race 只影响测试，构建不变）。
+- `python3 shared/mcp_schema_check.py --binary backend/bin/dbx-plugin-kafka`
+  → **RESULT: CLEAN**（schema required 与枚举报错一致性无漂移）。
+- dev 集群（127.0.0.1:9092 + SR :19081，任务前已在跑）：
+  `scripts/smoke_mcp.py` → **total=19 PASS=19 FAIL=0 SKIP=0**
+  （K1–K19 全 PASS，新增 K6/K8 枚举断言 + K19 在线钉桩段）。
+
+**剩余风险**：(1) 并发压力测试只覆盖三张 store 表的纯逻辑面，Server 层
+settings 混合流量并发未单列（settings 读写已由 s.mu 串行化，且被 store
+并发面间接覆盖）；(2) consume 池（kafkaconn consume_pool）的并发面由
+既有单测 + K18 churn 覆盖，本轮未追加 -race 专项多 goroutine 压测
+（-race 全量跑已把 K18 纳入检测范围）；(3) dev 集群为共享资源，K19
+造数自建自清，不触碰种子 topic。
+
+**重启复验（同日）**：会话重启后 `mcp__dbx-kafka__*` 全套工具出现；zcode
+内真实任务通过——digest → produce（readOnly:false）→ 回读+`$.from` 投影
+聚合 → 两阶段 topics_delete → 只读拒绝（新提示生效）→ 未知 topic（stdio
+注记生效）。至此 files/ldap/kafka 三插件均完成 zcode 真实链路验证。
+
+## 第八轮（2026-09-14）终验：dev 集群全量冒烟
+
+MCP 专项收口轮：第七轮代码之后对在跑 dev 集群（127.0.0.1:9092 + SR
+:19081）做最终全量终验。本插件源码本轮只读。
+
+- `DBX_PLUGIN_SIDECAR=backend/bin/dbx-plugin-kafka python3
+  scripts/smoke_mcp.py` → **total=19 PASS=19 FAIL=0 SKIP=0**
+  （K1–K19 全 PASS；**K19 enum 在线断言通过**——`offsetStrategy/resetTo`
+  非法值报错逐项列出 schema enum 合法值、`EARLIEST` 归一化在线
+  matched≥1）。
+- 深水区照例全绿：K14（schema 挂载 + `$.user.id` 投影 distinct/topN +
+  坏版本 decodeFailures + SR 门）、K15（聚合钳制 45→20/45→10 + cursor
+  翻到 done + reset timestampMs 落点 p0@6 + 边界报错）、K18（消费池
+  earliest/latest 交替 50 轮 matched 稳定）。
+- 结论：第七轮全部改动（并发安全、缺参枚举口径、K19 在线钉桩）在真实
+  集群组合下无回归，第七轮记录的 dev 集群数据（K1–K19 全 PASS）本轮
+  复现成立。本插件无独立性能脚本，不做基线采集（digest 扫描/翻页由
+  K15/K18 断言覆盖正确性面）。

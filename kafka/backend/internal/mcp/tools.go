@@ -16,16 +16,21 @@ func connectionProperty() map[string]any {
 	}
 }
 
-// toolEntry 单个工具定义。
+// toolEntry 单个工具定义。required 为空时省略键：nil 切片的 JSON 形状是
+// "required":null，严格校验的 MCP 宿主（zcode tools/list zod 校验）会据此
+// 拒收整个服务器（2026-09-14 真机接入实测）。
 func toolEntry(name, description string, required []string, properties map[string]any) map[string]any {
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
 	return map[string]any{
 		"name":        name,
 		"description": description,
-		"inputSchema": map[string]any{
-			"type":       "object",
-			"properties": properties,
-			"required":   required,
-		},
+		"inputSchema": schema,
 	}
 }
 
@@ -58,7 +63,7 @@ func allToolDefinitions() []map[string]any {
 				"headerFilter":   map[string]any{"type": "string", "description": "Header channel filter"},
 				"matchMode":      map[string]any{"type": "string", "enum": []string{"contains", "prefix", "exact", "regex"}, "description": "Filter match mode (default contains)"},
 				"groupId":        map[string]any{"type": "string", "description": "Consumer group id (mutually exclusive with partitions)"},
-				"partitions":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Explicit partition list"},
+				"partitions":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Explicit partition list (integers; numeric strings or one comma-separated string also accepted)"},
 				"offsetTime":     map[string]any{"type": "string", "description": "RFC3339 / unix ms (offsetStrategy=timestamp)"},
 			},
 		),
@@ -68,7 +73,7 @@ func allToolDefinitions() []map[string]any {
 			nil,
 			map[string]any{
 				"connectionId": connectionProperty(),
-				"panel":        map[string]any{"type": "string", "enum": []string{"messages", "topics", "groups", "schemas"}, "description": "Panel to focus"},
+				"panel":        map[string]any{"type": "string", "enum": []string{"messages", "topics", "groups", "schemas"}, "description": "Panel to focus (case-insensitive)"},
 			},
 		),
 		toolEntry(
@@ -78,8 +83,8 @@ func allToolDefinitions() []map[string]any {
 			map[string]any{
 				"connectionId": connectionProperty(),
 				"topic":        map[string]any{"type": "string", "description": "Optional topic check (locator = topic-partition-offset)"},
-				"partition":    map[string]any{"type": "integer", "description": "Partition of the message"},
-				"offset":       map[string]any{"type": "integer", "description": "Offset of the message"},
+				"partition":    map[string]any{"type": "integer", "description": "Partition of the message (non-negative; numeric strings tolerated)"},
+				"offset":       map[string]any{"type": "integer", "description": "Offset of the message (non-negative; numeric strings tolerated)"},
 			},
 		),
 		toolEntry(
@@ -106,8 +111,8 @@ func allToolDefinitions() []map[string]any {
 				"topic":          map[string]any{"type": "string", "description": "Topic to scan"},
 				"offsetStrategy": map[string]any{"type": "string", "enum": []string{"latest", "earliest", "committed", "timestamp", "offset"}, "description": "Offset strategy (default earliest)"},
 				"offsetTime":     map[string]any{"type": "string", "description": "RFC3339 / unix ms (offsetStrategy=timestamp)"},
-				"partitions":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Explicit partition list"},
-				"maxScanRecords": map[string]any{"type": "integer", "description": "Scan budget (default 1000, max 100000; consume maxScanRecords semantics)"},
+				"partitions":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Explicit partition list (integers; numeric strings or one comma-separated string also accepted)"},
+				"maxScanRecords": map[string]any{"type": "integer", "description": "Scan budget (default 1000, max 100000; consume maxScanRecords semantics; numeric strings tolerated)"},
 				"filter":         map[string]any{"type": "string", "description": "Full-text filter (key+value+headers)"},
 				"keyFilter":      map[string]any{"type": "string", "description": "Key channel filter"},
 				"valueFilter":    map[string]any{"type": "string", "description": "Value channel filter"},
@@ -116,17 +121,18 @@ func allToolDefinitions() []map[string]any {
 				"fieldFilters":   map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"source": map[string]any{"type": "string"}, "path": map[string]any{"type": "string"}, "operator": map[string]any{"type": "string"}, "value": map[string]any{"type": "string"}}}, "description": "Field-level filters (value/key/header channels with JSON path)"},
 				"decode":         map[string]any{"type": "string", "enum": []string{"none", "base64"}, "description": "Value second-pass decode"},
 				"decompression":  map[string]any{"type": "string", "description": "Decompression (gzip | lz4 | zstd | snappy)"},
+				"schema":         map[string]any{"type": "object", "properties": map[string]any{"registry": map[string]any{"type": "string"}, "subject": map[string]any{"type": "string"}, "version": map[string]any{"type": "integer"}, "format": map[string]any{"type": "string"}}, "description": "Schema Registry mount to decode Confluent wire-format values into JSON before projection ({subject?, version?}; subject optional — resolved from the wire schema id; requires schemaRegistry=confluent on the connection)"},
 				"fields":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "JSON-path projection fields aggregated as distinct/topN (after schema decode when mounted), e.g. [\"$.user.id\"]"},
 				"format":         map[string]any{"type": "string", "enum": []string{"digest", "rows"}, "description": "digest (default) = counts + sample; rows = at most 20 locator rows"},
 			},
 		),
 		toolEntry(
 			"kafka_cursor_next",
-			"Fetch the next batch (n<=20) of locator rows from a digest session: topic-partition-offset (+ optional projected fields) only, no filter re-send and no re-scan. Expired cursors (10 minutes) return an explicit error suggesting a fresh kafka_messages_digest.",
+			"Fetch the next batch (n<=20) of locator rows from a digest session: topic-partition-offset (+ optional projected fields) only, no filter re-send and no re-scan. Expired cursors return an explicit error (with the effective TTL, default 10 minutes, adjustable via mcp/settings/set cursorTtlSecs) suggesting a fresh kafka_messages_digest.",
 			[]string{"cursorId"},
 			map[string]any{
 				"cursorId": map[string]any{"type": "string", "description": "cursorId returned by kafka_messages_digest"},
-				"n":        map[string]any{"type": "integer", "description": "Batch size (default 20, max 20)"},
+				"n":        map[string]any{"type": "integer", "description": "Batch size (default 20, max 20; numeric strings tolerated)"},
 				"offset":   map[string]any{"type": "integer", "description": "Start offset; omit to continue where the previous batch stopped"},
 			},
 		),
@@ -142,7 +148,7 @@ func allToolDefinitions() []map[string]any {
 				"keyBase64":    map[string]any{"type": "string", "description": "Binary key as base64"},
 				"valueBase64":  map[string]any{"type": "string", "description": "Binary value as base64"},
 				"headers":      map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Message headers"},
-				"partition":    map[string]any{"type": "integer", "description": "Explicit partition (optional)"},
+				"partition":    map[string]any{"type": "integer", "description": "Explicit partition (optional; non-negative, numeric strings tolerated)"},
 				"compression":  map[string]any{"type": "string", "enum": []string{"none", "gzip", "lz4", "zstd", "snappy"}, "description": "Compression (default none)"},
 				"schema":       map[string]any{"type": "object", "properties": map[string]any{"registry": map[string]any{"type": "string"}, "subject": map[string]any{"type": "string"}, "version": map[string]any{"type": "integer"}, "format": map[string]any{"type": "string"}}, "description": "Schema Registry mount for wire-format encoding"},
 			},
@@ -159,14 +165,14 @@ func allToolDefinitions() []map[string]any {
 		),
 		toolEntry(
 			"kafka_groups_offsets_reset",
-			"Reset consumer group offsets (two-phase preview/confirm like kafka_topics_delete). resetTo: earliest | latest | timestamp | partitionOffset. Read-only connections never list this tool. Audited with source=mcp.",
+			"Reset consumer group offsets (two-phase preview/confirm like kafka_topics_delete). resetTo: earliest | latest | timestamp | partitionOffset (case-insensitive). Per mode the preview also requires: topics for earliest/latest/timestamp; a positive timestampMs (unix ms) for timestamp; partitionOffsets (topic -> partition -> offset) for partitionOffset. Read-only connections never list this tool. Audited with source=mcp.",
 			[]string{"connectionId", "group", "resetTo"},
 			map[string]any{
 				"connectionId":     connectionProperty(),
 				"group":            map[string]any{"type": "string", "description": "Consumer group id"},
 				"topics":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Topics to reset (required except for partitionOffset)"},
-				"resetTo":          map[string]any{"type": "string", "enum": []string{"earliest", "latest", "timestamp", "partitionOffset"}, "description": "Reset target"},
-				"timestampMs":      map[string]any{"type": "integer", "description": "resetTo=timestamp: target unix ms"},
+				"resetTo":          map[string]any{"type": "string", "enum": []string{"earliest", "latest", "timestamp", "partitionOffset"}, "description": "Reset target (case-insensitive)"},
+				"timestampMs":      map[string]any{"type": "integer", "description": "resetTo=timestamp: target unix ms (>0; numeric strings tolerated)"},
 				"partitionOffsets": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "object"}, "description": "resetTo=partitionOffset: topic -> partition -> offset"},
 				"confirmToken":     map[string]any{"type": "string", "description": "One-time token returned by the preview call"},
 			},

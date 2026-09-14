@@ -30,6 +30,10 @@ kafka 插件，见 `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md`）。
 | `dbx-ldap-dev` | LDAP 插件专项（Go、stdio-jsonl、认证矩阵、测试容器） |
 | `dbx-files-dev` | Files 插件专项（OpenDAL、二进制通道、异步 job 传输） |
 | `dbx-kafka-dev` | Kafka 插件专项（Go + franz-go、stdio-jsonl、dev 测试集群、Schema Registry） |
+| `dbx-mcp-usage` | 三插件 MCP 的 agent 使用指引（zcode 接入、内联连接、翻页/两阶段写、常见坑速查） |
+| `dbx-files-mcp` | Files MCP 快速调用（mcp__dbx-files__*）：扫描/查找/读写/两阶段删除的任务→工具速查 |
+| `dbx-ldap-mcp` | LDAP MCP 快速调用（mcp__dbx-ldap__*）：检索聚合/schema/条目增删改的任务→工具速查 |
+| `dbx-kafka-mcp` | Kafka MCP 快速调用（mcp__dbx-kafka__*）：消费检索/生产/两阶段运维的任务→工具速查 |
 | `dbx-web-docker` | web Docker 发版（deploy/web 镜像构建、插件自动安装、服务器部署） |
 | `dbx-ssh-sftp-dev`（用户级） | ssh 插件专项（russh、sudo/sftp_ext、宿主 worktree 细节） |
 

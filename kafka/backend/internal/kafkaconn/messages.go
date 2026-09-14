@@ -461,7 +461,7 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	if reuseOK {
 		signature = consumeClientSignature(topic, params.OffsetStrategy, partitions, params.IsolationLevel)
 		if entry, reusable := s.consumePoolAcquire(params.ConnectionID, signature, resetAtStart); reusable {
-			if resetErr := resetConsumeClientForReuse(entry.client, topic, resetAtStart, entry.seenParts); resetErr != nil {
+			if resetErr := resetConsumeClientForReuse(entry.client, topic, resetAtStart); resetErr != nil {
 				s.consumePoolRelease(entry, nil, false)
 			} else {
 				pooled = entry

@@ -50,6 +50,10 @@ type TimeBucket struct {
 // timeHistogramMaxBuckets 设计硬上限：直方图桶数 ≤12。
 const timeHistogramMaxBuckets = 12
 
+// digestDecodeErrorWidth 样本行 decodeError 的截断宽度（诊断信息，宽于
+// 数据单元格——SR 错误的 subject 路径 + HTTP 状态码在前 120 字符常放不下）。
+const digestDecodeErrorWidth = 200
+
 // buildTimeHistogram 把带时间戳的命中消息按 [min,max] 均分 ≤12 桶。
 // 桶数 = min(12, 时间跨度)（跨度不足时少分桶，避免空桶）；单一时间点
 // （min==max）产出单桶。无时间戳消息不进桶。
@@ -390,6 +394,24 @@ func projectMessage(message kafkaconn.ConsumedMessage, fields []string, width in
 		if projected != nil {
 			out["fields"] = projected
 		}
+	}
+	// schema 挂载定位信息（解码命中时填充）：AI 据此确认挂载生效与
+	// wire id → subject/version 的解析结果。
+	if message.SchemaID > 0 {
+		out["schemaId"] = message.SchemaID
+		if message.SchemaSubject != "" {
+			out["schemaSubject"] = message.SchemaSubject
+		}
+		if message.SchemaVersion > 0 {
+			out["schemaVersion"] = message.SchemaVersion
+		}
+	}
+	// 解码失败可见性（schema 挂载/解压失败等）：错误不截断丢弃——静默
+	// 吞掉时 AI 会把乱码原值误读成数据本身。截断用独立上限（比数据单元格
+	// 宽：SR 错误含 subject/version 路径 + HTTP 状态码，120 字符常截掉
+	// 定位与状态信息）。
+	if message.DecodeError != "" {
+		out["decodeError"] = DigestCellTruncate(message.DecodeError, digestDecodeErrorWidth)
 	}
 	return out
 }

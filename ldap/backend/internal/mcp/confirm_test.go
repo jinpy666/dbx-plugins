@@ -55,3 +55,27 @@ func TestConfirmExpiryAndHashMismatch(t *testing.T) {
 		t.Fatalf("unknown token: %v", got)
 	}
 }
+
+// S-CONF-TTL settings 接线：SetTTL 后下一次 Issue 用新 TTL（已签发令牌
+// 不追溯）；Sanitized 下限 10s（files confirmTtlSecs 同名同范围 10–600）。
+func TestConfirmSetTLTAppliesToNewTokens(t *testing.T) {
+	store := NewConfirmStore()
+	now := intentBase
+	legacy, _ := store.Issue(HashParams([]byte(`{"a":1}`)), now)
+	store.SetTTL(10 * time.Second)
+	if got := store.Consume(legacy, HashParams([]byte(`{"a":1}`)), now.Add(20*time.Second)); got != ConfirmOK {
+		t.Fatalf("pre-existing token keeps its original expiry: %v", got)
+	}
+	fresh, expiresAt := store.Issue(HashParams([]byte(`{"b":1}`)), now)
+	if store.TTL() != 10*time.Second || expiresAt.Sub(now) != 10*time.Second {
+		t.Fatalf("new token must use the configured TTL: %v %v", store.TTL(), expiresAt.Sub(now))
+	}
+	if got := store.Consume(fresh, HashParams([]byte(`{"b":1}`)), now.Add(11*time.Second)); got != ConfirmExpired {
+		t.Fatalf("new token must expire on the configured TTL: %v", got)
+	}
+	// ≤0 的 SetTTL 被忽略（防误配清零）。
+	store.SetTTL(0)
+	if store.TTL() != 10*time.Second {
+		t.Fatalf("non-positive SetTTL must be ignored: %v", store.TTL())
+	}
+}

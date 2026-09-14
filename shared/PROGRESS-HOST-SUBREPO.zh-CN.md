@@ -811,3 +811,203 @@ files PROGRESS-P-FILES §14。
   `shared/frontend/` 无需适配。
 - **工具链注意**：上游 Cargo.lock 的 AWS SDK 依赖要求 rustc ≥ 1.94.1，
   本机需 `rustup run 1.97.1`（1.88 已不够；上游 main 无 rust-toolchain.toml）。
+
+## 27. 四插件 MCP 真机验证 + 桥工具面宿主侧事实（2026-09-12）
+
+ldap/files/kafka 三插件 MCP（设计 `shared/IMPL_PLAN_PLUGIN_MCP.zh-CN.md`）
+完成 host-e2e 真机验收过程中，确认若干宿主侧事实，供后续跟进与 ssh MCP
+文档订正：
+
+- **数据目录红线**：宿主数据目录由 `DBX_DATA_DIR` 环境变量决定；debug
+  bundle 不带该变量启动会读用户真实数据目录。已落地
+  `shared/host-e2e/launch.sh`（注入 DBX_DATA_DIR 启动 bundle 内二进制），
+  用法记入 skill `dbx-host-e2e`。
+- **宿主 MCP 三个面均未暴露插件桥工具（真机实测）**：桌面 HTTP MCP
+  （`mcp_http_server.rs`，端口 5225、token `mcp-http-token`、默认关闭，
+  在隔离 app-data 的 `dbx.db` `app_settings.mcp_http_server_settings`
+  写 `enabled:true` 后随启动生效）、stdio `host/target/debug/dbx-mcp
+  --stdio`（0.4.86）、npm `@dbx-app/mcp-server` 0.4.83——三者 tools/list
+  均只有 19 个 dbx_* 数据工具。`ssh/docs/MCP.zh-CN.md` 所写
+  `dbx_list_plugin_tools` / `dbx_call_plugin_tool` 在现版宿主源码中
+  不存在，仅 `crates/dbx-mcp/tests/plugin_tools_bridge.rs` 在 backend
+  方法层覆盖。**待宿主跟进**：三个面注册插件桥工具。
+- **插件工具的现实暴露路径 = 插件自身 standalone `--mcp`**：本机
+  `mcp__dbx-ssh__*`（ssh_exec/sftp_* 等）来自
+  `dbx-plugin-ssh --mcp` 进程（ssh 方式二），与宿主无关。ldap/files/
+  kafka 的同款 stdio 模式随后补齐（见各插件 PROGRESS）。
+- **`dbx mcp` 不是子命令**：bundle 内 `Contents/MacOS/dbx` 是 tauri GUI
+  主程序，`dbx mcp` 只是带无效参数启动 GUI（stderr 可见工作台恢复的
+  plugin-trace，易误判为 MCP 服务）。stdio 服务器是独立二进制
+  `dbx-mcp`。
+- **真机验收结论**：隔离实例插件中心正确列出 ldap v0.1.58 /
+  files v0.1.48 / kafka v0.1.29 且全部"兼容"；插件侧 `mcp/tools`+
+  `mcp/call` 契约由三插件 smoke_mcp（对安装 sidecar）验证通过。桌面
+  HTTP MCP 的工具面验证待该服务在设置中开启后进行。
+- **跟进闭环（同日）**：三插件 standalone `--mcp` stdio 模式已落地（设计
+  §0.2/§5 此前跳过项）——`dbx-plugin-ldap|kafka --mcp`（Go）与
+  `dbx-plugin-files --mcp`（Rust），MCP 2024-11-05、内联凭据 hash 池化、
+  ui 工具 UNAVAILABLE、digest/cursor/两阶段写全量可用。smoke：ldap 12/12
+  （容器）、kafka 13/13（dev 集群）、files 14/14（localFs）。至此插件
+  MCP 工具可被任意 MCP 客户端经 stdio 直接调用，宿主桥工具注册仍待上游。
+
+## 28. MCP 专项第四轮：四插件 stdio 桥真机端到端回环（2026-09-13）
+
+承接 §27（真机事实 + mock 桥契约），本轮把「插件 standalone `--mcp` →
+宿主 `/call-plugin-tool` 桥」从 mock 契约升级为**真机 DBX.app 回环验证**，
+并沉淀为可复跑脚本。宿主零改动（规则 8），插件源码只读。
+
+**环境与流程**：四插件当日最新 dbxp（ssh 0.4.67 / ldap 0.1.64 /
+files 0.1.54 / kafka 0.1.35）经 `shared/host-e2e/install.sh --reinstall`
+装入同一隔离 app-data；`launch.sh`（`DBX_DATA_DIR` 注入，红线钉死）拉起
+host debug bundle 测试实例；等待 `mcp-bridge-port` 发布并 TCP 探测通过
+（本轮两次分别为 49526 / 61790）；收尾按记录 pid 精确 kill（用户真实
+DBX.app 全程运行未受影响；ssh 套件 T4 auto-launch 因含 pkill 必须跳过）。
+
+**回环结论（4/4 通过）**：
+
+| 插件 | 探针 | 结果 |
+| --- | --- | --- |
+| ssh | `ssh_exec {connectionId:"vagrant"}` 隐藏通道 | 全链路真执行：转发 → 宿主 → app 侧 sidecar → vagrant VM（192.168.33.11:22）`exitCode:0`，hostname=vagrant |
+| ldap | `ldap_search_digest {connectionId:"no-such-…"}` | FORWARDED：宿主 404 `Connection … not found` 原样并入引导错误 |
+| kafka | `kafka_messages_digest {connectionId:"no-such-…"}` | 同上（注意 `kafka_ui_*` 族 standalone 短路 UNAVAILABLE，不参与桥兜底） |
+| files | `files_scan_digest {connectionId:"no-such-…"}` | 同上（「Ways out」出路文案） |
+
+三态判据把「转发成功」与「桥不可达 fail-closed」钉死：app 侧响应带
+`DBX app bridge returned HTTP <status>`（404 也是回环通的证据），本地
+fail-closed 是 `unreachable after 30s: no reachable mcp-bridge-port`；
+每个探针都跑一次空 app-data control 验证后者。跨插件全链路（ldap/
+kafka/files 的真实结果层）因隔离 app-data 仅含 vagrant（ssh）连接未
+覆盖，待 seed 各自连接后补。
+
+**发现（只记录不修）**：
+
+1. **runInTerminal 冷启动竞态（ssh，宿主侧）**：宿主 emit
+   `mcp-open-connection-workbench`（前端 `useTauriEvents.ts` 处理、
+   `openPluginConnection` 确保 PTY）后**立即** invoke 插件侧；冷启动/
+   前端未就绪时插件侧报 `HTTP 502: No open terminal session`（两次
+   复现；tab 已建立场景 §27 时代曾通过）。隐藏通道不受影响。
+2. **ssh 转发失败静默落回（ssh 侧，设计取舍）**：`forward_tool_via_bridge`
+   失败（含 app 404）时静默落回 inline 自纠 L0 文案，未知 id 无法产生
+   FORWARDED 证据——回环探针对 ssh 须用真实保存连接。
+3. **偶发转发无响应**：ssh 真连接探针之后的下一两个跨插件转发调用
+   90s 无响应、单独重跑立即成功（疑似宿主侧/GUI 渲染竞态；沉淀脚本
+   已放宽 150s + OTHER 重试一次）。
+
+**沉淀**：`shared/host-e2e/mcp_bridge_e2e.sh`（装四插件 → 拉起 → 等桥
+端口 TCP 探测 → 四插件回环探针 + control 对照 → ssh 五场景套件
+（--skip-autolaunch）→ 按 pid 收尾），全流程一次通过；临时探针逻辑
+内嵌 python、产物只进 /tmp。后续 host 同步后按 AGENTS.md 规则 7 复跑
+本脚本即可回归桥契约。
+
+## 29. MCP 专项第七轮：ldap/kafka/files 转发真实结果层打通（2026-09-14）
+
+承接 §28 的三态判据（当时 ldap/kafka/files 只验到「桥 404 也是回环通」），
+本轮在隔离 app-data 内 seed 三条真实连接，把三插件的
+「standalone sidecar → 宿主桥 → app 内插件 sidecar → 真实端点 → 结果回流」
+全链路真机打通，并沉淀进 `mcp_bridge_e2e.sh --deep`。插件源码只读，
+宿主零改动（规则 8）；本轮测试 app 复用第四轮已装 dbxp
+（ldap 0.1.64 / files 0.1.54 / kafka 0.1.35）。
+
+**连接存储机制结论**（只读探索隔离 app-data 的 `dbx.db` + host
+`crates/dbx-core/src/storage.rs` / `connection_secrets.rs` /
+`plugins/host.rs`、`src-tauri/src/commands/mcp_bridge.rs`）：
+
+1. 双表结构：`connections(id, config_json)` + `connection_secrets`
+   (connection_id, key, secret)。`config_json` 平铺结构化字段
+   （host/port/username 等）+ `external_config`（manifest binding:config
+   字段）+ `db_type:"plugin"` + `plugin_id` / `plugin_connection_provider` /
+   `plugin_connection_type`；凭据不在 config_json。
+2. 凭据走 secret 表而非加密（隔离目录内 SQLite 明文行，由目录权限与
+   "不持久化"约定兜底）：宿主保存路径把主 password 与 binding:secret 字段
+   移入 `connection_secrets`（secret 键 = `plugin_connection.<key>`），config_json
+   脱敏留空键；`load_connections` 每次把 secret 回填进内存 config。
+3. 桥 `/call-plugin-tool` 每次 `resolve_connection → load_connections()`
+   实时读库——因此**直接 `sqlite3 INSERT OR REPLACE` seed 即时生效，无需
+   重启 app，也无需宿主导入/环境变量通道**（本轮已真机实证）。无凭据连接
+   不受任何加密机制阻挡；secret 回填路径由 vagrant(ssh) 行在第四轮实证。
+4. 硬校验点：`plugin_connection_type` 必须等于 provider 的 `database_type`
+   （ldap→`ldap`、kafka→`kafka`、files→`storage`），否则
+   `resolve_connection_provider` 直接拒绝。
+
+**seed 结果**（3/3 成功，无不可 seed 类型；凭据不落盘不入记录）：
+
+| 连接 id | 端点 | 关键字段 | 结果 |
+| --- | --- | --- | --- |
+| `e2e-ldap-anon` | OpenLDAP smoke 容器 127.0.0.1:1389 | `auth_type:"anonymous"`、`base_dn:"dc=example,dc=org"`（容器匿名读默认放行） | 成功 |
+| `e2e-kafka-dev` | dev 集群 127.0.0.1:9092 PLAINTEXT | `bootstrap_servers`、`security_protocol:"PLAINTEXT"`、`read_only:true` | 成功 |
+| `e2e-files-local` | localFs root=/tmp/dbx-e2e-files-root | `protocol:"fs"`、`lock_to_root:true` | 成功 |
+
+**真实结果层验证**（测试 app 经 launch.sh 语义拉起、桥端口 64123，
+standalone sidecar `--mcp` + 隔离 app-data，真实 connectionId）：
+
+| 插件 | 探针 | 结果 |
+| --- | --- | --- |
+| ldap | `ldap_search_digest` `(objectClass=*)` | `matched:9`，sample 返回容器真实条目（dc=example,dc=org、ou=People、uid=jane/bob/seedpw…） |
+| kafka | `kafka_messages_digest` topic=dbx-e2e-deep-probe | `matched:2`，sample 值即 seed 的 marker 消息文本 |
+| files | `files_scan_digest` path=/ | `matched:4`，sample 为 seed 目录真实条目（alpha.txt / bravo.json / subdir / charlie.log） |
+
+**沉淀**：`mcp_bridge_e2e.sh` 新增 `--deep` 段（既有 4/4 转发契约探针与
+ssh 套件原样保留）：幂等准备端点（localFs 标记文件、kafka 建topic + 重复
+生产 marker、LDAP 匿名 search 就绪探测）→ `INSERT OR REPLACE` seed 三连接 →
+三插件 digest 探针断言 `matched>=1`（异常重试一次）。端点缺失的插件记
+SKIP 不计失败（AGENTS 规则 5 语义）。实测连跑两次幂等通过，7/7（4 契约
++ 3 真实数据），按 pid 收尾、临时探针只落 /tmp。
+
+**发现与剩余风险**（只记录不修）：
+
+1. ldap 本轮用匿名 bind（运行中容器的 admin 密码仅存于启动环境，不可取
+   回），`bind_password` 类 secret 在桥路径的真机回填未直接实证——机制由
+   storage 代码 + vagrant 行既有实证覆盖；后续可再以可控密码容器补一条
+   simple-bind 连接。
+2. kafka matched 随复跑累积（marker 重复生产），断言为 `>=1` 故无碍；如需
+   确定值可改用独立消费组或清 topic（未做，保持无破坏性）。
+3. 宿主侧若在 seed 后触发全量 `save_connections`（UI 编辑连接等），会以
+   其内存列表重写 connections 表、丢掉运行中 seed 的行——e2e 流程无该
+   操作；在真机上同时手工编辑连接时需留意。
+4. 本轮复用第四轮 dbxp；并行开发中的插件改动合入后重跑
+   `--deep --skip-install`（换装新包后去掉 --skip-install）即可回归。
+
+## 30. MCP 专项第八轮（收口轮）任务 A：最新 dbxp 真机桥终验 + ldap secret 路径实证（2026-09-14）
+
+承接 §29 剩余缺口：第七轮插件代码改动（并发测试、缺参枚举、enum 文案等）
+当时未装进真机。本轮以**当日最新源码**重打包四插件并全量复跑真机桥 e2e，
+同时补上 §29 遗留 1 的 `bind_password` secret 回填桥路径实证。
+插件源码只读，宿主零改动（规则 8）。
+
+**发布打包门**：`ssh scripts/package_and_verify.sh`（双冒烟对包内二进制，
+17/17 全绿）+ `files/ldap/kafka scripts/build.sh`，四包全部无错产出——
+ssh 0.4.67 / ldap 0.1.64 / files 0.1.55 / kafka 0.1.35（ssh/ldap/kafka
+版本号未 bump 但为第七轮改动后的重打包；files 已 bump 0.1.55）。
+
+**e2e 全量结果**（install --reinstall 四新包 → launch.sh 拉起，测试 app
+pid 61493、桥端口 50802；收尾按 pid 停 app，用户真实 DBX.app 全程未受影响）：
+
+| 段 | 结果 |
+| --- | --- |
+| 转发契约 4/4 | ssh `ssh_exec` 真执行（vagrant `exitCode:0`，echo marker 回流）；ldap/kafka/files 未知连接 404 回环；各 control 均 fail-closed |
+| deep 真实结果层 3/3 | ldap `matched=9`（e2e-ldap-anon）、kafka `matched=8`（e2e-kafka-dev）、files `matched=4`（e2e-files-local），全部经桥真实数据 |
+| ssh 套件 2/4 | T2/T3 PASS；T1/T5 FAIL（502 "No open terminal session"） |
+
+summary 7/7 PASS（0 failed）。T1/T5 失败与 §28 发现 1（runInTerminal
+冷启动竞态、工作台 tab 未建立）现象完全一致，属既有已知项在冷启动场景
+的复现，**非第七轮代码引入**——同一轮内隐藏通道（契约探针、T2/T3、deep）
+全部通过。未修复，维持"只记录"约定。
+
+**ldap secret 路径实证（补 §29 遗留 1，三态对照全中）**：自拉临时
+bitnami/openldap 容器（11389 端口、`LDAP_ALLOW_ANON_BINDING=no`、密码仅
+运行时 env），按 §29 双表结构 seed 三条连接（config_json 的
+`connection_secrets.bind_password` 空占位 + secrets 表
+`plugin_connection.bind_password` 行），测试 app 运行中经桥探针：
+
+| 连接 | 期望 | 实际 |
+| --- | --- | --- |
+| `e2e-ldap-bind`（正确密码在 secrets 表） | 认证生效 + 真实数据 | `REAL_DATA matched=6`，sample 为容器真实条目（dc=example,dc=org、ou=users、ou=groups…） |
+| `e2e-ldap-badpw`（错误密码） | 认证被拒 | 桥回 app 侧结构化错误 `LDAP Result Code 49 "Invalid Credentials"` |
+| `e2e-ldap-anon-no`（匿名，容器禁匿名） | 匿名被拒 | `LDAP Result Code 48 "anonymous bind disallowed"`（证明 bind 成功非匿名蹭出） |
+
+结论：`bind_password` 类 secret 的「seed → secrets 表 → 宿主桥实时回填 →
+app 内 sidecar simple bind → 结果回流」全链路真机实证成立，§29 遗留 1
+关闭。探针后已从隔离 dbx.db 删除三条带凭据行、销毁临时容器（凭据不落盘）。
+
+**剩余风险**：T1/T5 冷启动竞态仍未解（宿主侧，修复派轮待定）；T1/T5 如需
+绿需先在前端建立工作台 tab 再跑套件。本轮无新增缺陷记录。

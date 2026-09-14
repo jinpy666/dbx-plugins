@@ -36,15 +36,18 @@ type Server struct {
 	now func() time.Time
 }
 
-// NewServer 构造 MCP Server（settings 从数据目录加载，损坏回落默认）。
+// NewServer 构造 MCP Server（settings 从数据目录加载，损坏回落默认；
+// cursor 会话的 TTL/LRU 容量跟随 settings——同族 files cursorTtlSecs/
+// maxCursorSessions 同款语义）。
 func NewServer(svc *kafkaconn.Service, st *store.Store) *Server {
+	settings := LoadSettings(st)
 	return &Server{
 		svc:      svc,
 		st:       st,
 		intents:  NewIntentStore(0, 0),
-		cursors:  NewCursorStore(0, 0, 0),
+		cursors:  NewCursorStore(time.Duration(settings.CursorTtlSecs)*time.Second, settings.MaxCursorSessions, 0),
 		confirms: NewConfirmStore(),
-		settings: LoadSettings(st),
+		settings: settings,
 		now:      time.Now,
 	}
 }
@@ -79,6 +82,12 @@ func (s *Server) SettingsSet(updates map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// cursor 会话参数同步到运行中的 store：TTL 生效于新物化会话，容量
+	// 立即收敛（同族 files cursorTtlSecs/maxCursorSessions 语义）；confirm
+	// 令牌 TTL 生效于下一次签发（已签发令牌不追溯，ldap 同构）。
+	s.cursors.SetTTL(time.Duration(settings.CursorTtlSecs) * time.Second)
+	s.cursors.SetCapacity(settings.MaxCursorSessions)
+	s.confirms.SetTTL(time.Duration(settings.ConfirmTtlSecs) * time.Second)
 	if err := SaveSettings(s.st, settings); err != nil {
 		return nil, fmt.Errorf("persist mcp settings: %w", err)
 	}
@@ -147,12 +156,53 @@ func (s *Server) Call(tool string, arguments map[string]any) (map[string]any, er
 	case "kafka_topics_records_clear":
 		result, err = s.topicsRecordsClear(arguments)
 	default:
-		return nil, fmt.Errorf("unknown tool: %s", tool)
+		return nil, errors.New(unknownToolMessage(tool))
 	}
 	if err != nil {
 		return nil, err
 	}
 	return s.enforceResponseLimit(result), nil
+}
+
+// toolNameList 全部注册工具名（unknown tool 建议与计数用；单一来源取自
+// 注册表，包初始化时展开一次）。
+var toolNameList = func() []string {
+	names := make([]string, 0, len(allToolDefinitions()))
+	for _, tool := range allToolDefinitions() {
+		names = append(names, tool["name"].(string))
+	}
+	return names
+}()
+
+// unknownToolMessage 未注册工具名的可行动错误（ssh unknown_tool_message
+// 同构）：分隔符/大小写变体（kafka-messages-digest、KAFKA_MESSAGES_DIGEST）
+// 建议注册名；全部 miss 时仍指向工具发现面。
+func unknownToolMessage(name string) string {
+	compact := func(text string) string {
+		return strings.ToLower(strings.Map(func(r rune) rune {
+			if r == '-' || r == '_' || r == ' ' {
+				return -1
+			}
+			return r
+		}, text))
+	}
+	query := compact(name)
+	suggestion := ""
+	for _, tool := range toolNameList {
+		candidate := compact(tool)
+		if candidate == query {
+			suggestion = tool
+			break
+		}
+		if len(query) >= 4 && (strings.Contains(candidate, query) || strings.Contains(query, candidate)) {
+			suggestion = tool
+		}
+	}
+	hint := ""
+	if suggestion != "" {
+		hint = fmt.Sprintf("Did you mean '%s'? ", suggestion)
+	}
+	return fmt.Sprintf("unknown tool: %s. %sUse mcp/tools to list the %d available tools", name, hint, len(toolNameList))
 }
 
 // --- UI intent 工具（设计 §1/§6.3） ---
@@ -161,22 +211,31 @@ func (s *Server) Call(tool string, arguments map[string]any) (map[string]any, er
 // 生成 intentId → 状态表登记 pending → 发 `kafka/ui/intent` 事件 → 等
 // report（ReportWaitMs）→ 返回 {intentId, state, summary}。
 func (s *Server) uiSearch(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "topic"); err != nil {
+		return nil, err
+	}
 	topic := strings.TrimSpace(stringField(args, "topic"))
 	if topic == "" {
 		return nil, errors.New("topic is required")
 	}
+	// partitions 宽容解析（JSON number / 整数字符串 / 逗号分隔串）；非法项
+	// 报错而非静默丢弃（静默丢分区会改变消费语义）。
+	partitions, err := parseIntList(args["partitions"])
+	if err != nil {
+		return nil, err
+	}
 	params := map[string]any{
 		"topic":          topic,
 		"connectionId":   strings.TrimSpace(stringField(args, "connectionId")),
-		"offsetStrategy": strings.TrimSpace(stringField(args, "offsetStrategy")),
+		"offsetStrategy": strings.ToLower(strings.TrimSpace(stringField(args, "offsetStrategy"))),
 		"limit":          args["limit"],
 		"filter":         strings.TrimSpace(stringField(args, "filter")),
 		"keyFilter":      strings.TrimSpace(stringField(args, "keyFilter")),
 		"valueFilter":    strings.TrimSpace(stringField(args, "valueFilter")),
 		"headerFilter":   strings.TrimSpace(stringField(args, "headerFilter")),
-		"matchMode":      strings.TrimSpace(stringField(args, "matchMode")),
+		"matchMode":      strings.ToLower(strings.TrimSpace(stringField(args, "matchMode"))),
 		"groupId":        strings.TrimSpace(stringField(args, "groupId")),
-		"partitions":     stringSlice(args["partitions"]),
+		"partitions":     partitions,
 		"offsetTime":     strings.TrimSpace(stringField(args, "offsetTime")),
 	}
 	return s.runIntent("search", params), nil
@@ -186,6 +245,14 @@ func (s *Server) uiFocus(args map[string]any) (map[string]any, error) {
 	panel := strings.TrimSpace(stringField(args, "panel"))
 	if panel == "" {
 		return nil, errors.New("panel is required (messages | topics | groups | schemas)")
+	}
+	panel = strings.ToLower(panel)
+	switch panel {
+	case "messages", "topics", "groups", "schemas":
+	default:
+		// 前端在线时未知面板会 rejected，但离线/stdio 下只会 pending——
+		// 在 sidecar 侧提前给出明确错误。
+		return nil, fmt.Errorf("panel must be one of messages | topics | groups | schemas (got %q)", panel)
 	}
 	return s.runIntent("focus", map[string]any{
 		"panel":        panel,
@@ -206,15 +273,21 @@ func (s *Server) uiSelect(args map[string]any) (map[string]any, error) {
 	}), nil
 }
 
-// locatorOf 解析 partition+offset 定位参数（整数必填且非负）。
+// locatorOf 解析 partition+offset 定位参数（schema required =
+// [partition, offset]：双缺一次枚举全点名，ssh 同款；整数必填且非负、
+// 整数字符串宽容接受——前端 Number.parseInt(String(...)) 同语义；
+// present-but-非法值仍逐参数精确点名）。
 func locatorOf(args map[string]any) (int, int, error) {
-	partition := intArg(args["partition"])
-	offset := intArg(args["offset"])
-	if _, present := args["partition"]; !present || partition < 0 {
-		return 0, 0, errors.New("partition is required (non-negative integer)")
+	if err := missingRequired(args, "partition", "offset"); err != nil {
+		return 0, 0, err
 	}
-	if _, present := args["offset"]; !present || offset < 0 {
-		return 0, 0, errors.New("offset is required (non-negative integer)")
+	partition, ok := coerceInt(args["partition"])
+	if !ok || partition < 0 {
+		return 0, 0, fmt.Errorf("partition must be a non-negative integer (got %v)", args["partition"])
+	}
+	offset, ok := coerceInt(args["offset"])
+	if !ok || offset < 0 {
+		return 0, 0, fmt.Errorf("offset must be a non-negative integer (got %v)", args["offset"])
 	}
 	return partition, offset, nil
 }
@@ -302,6 +375,9 @@ const uiTopicsLimit = 50
 // uiTopics 工具 `kafka_ui_topics`：topic 名清单（limit 硬上限 50；帮 AI
 // 在 digest/ui_search 前定位真实 topic 名）。
 func (s *Server) uiTopics(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "connectionId"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	if connectionID == "" {
 		return nil, errors.New("connectionId is required")
@@ -330,6 +406,11 @@ func (s *Server) uiTopics(args map[string]any) (map[string]any, error) {
 // messagesDigest 工具 `kafka_messages_digest`：复用 consume 的
 // maxScanRecords 扫描语义与 filter 各通道，sidecar 本地聚合 + 物化 cursor。
 func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
+	// 缺参一次枚举（schema required = [connectionId, topic]，按声明顺序
+	// 全点名，ssh 同款）；present-but-空串仍由下方逐参数精确点名。
+	if err := missingRequired(args, "connectionId", "topic"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	if connectionID == "" {
 		return nil, errors.New("connectionId is required")
@@ -343,7 +424,7 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 		format = "digest"
 	}
 	if format != "digest" && format != "rows" {
-		return nil, errors.New("format must be digest or rows")
+		return nil, fmt.Errorf("format must be \"digest\" or \"rows\" (got %q)", stringField(args, "format"))
 	}
 
 	s.mu.Lock()
@@ -369,7 +450,9 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 		Decode:         strings.TrimSpace(stringField(args, "decode")),
 		Decompression:  strings.TrimSpace(stringField(args, "decompression")),
 	}
-	if partitions := intSlice(args["partitions"]); len(partitions) > 0 {
+	if partitions, err := parseIntList(args["partitions"]); err != nil {
+		return nil, err
+	} else if len(partitions) > 0 {
 		params.Partitions = partitions
 	}
 	if groupId := strings.TrimSpace(stringField(args, "groupId")); groupId != "" {
@@ -378,30 +461,57 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 	if offsetTime := strings.TrimSpace(stringField(args, "offsetTime")); offsetTime != "" {
 		params.OffsetTime = offsetTime
 	}
-	if timestampFrom, ok := optionalInt64(args["timestampFrom"]); ok {
-		params.TimestampFrom = &timestampFrom
-	}
-	if timestampTo, ok := optionalInt64(args["timestampTo"]); ok {
-		params.TimestampTo = &timestampTo
-	}
-	if offsetFrom, ok := optionalInt64(args["offsetFrom"]); ok {
-		params.OffsetFrom = &offsetFrom
-	}
-	if offsetTo, ok := optionalInt64(args["offsetTo"]); ok {
-		params.OffsetTo = &offsetTo
+	for _, key := range []string{"timestampFrom", "timestampTo", "offsetFrom", "offsetTo"} {
+		value, present, err := optionalInt64Arg(args, key)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			continue
+		}
+		bound := value
+		switch key {
+		case "timestampFrom":
+			params.TimestampFrom = &bound
+		case "timestampTo":
+			params.TimestampTo = &bound
+		case "offsetFrom":
+			params.OffsetFrom = &bound
+		case "offsetTo":
+			params.OffsetTo = &bound
+		}
 	}
 	if fieldFilters, err := parseFieldFilters(args["fieldFilters"]); err != nil {
 		return nil, err
 	} else if len(fieldFilters) > 0 {
 		params.FieldFilters = fieldFilters
 	}
+	// schema 挂载（可选）：SR 解码 wire format 载荷后再做字段投影（与
+	// produce 的 schema 同形状：{registry?, subject?, version?, format?}；
+	// digest 允许缺 subject——按 wire id 查 SR）。不存在/未配置 SR 的连接
+	// 带 schema 时由 kafkaconn 门禁显式报错（不静默丢弃参数）。
+	if rawSchema, present := args["schema"]; present && rawSchema != nil {
+		schemaRef, err := parseSchemaRef(rawSchema, false)
+		if err != nil {
+			return nil, err
+		}
+		params.Schema = schemaRef
+	}
 	// 保留上限 = 扫描上限：命中消息全量留存做本地聚合（仍不出 sidecar）。
 	params.Limit = params.MaxScanRecords
 	result, err := s.svc.Consume(getContext(), params)
 	if err != nil {
-		return nil, err
+		return nil, annotateClusterError(err)
 	}
-
+	// franz-go 对不存在 topic 的消费是静默空结果（与空 topic 无差别），
+	// AI 会把"名字打错"误读成"没有数据"——扫描为 0 时补一次存在性校验。
+	// 非空路径零额外成本；空 topic 多付一次元数据往返；校验本身因网络等
+	// 原因失败时不掩盖消费结果（只对明确的 topic 不存在报错）。
+	if result.Scanned == 0 {
+		if _, describeErr := s.svc.DescribeTopic(getContext(), kafkaconn.TopicsDescribeRequest{ConnectionID: connectionID, Topic: topic}); describeErr != nil && topicNotFoundish(describeErr.Error()) {
+			return nil, fmt.Errorf("topic %q does not exist on this connection; verify the name — kafka_ui_topics lists valid topic names (workbench mode; standalone stdio has no topic listing, use a topic name from the user or cluster docs)", topic)
+		}
+	}
 	fields := stringSlice(args["fields"])
 	aggregated := AggregateDigest(DigestInput{
 		Messages:   result.Messages,
@@ -431,9 +541,48 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 		payload["rows"] = aggregated.Rows[:rowLimit]
 		return payload, nil
 	}
+	// 解码失败可见性：decodeError 静默吞掉时 AI 会把乱码 wire 字节误读成
+	// 数据本身——计数 + 指引（样本行带 per-message decodeError）。
+	if decodeFailures, decodeNote := digestNotes(result.Messages, aggregated); decodeFailures > 0 {
+		payload["decodeFailures"] = decodeFailures
+		payload["decodeNote"] = decodeNote
+	}
+	// 投影字段全不命中提示：matched>0 且每个请求字段都 0 命中时给路径核对
+	// 指引（纯函数便于单测）。
+	if note := fieldsNoteOf(aggregated, fields); note != "" {
+		payload["fieldsNote"] = note
+	}
 	payload["stats"] = aggregated.Stats
 	payload["sample"] = aggregated.Sample
 	return payload, nil
+}
+
+// digestNotes 计算 decode 失败计数与指引（schema 挂载/解压失败等）。
+func digestNotes(messages []kafkaconn.ConsumedMessage, aggregated DigestResult) (int, string) {
+	decodeFailures := 0
+	for _, message := range messages {
+		if message.DecodeError != "" {
+			decodeFailures++
+		}
+	}
+	if decodeFailures == 0 {
+		return 0, ""
+	}
+	return decodeFailures, fmt.Sprintf("%d of %d matched messages failed decode; sample rows carry per-message decodeError (verify schema.subject/version when a schema is mounted)", decodeFailures, aggregated.Matched)
+}
+
+// fieldsNoteOf 投影字段全不命中提示：matched>0 且每个请求字段都 0 命中时
+// 给路径核对指引（sidecar 无法区分"路径错"与"载荷非 JSON"，提示两者都查）。
+func fieldsNoteOf(aggregated DigestResult, fields []string) string {
+	if len(fields) == 0 || aggregated.Matched == 0 {
+		return ""
+	}
+	for _, fieldStat := range aggregated.Stats.Fields {
+		if fieldStat.ValueCount > 0 {
+			return ""
+		}
+	}
+	return "projected fields matched 0 values across all matched messages; verify the JSON paths and that payloads are JSON (field projection skips non-JSON payloads)"
 }
 
 // digestScanLimit 扫描上限：显式 maxScanRecords（clamp ≤100000）优先，
@@ -454,16 +603,39 @@ func digestScanLimit(args map[string]any, fallback int) int {
 
 // cursorNext 工具 `kafka_cursor_next`：分批取定位字段行（n ≤20/批）。
 func (s *Server) cursorNext(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "cursorId"); err != nil {
+		return nil, err
+	}
 	cursorID := strings.TrimSpace(stringField(args, "cursorId"))
 	if cursorID == "" {
 		return nil, errors.New("cursorId is required")
 	}
-	result, status := s.cursors.Next(cursorID, NextRequest{N: intArg(args["n"]), Offset: offsetArg(args)}, s.now())
+	// n：缺失走会话缺省 20；存在但非法/非正报错（整数字符串宽容接受）。
+	n := 0
+	if raw, present := args["n"]; present && raw != nil {
+		value, ok := coerceInt(raw)
+		if !ok || value <= 0 {
+			return nil, fmt.Errorf("n must be a positive integer (got %v)", raw)
+		}
+		n = value
+	}
+	result, status := s.cursors.Next(cursorID, NextRequest{N: n, Offset: offsetArg(args)}, s.now())
 	switch status {
 	case LookupExpired:
-		return nil, errors.New("cursor expired (10 minutes); re-run kafka_messages_digest")
+		// 过期报文携带实际生效 TTL（settings 可调，同族 files 同款语义），
+		// 引导重发 digest。
+		s.mu.Lock()
+		ttl := s.settings.CursorTtlSecs
+		s.mu.Unlock()
+		return nil, fmt.Errorf("cursor expired (TTL %ds); re-run kafka_messages_digest", ttl)
 	case LookupUnknown:
-		return nil, fmt.Errorf("unknown cursorId: %s", cursorID)
+		// 淘汰/过期分不清是设计内（游标是进程内短会话）：报文带实际生效
+		// TTL、会话容量与重建指引（ldap 同款质量，MCP_ACCEPTANCE §4）。
+		s.mu.Lock()
+		ttl := s.settings.CursorTtlSecs
+		sessions := s.settings.MaxCursorSessions
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown cursorId: %s — the cursor may have expired (TTL %ds) or been evicted (at most %d digest sessions are kept); re-run kafka_messages_digest", cursorID, ttl, sessions)
 	}
 	rows := make([]map[string]any, 0, len(result.Rows))
 	for _, row := range result.Rows {
@@ -511,6 +683,10 @@ type produceArgs struct {
 // （设计 §4：非破坏、可逆）；照常过连接只读门并审计 source:"mcp"。
 // value/valueBase64 合计 ≤64 KiB（MCP 侧建议上限，超出提示走工作台）。
 func (s *Server) messagesProduce(args map[string]any) (map[string]any, error) {
+	// 缺参一次枚举（schema required = [connectionId, topic]，ssh 同款）。
+	if err := missingRequired(args, "connectionId", "topic"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	topic := strings.TrimSpace(stringField(args, "topic"))
 	if connectionID == "" {
@@ -528,30 +704,53 @@ func (s *Server) messagesProduce(args map[string]any) (map[string]any, error) {
 	req.KeyBase64 = stringField(args, "keyBase64")
 	req.ValueBase64 = stringField(args, "valueBase64")
 	req.Compression = stringField(args, "compression")
-	if headers, ok := args["headers"].(map[string]any); ok {
+	// headers：object（header 名 → 标量值）；存在但形状非法显式报错——
+	// 数组/标量形状静默丢弃会让"想带 header"的消息无 header 落盘。边界
+	// 输入（空键/超长键/大量 header）按 MCP 头部预算显式拒绝（对抗输入
+	// 的报错质量：带实际值/数量与上限），不做静默截断。
+	if rawHeaders, present := args["headers"]; present && rawHeaders != nil {
+		headers, ok := rawHeaders.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("headers must be an object (header name -> scalar value, got %v)", rawHeaders)
+		}
+		if len(headers) > mcpHeaderMaxCount {
+			return nil, fmt.Errorf("too many headers (%d > %d); use the workbench for header-heavy messages", len(headers), mcpHeaderMaxCount)
+		}
 		req.Headers = make(map[string]string, len(headers))
 		for name, raw := range headers {
-			req.Headers[name] = fmt.Sprintf("%v", raw)
+			if name == "" {
+				return nil, errors.New("headers key cannot be empty (every header needs a non-empty name)")
+			}
+			if len(name) > mcpHeaderKeyMaxBytes {
+				return nil, fmt.Errorf("header name exceeds %d bytes (got %d bytes)", mcpHeaderKeyMaxBytes, len(name))
+			}
+			switch raw.(type) {
+			case string, float64, bool, nil:
+				req.Headers[name] = fmt.Sprintf("%v", raw)
+			default:
+				return nil, fmt.Errorf("headers[%q] must be a scalar value (string/number/boolean, got %v)", name, raw)
+			}
 		}
 	}
-	if raw, ok := args["partition"].(float64); ok && raw >= 0 {
-		partition := int32(raw)
+	if raw, present := args["partition"]; present && raw != nil {
+		partitionValue, ok := coerceInt(raw)
+		if !ok || partitionValue < 0 {
+			return nil, fmt.Errorf("partition must be a non-negative integer (got %v)", raw)
+		}
+		partition := int32(partitionValue)
 		req.Partition = &partition
 	}
 	if schema, ok := args["schema"].(map[string]any); ok {
-		subject := stringField(schema, "subject")
-		if subject == "" {
-			return nil, errors.New("schema.subject is required")
+		schemaRef, err := parseSchemaRef(schema, true)
+		if err != nil {
+			return nil, err
 		}
-		req.Schema = &kafkaconn.SchemaRef{
-			Registry: stringField(schema, "registry"),
-			Subject:  subject,
-			Version:  int64(intArg(schema["version"])),
-			Format:   stringField(schema, "format"),
-		}
+		req.Schema = schemaRef
+	} else if _, present := args["schema"]; present && args["schema"] != nil {
+		return nil, errors.New("schema must be an object ({subject, version?, format?, registry?})")
 	}
-	if len(req.Value)+len(req.ValueBase64) > mcpProduceMaxBytes {
-		return nil, fmt.Errorf("value exceeds the MCP produce budget (%d bytes); use the workbench for large payloads", mcpProduceMaxBytes)
+	if size := len(req.Value) + len(req.ValueBase64); size > mcpProduceMaxBytes {
+		return nil, fmt.Errorf("value exceeds the MCP produce budget (%d > %d bytes); use the workbench for large payloads", size, mcpProduceMaxBytes)
 	}
 
 	result, err := s.svc.Produce(getContext(), kafkaconn.ProduceRequest{
@@ -568,7 +767,8 @@ func (s *Server) messagesProduce(args map[string]any) (map[string]any, error) {
 		Source:       sourceMCP,
 	})
 	if err != nil {
-		return nil, err
+		// produce 到不存在 topic 等：附可行动指引（与读路径同一套标注）。
+		return nil, annotateClusterError(err)
 	}
 	return map[string]any{
 		"success":   true,
@@ -582,6 +782,13 @@ func (s *Server) messagesProduce(args map[string]any) (map[string]any, error) {
 // mcpProduceMaxBytes MCP 单条消息载荷预算（value 或 valueBase64 解码前
 // 合计 ≤64 KiB；大载荷走工作台/生产面板）。
 const mcpProduceMaxBytes = 64 * 1024
+
+// MCP 头部预算（对抗输入边界）：header 名非空、≤1024 字节、条数 ≤64。
+// 超限显式报错（带实际值与上限），不静默截断/丢弃。
+const (
+	mcpHeaderKeyMaxBytes = 1024
+	mcpHeaderMaxCount    = 64
+)
 
 // deleteArgs 两阶段 hash 绑定的 canonical 形状（结构体输出确定，hash 稳定）。
 // ConfirmTopic/ConfirmTopics 由 MCP 侧按 topics 填充，第二阶段执行时仍满足
@@ -613,6 +820,11 @@ type clearArgs struct {
 // confirmToken；60s TTL、参数 hash 绑定）。confirmTopic 门禁在第二阶段
 // 执行时仍走 kafkaconn 原语义（纵深防御）。
 func (s *Server) topicsDelete(args map[string]any) (map[string]any, error) {
+	// 缺参一次枚举（schema required = [connectionId, topics]，ssh 同款）；
+	// topics 存在但为空数组由下方精确点名（不混入枚举）。
+	if err := missingRequired(args, "connectionId", "topics"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	topics := stringSlice(args["topics"])
 	if connectionID == "" {
@@ -647,6 +859,12 @@ func (s *Server) topicsDelete(args map[string]any) (map[string]any, error) {
 
 // groupsOffsetsReset 工具 `kafka_groups_offsets_reset`：强制两阶段。
 func (s *Server) groupsOffsetsReset(args map[string]any) (map[string]any, error) {
+	// 缺参一次枚举（schema required = [connectionId, group, resetTo]，按
+	// 声明顺序全点名，ssh 同款）；resetTo 模式配套参数（topics/timestampMs/
+	// partitionOffsets）由 validateResetRequest 按模式精确点名。
+	if err := missingRequired(args, "connectionId", "group", "resetTo"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	group := strings.TrimSpace(stringField(args, "group"))
 	if connectionID == "" {
@@ -663,7 +881,15 @@ func (s *Server) groupsOffsetsReset(args map[string]any) (map[string]any, error)
 		Group:        group,
 		Topics:       stringSlice(args["topics"]),
 		ResetTo:      strings.TrimSpace(stringField(args, "resetTo")),
-		TimestampMs:  int64(intArg(args["timestampMs"])),
+	}
+	// timestampMs 宽容解析（整数字符串接受）；存在但非法即报错——
+	// 静默折算为 0 会把 reset 变成"重置到纪元"（准确性红线）。
+	if raw, present := args["timestampMs"]; present && raw != nil {
+		value, ok := coerceInt64(raw)
+		if !ok {
+			return nil, fmt.Errorf("timestampMs must be an integer (unix milliseconds, got %v)", raw)
+		}
+		req.TimestampMs = value
 	}
 	if req.ResetTo == "" {
 		return nil, errors.New("resetTo is required (earliest | latest | timestamp | partitionOffset)")
@@ -672,6 +898,11 @@ func (s *Server) groupsOffsetsReset(args map[string]any) (map[string]any, error)
 		return nil, err
 	} else if partitionOffsets != nil {
 		req.PartitionOffsets = partitionOffsets
+	}
+	// 预览前体检：避免"预览成功 → 确认时才报参数缺"白烧一次性令牌
+	//（归一规则与 kafkaconn normalizeResetMode 同源，见 groups.go）。
+	if err := validateResetRequest(req); err != nil {
+		return nil, err
 	}
 	return s.twoPhase(connectionID, req, args, func() (any, error) {
 		result, err := s.svc.ResetGroupOffsets(getContext(), kafkaconn.GroupOffsetResetRequest{
@@ -690,9 +921,40 @@ func (s *Server) groupsOffsetsReset(args map[string]any) (map[string]any, error)
 	})
 }
 
+// validateResetRequest resetTo 模式与配套参数的预检（预览前拒绝，不签发
+// 令牌）：earliest/latest/timestamp 必须给 topics；timestamp 必须给正的
+// timestampMs（0 等价重置到纪元，几乎必是参数缺失的产物）；partitionOffset
+// 必须给 partitionOffsets。归一与大小写别名与 kafkaconn normalizeResetMode
+// 保持一致（groups.go），漂移时以那边为准。
+func validateResetRequest(req offsetsResetArgs) error {
+	switch strings.ToLower(req.ResetTo) {
+	case "earliest", "latest":
+		if len(req.Topics) == 0 {
+			return fmt.Errorf("topics is required for resetTo=%s (topic name list)", req.ResetTo)
+		}
+	case "timestamp":
+		if len(req.Topics) == 0 {
+			return errors.New("topics is required for resetTo=timestamp (topic name list)")
+		}
+		if req.TimestampMs <= 0 {
+			return errors.New("timestampMs is required (unix milliseconds > 0) for resetTo=timestamp")
+		}
+	case "partitionoffset", "partition_offset", "partitionoffsets":
+		if len(req.PartitionOffsets) == 0 {
+			return errors.New("partitionOffsets is required for resetTo=partitionOffset (topic -> partition -> offset)")
+		}
+	default:
+		return fmt.Errorf("resetTo must be earliest, latest, timestamp, or partitionOffset (got %q)", req.ResetTo)
+	}
+	return nil
+}
+
 // topicsRecordsClear 工具 `kafka_topics_records_clear`：强制两阶段
 // （purge 同级红线：read_only/allow_delete 与门在预览与执行两道都拒绝）。
 func (s *Server) topicsRecordsClear(args map[string]any) (map[string]any, error) {
+	if err := missingRequired(args, "connectionId", "topic"); err != nil {
+		return nil, err
+	}
 	connectionID := strings.TrimSpace(stringField(args, "connectionId"))
 	topic := strings.TrimSpace(stringField(args, "topic"))
 	if connectionID == "" {
@@ -751,7 +1013,7 @@ func (s *Server) twoPhase(connectionID string, req any, args map[string]any, exe
 		}
 		return map[string]any{"success": true}, nil
 	case ConfirmExpired:
-		return nil, errors.New("confirmToken expired (60s); request a new preview")
+		return nil, fmt.Errorf("confirmToken expired (TTL %ds); request a new preview", int(s.confirms.TTL().Seconds()))
 	case ConfirmHashMismatch:
 		return nil, errors.New("arguments changed since the preview; request a new confirmToken")
 	default:
@@ -760,53 +1022,105 @@ func (s *Server) twoPhase(connectionID string, req any, args map[string]any, exe
 }
 
 // ensureWritable mcp/call 侧只读门（纵深防御：工具清单已剔除写工具，
-// 直接调用仍拒绝）。
+// 直接调用仍拒绝）。消息附可行动出路：stdio 内联连接默认 readOnly=true，
+// AI 调用方最常见的卡点就是不知道如何解除（真机 agent 实测，2026-09-14）。
 func (s *Server) ensureWritable(connectionID string) error {
 	readOnly, _ := s.svc.PolicyOf(connectionID)
 	if readOnly {
-		return fmt.Errorf("connection %q is read-only; write tools are refused", connectionID)
+		return fmt.Errorf("connection %q is read-only; write tools are refused — standalone stdio inline connections open read-only by default: re-call with \"readOnly\": false on the inline connection (for a saved connection, change the setting in the DBX workbench)", connectionID)
 	}
 	return nil
 }
 
-// ensureDeleteAllowed 删除类门（read_only ∥ !allow_delete）。
+// ensureDeleteAllowed 删除类门（read_only ∥ !allow_delete）；出路指引同
+// ensureWritable（delete 族还叠加 allowDelete 开关）。
 func (s *Server) ensureDeleteAllowed(connectionID, action string) error {
 	readOnly, allowDelete := s.svc.PolicyOf(connectionID)
 	if readOnly {
-		return fmt.Errorf("connection %q is read-only; %s is refused", connectionID, action)
+		return fmt.Errorf("connection %q is read-only; %s is refused — re-call with \"readOnly\": false (and \"allowDelete\": true for delete-class tools) on the inline connection", connectionID, action)
 	}
 	if !allowDelete {
-		return fmt.Errorf("connection %q does not allow delete operations (allow_delete=false); %s is refused", connectionID, action)
+		return fmt.Errorf("connection %q does not allow delete operations (allow_delete=false); %s is refused — re-call with \"allowDelete\": true on the inline connection", connectionID, action)
 	}
 	return nil
 }
 
 // --- 参数解析辅助（kafkaconn 形状对齐） ---
 
-// intSlice 整数数组参数（JSON number → int32）。
-func intSlice(raw any) []int32 {
-	items, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]int32, 0, len(items))
-	for _, item := range items {
-		number, ok := item.(float64)
-		if !ok || number < 0 {
-			continue
-		}
-		out = append(out, int32(number))
-	}
-	return out
+// topicNotFoundish 报告错误文本是否表示 topic 不存在（kafkaconn "topic %q
+// not found" 与 kadm UNKNOWN_TOPIC_OR_PARTITION 两种来源；匹配保持宽松，
+// 文本随上游版本变化时在此单点调整）。
+func topicNotFoundish(message string) bool {
+	lowered := strings.ToLower(message)
+	return strings.Contains(lowered, "unknown topic") ||
+		strings.Contains(lowered, "unknown_topic") ||
+		strings.Contains(lowered, "topic not found") ||
+		strings.Contains(lowered, "not found") ||
+		strings.Contains(lowered, "does not host") ||
+		strings.Contains(lowered, "does not exist")
 }
 
-// optionalInt64 可选整数字段（缺失/非数值 = 未提供）。
-func optionalInt64(raw any) (int64, bool) {
-	number, ok := raw.(float64)
-	if !ok {
-		return 0, false
+// annotateClusterError 集群操作失败附加可行动指引（digest/produce 等
+// 读写共用）：连接未注册 → 检查 connectionId / stdio 内联参数；topic 疑似
+// 不存在 → kafka_ui_topics 定位。匹配不上就原样返回。
+func annotateClusterError(err error) error {
+	if err == nil {
+		return nil
 	}
-	return int64(number), true
+	if topicNotFoundish(err.Error()) {
+		return fmt.Errorf("%w; verify the topic name — kafka_ui_topics lists valid topic names (workbench mode; standalone stdio has no topic listing, use a topic name from the user or cluster docs)", err)
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "is not connected") {
+		return fmt.Errorf("%w; verify the connectionId (or pass inline connection parameters in standalone stdio mode)", err)
+	}
+	return err
+}
+
+// parseIntList 整数数组参数宽容解析：JSON number 数组、整数字符串数组、
+// 单个逗号/空白分隔字符串（UI 表单 textarea 语义）都接受；存在但含非法/负数
+// 项时报错——静默丢弃会改变扫描/消费语义（准确性）。
+func parseIntList(raw any) ([]int32, error) {
+	switch value := raw.(type) {
+	case nil:
+		return nil, nil
+	case []any:
+		out := make([]int32, 0, len(value))
+		for index, item := range value {
+			number, ok := coerceInt(item)
+			if !ok || number < 0 {
+				return nil, fmt.Errorf("partitions[%d] must be a non-negative integer (got %v)", index, item)
+			}
+			out = append(out, int32(number))
+		}
+		return out, nil
+	case string:
+		out := []int32{}
+		for _, piece := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\r' || r == '\t' }) {
+			number, err := strconv.Atoi(strings.TrimSpace(piece))
+			if err != nil || number < 0 {
+				return nil, fmt.Errorf("partitions must be non-negative integers (got %q)", piece)
+			}
+			out = append(out, int32(number))
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("partitions must be an array of non-negative integers (got %v)", raw)
+	}
+}
+
+// optionalInt64Arg 可选整数参数三态：缺失 → (0,false,nil)；JSON number 或
+// 整数字符串 → (值,true,nil)；存在但非法 → 报错（不静默忽略）。
+func optionalInt64Arg(args map[string]any, key string) (int64, bool, error) {
+	raw, present := args[key]
+	if !present || raw == nil {
+		return 0, false, nil
+	}
+	value, ok := coerceInt64(raw)
+	if !ok {
+		return 0, false, fmt.Errorf("%s must be an integer (got %v)", key, raw)
+	}
+	return value, true, nil
 }
 
 // parseFieldFilters 解析字段级过滤（ConsumeFieldFilter 形状直通）。
@@ -833,6 +1147,34 @@ func parseFieldFilters(raw any) ([]kafkaconn.ConsumeFieldFilter, error) {
 		out = append(out, filter)
 	}
 	return out, nil
+}
+
+// parseSchemaRef 解析 schema 挂载参数（produce/digest 共形）：对象
+// {registry?, subject, version?, format?}。produce 必须给 subject（编码按
+// subject+version 取元数据）；digest 允许缺省（按 wire id 查 SR）。version
+// 缺省 = 最新；宽容整数字符串，存在但非法/负数即报错——静默折 0 会把
+// "version 打错"变成"取最新"（准确性）。
+func parseSchemaRef(raw any, requireSubject bool) (*kafkaconn.SchemaRef, error) {
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("schema must be an object ({subject, version?, format?, registry?})")
+	}
+	ref := &kafkaconn.SchemaRef{
+		Registry: strings.TrimSpace(stringField(object, "registry")),
+		Subject:  strings.TrimSpace(stringField(object, "subject")),
+		Format:   strings.TrimSpace(stringField(object, "format")),
+	}
+	if requireSubject && ref.Subject == "" {
+		return nil, errors.New("schema.subject is required")
+	}
+	if rawVersion, present := object["version"]; present && rawVersion != nil {
+		version, ok := coerceInt64(rawVersion)
+		if !ok || version < 0 {
+			return nil, fmt.Errorf("schema.version must be a non-negative integer (got %v)", rawVersion)
+		}
+		ref.Version = version
+	}
+	return ref, nil
 }
 
 // parsePartitionOffsets 解析 resetTo=partitionOffset 的嵌套映射

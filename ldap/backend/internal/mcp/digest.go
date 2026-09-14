@@ -36,11 +36,13 @@ type DistinctStats struct {
 	Truncated  bool           `json:"truncated,omitempty"`
 }
 
-// DigestStats 聚合结论（digest 的 stats 段）。
+// DigestStats 聚合结论（digest 的 stats 段）。objectClass/subtrees 空聚合
+// 也输出 {}（无 omitempty）：键恒在，AI 的响应形状假设稳定（distinct 指针
+// 仅在显式 distinctAttr 时出现，属可选段）。
 type DigestStats struct {
-	ObjectClass      map[string]int `json:"objectClass,omitempty"`
+	ObjectClass      map[string]int `json:"objectClass"`
 	ObjectClassLimit bool           `json:"objectClassLimit,omitempty"` // 组数超上限被截
-	Subtrees         map[string]int `json:"subtrees,omitempty"`         // 按 base 下直接子 DN 计数
+	Subtrees         map[string]int `json:"subtrees"`
 	SubtreesLimit    bool           `json:"subtreesLimit,omitempty"`
 	Distinct         *DistinctStats `json:"distinct,omitempty"`
 	DistinctLimit    bool           `json:"distinctLimit,omitempty"`

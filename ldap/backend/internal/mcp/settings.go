@@ -35,6 +35,21 @@ type Settings struct {
 	DigestSampleRows int `json:"digestSampleRows"`
 	// DigestRowLimit format:"rows" 单次行数（设计硬上限 20）。
 	DigestRowLimit int `json:"digestRowLimit"`
+	// DigestScanLimit digest 远端扫描上限（sizeLimit 未给时的缺省；同族
+	// kafka digestScanLimit 同名同范围，默认 1000）。
+	DigestScanLimit int `json:"digestScanLimit"`
+	// MaxCursorRows cursor 会话物化行数上限（files maxCursorRows 同名，
+	// 默认 10000）。
+	MaxCursorRows int `json:"maxCursorRows"`
+	// CursorTtlSecs cursor 会话 TTL 秒数（设计 §3 默认 10 分钟；files
+	// cursorTtlSecs 同名，默认 600）。
+	CursorTtlSecs int `json:"cursorTtlSecs"`
+	// MaxCursorSessions cursor LRU 会话容量（设计 §3 ≤8；files
+	// maxCursorSessions 同名，默认 8）。
+	MaxCursorSessions int `json:"maxCursorSessions"`
+	// ConfirmTtlSecs 两阶段 confirmToken TTL 秒数（设计 §4 默认 60；files
+	// confirmTtlSecs 同名，clamp 10–600）。
+	ConfirmTtlSecs int `json:"confirmTtlSecs"`
 	// ResponseLimitBytes 单工具响应上限（缺省 16 KiB）。
 	ResponseLimitBytes int `json:"responseLimitBytes"`
 }
@@ -48,6 +63,11 @@ func DefaultSettings() Settings {
 		DigestTopN:         10,
 		DigestSampleRows:   5,
 		DigestRowLimit:     20,
+		DigestScanLimit:    1000,
+		MaxCursorRows:      10000,
+		CursorTtlSecs:      600,
+		MaxCursorSessions:  8,
+		ConfirmTtlSecs:     60,
 		ResponseLimitBytes: defaultResponseLimitBytes,
 	}
 }
@@ -67,6 +87,11 @@ var settingsFields = []settingsField{
 	{"digestTopN", 10},
 	{"digestSampleRows", 5},
 	{"digestRowLimit", 20},
+	{"digestScanLimit", 100000},
+	{"maxCursorRows", 100000},
+	{"cursorTtlSecs", 3600},
+	{"maxCursorSessions", 32},
+	{"confirmTtlSecs", 600},
 	{"responseLimitBytes", 1024 * 1024},
 }
 
@@ -87,6 +112,14 @@ func (s Settings) Sanitized() Settings {
 	s.DigestTopN = clamp(s.DigestTopN, 10)
 	s.DigestSampleRows = clamp(s.DigestSampleRows, 5)
 	s.DigestRowLimit = clamp(s.DigestRowLimit, 20)
+	s.DigestScanLimit = clamp(s.DigestScanLimit, 100000)
+	s.MaxCursorRows = clamp(s.MaxCursorRows, 100000)
+	s.CursorTtlSecs = clamp(s.CursorTtlSecs, 3600)
+	s.MaxCursorSessions = clamp(s.MaxCursorSessions, 32)
+	if s.ConfirmTtlSecs < 10 {
+		s.ConfirmTtlSecs = 10 // files 同款下限：过短的 token TTL 只有误配价值
+	}
+	s.ConfirmTtlSecs = clamp(s.ConfirmTtlSecs, 600)
 	s.ResponseLimitBytes = clamp(s.ResponseLimitBytes, 1024*1024)
 	return s
 }
@@ -124,6 +157,21 @@ func LoadSettings(st *store.Store) Settings {
 	if persisted.DigestRowLimit > 0 {
 		settings.DigestRowLimit = persisted.DigestRowLimit
 	}
+	if persisted.DigestScanLimit > 0 {
+		settings.DigestScanLimit = persisted.DigestScanLimit
+	}
+	if persisted.MaxCursorRows > 0 {
+		settings.MaxCursorRows = persisted.MaxCursorRows
+	}
+	if persisted.CursorTtlSecs > 0 {
+		settings.CursorTtlSecs = persisted.CursorTtlSecs
+	}
+	if persisted.MaxCursorSessions > 0 {
+		settings.MaxCursorSessions = persisted.MaxCursorSessions
+	}
+	if persisted.ConfirmTtlSecs > 0 {
+		settings.ConfirmTtlSecs = persisted.ConfirmTtlSecs
+	}
 	if persisted.ResponseLimitBytes > 0 {
 		settings.ResponseLimitBytes = persisted.ResponseLimitBytes
 	}
@@ -145,7 +193,7 @@ func applySettingsUpdate(settings Settings, updates map[string]any) (Settings, e
 		if !present {
 			continue
 		}
-		number, ok := raw.(float64)
+		number, ok := numberArg(raw) // JSON number 或字符串数字（LLM 常见变体）
 		if !ok {
 			return settings, fmt.Errorf("%s must be a positive integer", field.name)
 		}
@@ -166,6 +214,16 @@ func applySettingsUpdate(settings Settings, updates map[string]any) (Settings, e
 			settings.DigestSampleRows = value
 		case "digestRowLimit":
 			settings.DigestRowLimit = value
+		case "digestScanLimit":
+			settings.DigestScanLimit = value
+		case "maxCursorRows":
+			settings.MaxCursorRows = value
+		case "cursorTtlSecs":
+			settings.CursorTtlSecs = value
+		case "maxCursorSessions":
+			settings.MaxCursorSessions = value
+		case "confirmTtlSecs":
+			settings.ConfirmTtlSecs = value
 		case "responseLimitBytes":
 			settings.ResponseLimitBytes = value
 		}

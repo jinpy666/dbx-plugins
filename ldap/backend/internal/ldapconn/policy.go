@@ -57,16 +57,56 @@ func validateLDAPFilter(filter string) error {
 	return nil
 }
 
-// normalizeLDAPWriteDN 写操作目标 DN 校验（tiny-rdm :1717 原样）。
+// normalizeLDAPWriteDN 写操作目标 DN 校验（tiny-rdm :1717 原样 + 可靠性
+// 纵深轮加固：go-ldap ParseDN 对裸换行/空字节等控制字符不报错（实测
+// 2026-09-13），注入风格 DN 会静默通过本地校验直达服务端，且 DN 原样落
+// audit.jsonl（审计日志注入面）——写 DN 中的裸控制字符一律本地拒绝；
+// RFC 4514 转义形态（\0A 等）不受影响。
 func normalizeLDAPWriteDN(rawDN string) (string, error) {
 	dn := strings.TrimSpace(rawDN)
 	if dn == "" {
 		return "", fmt.Errorf("dn is required")
 	}
+	if hasRawControlChar(dn) {
+		return "", fmt.Errorf("invalid dn: raw control characters are not allowed (escape them per RFC 4514, e.g. \\0A for line feed)")
+	}
 	if _, err := ldap.ParseDN(dn); err != nil {
 		return "", fmt.Errorf("invalid dn: %w", err)
 	}
 	return dn, nil
+}
+
+// hasRawControlChar 检查 DN 是否含裸控制字符（< 0x20 或 0x7f）。
+func hasRawControlChar(dn string) bool {
+	for _, r := range dn {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// NormalizeWriteDN 导出给 MCP 写工具预检（两阶段 preview 签发一次性令牌
+// 之前早失败，不白烧令牌——MCP_ACCEPTANCE §5 预检前置）：空 DN/结构非法
+// DN（含换行/空字节等注入风格输入）返回与执行层一致的错误。返回规范化
+//（TrimSpace）DN。
+func NormalizeWriteDN(rawDN string) (string, error) {
+	return normalizeLDAPWriteDN(rawDN)
+}
+
+// EnsureWriteBaseAllowed 导出给 MCP 写工具预检：写白名单（空则回退读白
+// 名单，再空 = 不限），语义与 ensureLDAPWriteAllowed 的白名单段一致。
+// 不含 read_only 门（MCP 层在取 profile 后先行拒绝）与屏蔽属性门（执行
+// 层按操作属性校验）。
+func EnsureWriteBaseAllowed(profile Profile, dn string) error {
+	writeBases := profile.AllowedWriteBaseDNs
+	if len(writeBases) == 0 {
+		writeBases = profile.AllowedBaseDNs
+	}
+	if len(writeBases) > 0 && !dnWithinAnyBase(dn, writeBases) {
+		return fmt.Errorf("ldap dn %q is outside allowed write base DNs", strings.TrimSpace(dn))
+	}
+	return nil
 }
 
 // normalizeLDAPAddAttributes add 请求属性归一化（tiny-rdm :1728 原样）。

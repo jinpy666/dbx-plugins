@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.kafka",
   "name": "DBX Kafka",
-  "version": "0.1.29",
+  "version": "0.1.36",
   "publisher": "dbx",
   "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
   "icon": "assets/plugin.svg",

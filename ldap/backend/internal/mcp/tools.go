@@ -16,16 +16,21 @@ func connectionProperty() map[string]any {
 	}
 }
 
-// toolEntry 单个工具定义。
+// toolEntry 单个工具定义。required 为空时省略键：nil 切片的 JSON 形状是
+// "required":null，严格校验的 MCP 宿主（zcode tools/list zod 校验）会据此
+// 拒收整个服务器（2026-09-14 真机接入实测）。
 func toolEntry(name, description string, required []string, properties map[string]any) map[string]any {
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
 	return map[string]any{
 		"name":        name,
 		"description": description,
-		"inputSchema": map[string]any{
-			"type":       "object",
-			"properties": properties,
-			"required":   required,
-		},
+		"inputSchema": schema,
 	}
 }
 
@@ -124,6 +129,16 @@ func allToolDefinitions() []map[string]any {
 			},
 		),
 	}
+}
+
+// toolNames 全部已注册工具名（unknown tool 错误自纠提示用）。
+func toolNames() []string {
+	definitions := allToolDefinitions()
+	names := make([]string, 0, len(definitions))
+	for _, tool := range definitions {
+		names = append(names, tool["name"].(string))
+	}
+	return names
 }
 
 // Tools 返回工具清单：给出 connectionId 且该连接只读时剔除写工具并附原因

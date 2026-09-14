@@ -59,5 +59,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'
 echo "==> smoke (OpenLDAP container auto-SKIP; unimplemented methods SKIP)"
 python3 scripts/smoke_test.py
 
+echo "==> MCP smoke (sidecar auto-built; container cases auto-SKIP)"
+if [ -f backend/go.mod ] && command -v go >/dev/null 2>&1; then
+  (cd backend && CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-ldap .)
+fi
+python3 scripts/smoke_mcp.py
+
 echo
 echo "all green (frontend three-step + smoke suite, SKIPs allowed by design)"

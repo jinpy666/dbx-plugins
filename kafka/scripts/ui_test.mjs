@@ -104,6 +104,29 @@ test("no uncaught page errors", async (page, pageErrors) => {
   expectEqual(pageErrors.length, 0, `uncaught page errors: ${pageErrors.slice(0, 3).join(" | ")}`);
 });
 
+test("MCP ui intent consumes a topic and reports state", async (page) => {
+  await page.evaluate(() => {
+    const reports = [];
+    const invoke = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+    window.dbxPlugin.invoke = async (method, params, options) => {
+      if (method === "kafka/ui/state/report") reports.push({ intentId: params.intentId, status: params.status });
+      return invoke(method, params, options);
+    };
+    window.__uiReports = reports;
+    window.dbxPlugin.emitKafkaUiIntent({ intentId: "ui-e2e-1", action: "search", params: { topic: "codec-lab", offsetStrategy: "earliest", limit: 10 } });
+  });
+  try {
+    await page.waitForFunction(
+      () => window.__uiReports.some((report) => report.intentId === "ui-e2e-1" && report.status === "applied"),
+      undefined,
+      { timeout: 8000 },
+    );
+  } catch {
+    const seen = await page.evaluate(() => window.__uiReports || []);
+    throw new Error(`expected an applied kafka/ui/state/report for ui-e2e-1, saw ${JSON.stringify(seen)}`);
+  }
+});
+
 // -- main ----------------------------------------------------------------------
 
 const playwright = await loadPlaywrightCore();

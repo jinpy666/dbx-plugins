@@ -1,6 +1,8 @@
 # 四插件 MCP 辅助定位设计（ldap / files / kafka 落地，ssh 为基线）
 
-状态：设计稿 v2（评审修订：写操作入面 + 本地化 token 经济） · 2026-09-12
+状态：**已全部落地（2026-09-12）**——UI intent + digest/cursor + 两阶段写 +
+standalone `--mcp` stdio 模式；桌面/stdio 面真机验收与暴露路径结论见
+`shared/PROGRESS-HOST-SUBREPO.zh-CN.md` §27。
 范围：为 `io.dbx.ldap`、`io.dbx.files`、`io.dbx.kafka` 设计 MCP 工具面；
 `io.dbx.ssh` 既有 MCP（`ssh/docs/MCP.zh-CN.md` + `ssh/backend/src/mcp.rs`，
 22 工具）是协议基线，不重做。
@@ -205,7 +207,8 @@ sidecar 更新 intent 状态表，mcp/call 返回
   + report 调用的公共 composable（事件形状归一化沿用既有 binaryEvent 模式）；
   三插件相对引用，不各抄一份。
 - **两阶段确认与 digest/cursor 状态机是纯逻辑，Go/Rust 两份实现但测试用例
-  同表**（验收用例清单进 shared，防形状漂移）；`mcp/call` 骨架照 ssh
+  同表**（验收用例清单已沉淀 `shared/MCP_ACCEPTANCE.zh-CN.md`，2026-09-13
+  三轮专项后为权威契约表，防形状漂移）；`mcp/call` 骨架照 ssh
   mcp.rs 移植（Go × 2、Rust × 1）。
 - 各插件 `mockDbxHost`/`mockHost` 必须镜像新事件/方法形状（防单测脱节），
   同步 `env.d.ts` 类型。

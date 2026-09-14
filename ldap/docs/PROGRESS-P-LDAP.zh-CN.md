@@ -928,3 +928,493 @@ i18n 新增 `intent.*` 四键 × 七语。
 test.sh 打包段（本轮未动 manifest/构建链），UI 走查 ui_test.mjs 未加
 intent 场景——剩余风险：真实宿主桥下 intent 事件与 report 时序未真机
 复验；打包不受影响（无 manifest 变更）。未执行任何 git 提交。
+
+### 补充（2026-09-12 晚）：真机 host-e2e 验收
+
+- smoke_mcp 纳入 `scripts/test.sh`（smoke 段后自动重建 sidecar 并运行，
+  容器用例自动 SKIP）；实测 9 PASS + 1 SKIP（无 OpenLDAP 容器）。
+- `ui_test.mjs` 新增 intent 走查用例（22/22 全绿）：mockDbxHost 暴露
+  `window.dbxPlugin.emitUiIntent`，用例验证 emit → 表单填入 → 触发搜索 →
+  `ldap/ui/state/report` applied 全链。注意点：rename 用例会把 user0001
+  移走（用例改用 user0002 且显式传 baseDn，防表单 Base 遗留），用例置于
+  链末尾防状态污染。
+- 重新打包 v0.1.58 并经 installer 装入隔离 app-data；`launch.sh`
+  （DBX_DATA_DIR 注入）拉起测试 DBX.app，插件中心"已安装"显示
+  DBX LDAP v0.1.58 兼容。桌面 HTTP MCP 工具面验证待服务开启，
+  见 shared/PROGRESS-HOST-SUBREPO.zh-CN.md §27。
+
+### 补充（2026-09-12）：standalone `--mcp` stdio 模式（设计 §0.2/§5）
+
+真机验证确认独立 stdio 是插件 MCP 工具被 AI 客户端调用的现实暴露路径
+（ssh 基线同款），本轮为 ldap sidecar 落地（kafka 同构、files 由另一任务）：
+
+- **入口与互斥**：`main.go` 新增 `--mcp` 标志分发（`mcpStdioRequested`
+  精确匹配）→ `runMcpStdio` 进入 stdio MCP 服务器模式，不装配
+  dbxpluginsdk.Server/Emitter（同一进程只跑插件协议或 stdio MCP 其一）。
+- **`internal/mcp/stdio.go`**（ssh `run_mcp_stdio` 的 Go 移植）：MCP
+  2024-11-05 换行分隔 JSON-RPC；initialize（serverInfo.name=io.dbx.ldap）、
+  notifications/initialized（不回包）、tools/list、tools/call、ping；
+  未知方法 -32601、坏行 -32700 不崩；每请求一个 goroutine（慢 digest 不
+  阻塞 ping/tools/list），stdin EOF 后 drain ≤300s。
+- **tools/list 复用注册表**：8 工具照常列出；连接类工具
+  （ldap_search_digest / ldap_entry_write）inputSchema 显式补内联连接
+  参数（严格 MCP 宿主会丢未声明参数，ssh 同因），required 的 connectionId
+  放宽为 anyOf（connectionId ∥ 内联 host）；UI 工具 schema 不动。
+- **UI 工具 UNAVAILABLE**：`ldap_ui_*` 5 个 tools/call 一律 isError content
+  「UNAVAILABLE: 此工具需要 DBX 工作台（工作台模式可用）…」，不假死。
+- **内联凭据连接**：camelCase 字段（host/port/tlsMode/startTls/authType/
+  bindDn/username/domain/password[别名 bindPassword]/ntlmHash/baseDn/
+  tlsVerify/tlsCaPath/tlsServerName/timeoutSecs/readOnly）→ 归一结构体
+  canonical JSON sha256 池化（`mcp-<hash>`，上限 8 FIFO 淘汰即
+  svc.Disconnect），toLifecycle 折算标准 lifecycle params 走
+  `svc.Connect` 同一条路径（工作台同一套底层驱动，惰性建连/断线重连
+  保持）；凭据不落盘不持久化。本轮不做宿主 TCP 桥接兜底（未知
+  connectionId 报引导错误，见 docs/MCP.zh-CN.md「桥接兜底」）。
+- **工具语义零复制**：stdio tools/call 注入池化 connectionId 后直接走
+  `Server.Call`（digest/cursor/两阶段 confirmToken/审计 source=mcp 全部
+  复用）；写审计经 runMcpStdio 注入回调落 audit.jsonl（无 Emitter）。
+- 单测：`internal/mcp/stdio_test.go`（S-STDIO-1..10：协议循环/UNAVAILABLE/
+  池化键/toLifecycle/池淘汰/连接门/Serve 端到端）+ `main_test.go`（--mcp
+  分发互斥）。
+- smoke：`scripts/smoke_mcp.py` 新增 M11（离线 stdio：initialize/tools-list
+  8 工具+内联 schema/ui UNAVAILABLE/连接门/未知方法）与 M12（容器：内联
+  凭据 digest+cursor+两阶段 add/delete 全流程+token 一次性+audit
+  source=mcp）。
+- 文档：`docs/MCP.zh-CN.md` 新增「方式二：独立 stdio 模式」章节（用法/
+  凭据参数表/stdio 未覆盖字段/语义差异/桥接兜底未做/ZCode 接入），
+  降级矩阵补 stdio 行，smoke 段更新 M1–M12。
+
+**验证（真实输出）**：`go vet ./...` 通过；`go test ./...` 全绿（mcp 包
++10 用例）；OpenLDAP 测试容器（127.0.0.1:1389）在跑时
+`LDAP_TEST_PORT=1389 python3 scripts/smoke_mcp.py` **12/12 PASS**
+（M12 stdio 内联凭据 matched=7 + 两阶段删除执行 + token 单次）。未跑
+test.sh 打包段（无 manifest/构建链变更，打包不受影响）。未尽：stdio 桥接
+兜底（connectionId 转发 DBX app）、Kerberos/SASL/DN 白名单族表单字段的
+内联支持；未执行任何 git 提交。
+
+## MCP 工具面测试覆盖专项：易用性/准确性/容错性审计与修复（2026-09-13）
+
+对 8 个注册工具（settings/tools 骨架 + `ldap_ui_focus/search/select/state/
+schema` + `ldap_search_digest` / `ldap_cursor_next` / `ldap_entry_write`）
+按六维（参数校验 / 错误消息质量 / 成功路径 / 降级路径 / 两阶段确认 / 文档
+一致性）做覆盖审计，发现问题即修即回归（容器场景本轮真实跑通）。
+
+**问题清单（现象 → 根因 → 修复）**：
+
+1. **confirmToken 未绑定 connectionId（准确性，最重）**：两阶段 hash 只覆盖
+   writeRequest 业务字段，连接 A 开预览、换连接 B 同 DN 携 token 可执行——
+   跨连接误删通道。→ `writeRequest` 增加 `connectionId` 字段进 canonical
+   hash；换连接复用 token 一律 `arguments changed` 作废。验证：Go
+   `TestServerTwoPhaseTokenBindsConnection`（换连接作废 + 同连接到达执行层 +
+   一次性复用拒绝）+ smoke M10 新增换连接用例。
+2. **scope 非法值静默按 sub 扫描（容错性）**：LLM 传 `children` 等非法值时
+   底层缺省 sub，结果集范围与预期不符且无提示。→ mcp 层 `normalizeScopeArg`：
+   大小写不敏感 + 常见别名（baseObject/singleLevel/subtree/wholeSubtree），
+   未知值报错并列出合法值，不静默兜底。
+3. **整数参数只认 JSON number（容错性）**：`sizeLimit:"50"`、`n:"5"`、
+   settings `"80"` 被静默当缺省/拒绝。→ `numberArg`/`intArg` 宽容解析字符串
+   数字（TrimSpace + ParseFloat），settings 通道同步宽容（非数字串仍明确报
+   `must be a positive integer`）。
+4. **attributes 形态变体被静默吞掉（容错性）**：逗号串 `"cn,mail"`、数组内
+   数字元素（如 `mail:[123]`）直接丢弃投影/写值。→ `stringSlice` 接受逗号串
+   与数字/布尔元素转字符串；`attributeMap` 接受单字符串值折算单元素数组
+   （`{"ou":"people"}`）；空值列表/非标量元素保持明确报错。
+5. **panel 不校验枚举（易用性）**：`ldap_ui_focus{panel:"main"}` 照发 intent
+   等前端 rejected，浪费一轮 TTL。→ `normalizePanelArg` 本地归一化（大小写
+   不敏感）+ 非法值直接报 `panel must be search, tree, or schema (got …)`。
+6. **错误消息缺自纠信息（易用性）**：`unknown tool: X` 干巴、`unknown
+   cursorId` 无指引。→ unknown tool 附全部可用工具名；unknown cursor 附
+   TTL/LRU 说明与「重发 ldap_search_digest」指引；`filter is required` 补
+   RFC 4515 示例。
+7. **文档一致性**：digest `filter` 表述「必填（缺省…）」与 schema required
+   矛盾 → 澄清为 schema 必填、实现层空串兜底；新增「参数容错」一节固化
+   上述变体语义；smoke 段更新 M1–M13。
+
+**新增覆盖**：Go `util_test.go`（6 用例：intArg 字符串数字/stringSlice 变体/
+attributeMap 宽容/scope 归一化/panel 归一化/offset 显式 0）+ `server_test.go`
+扩展 6 用例（panel 校验/intent params 归一化捕获/digest scope 校验/两阶段
+token 绑定连接/unknown tool 自纠/settings 字符串数字）；smoke_mcp.py 新增
+M13（LLM 输入变体：非法 panel/scope 清晰拒绝、`SUB`/`cn,mail`/`"50"` 宽容、
+settings 字符串数字、cursor 指引）并扩展 M9（unknown tool 附工具清单）与
+M10（token 换连接作废）。`uiSearch` intent params 归一化后空值省键（不发空
+scope/空数组给前端）。
+
+**验证（真实输出）**：`go vet ./...` 通过；`go test ./...` 全绿（mcp 包 51
+个测试函数，`-count=1` 强制重跑）；`CGO_ENABLED=0 go build -trimpath -o
+bin/dbx-plugin-ldap .` 成功；OpenLDAP 测试容器（127.0.0.1:1389，
+bitnami/openldap + ldap-seed）拉起后
+`DBX_PLUGIN_SIDECAR=$PWD/backend/bin/dbx-plugin-ldap python3
+scripts/smoke_mcp.py` **13/13 PASS（FAIL=0 SKIP=0）**，含容器场景 M10/M12
+（digest matched=7、两阶段删除执行、token 一次性、audit source=mcp）。容器
+已 `down -v` 清理。未执行任何 git 提交。
+
+**剩余风险**：(1) stdio 桥接兜底（未知 connectionId 转发运行中 DBX 本地 TCP
+桥）仍未做，维持既有记录；(2) `format` 未知值按 digest 兜底属有意为之的
+合理降级（文档已述），未改报错；(3) `changes[].operation` 大小写由
+ldapconn `normalizeLDAPModifyChanges` 兜底（MCP 层不重复校验，服务端错误
+消息已可行动）；(4) 换连接 token 作废使旧 token 在「改回原连接」场景也需
+重开预览——一次性语义的自然结果，非回归。
+
+## MCP 测试覆盖专项第二轮：桥接兜底 + 深水区实测（2026-09-13）
+
+接第一轮遗留清单，按优先级补齐 stdio 桥接兜底（设计 §5 stdio 行「凭据
+内联/桥接兜底，同 ssh 模式」）与 digest/schema/cursor 深水区容器实测。
+
+**任务 1：stdio 桥接兜底（本轮最重交付）**
+
+- 新增 `backend/internal/mcp/appbridge.go`：ssh `app_bridge.rs` 的 Go 移植
+  （标准库 net/http，零新依赖）。端口发现（`DBX_APP_DATA_DIR` → macOS 默认
+  app-data 目录内 `mcp-bridge-port`，垃圾/缺失一律不可用不猜端口）、TCP
+  探测防陈旧端口、尽力拉起（`DBX_APP_LAUNCH_CMD` / `open -a DBX.app`）、
+  500ms 轮询 ensure（缺省预算 30s）、`POST /call-plugin-tool` snake_case
+  五字段契约（`plugin_id:"io.dbx.ldap"`）、64 KiB 单写上限、200 envelope
+  逐字 / 非 200 带 `DBX app bridge returned HTTP <n>` 错误。
+- `stdio.go` 连接解析门重构为 `resolveConnectionOrForward`：内联凭据池化 >
+  已池化 id 直通 > 未池化 id 桥转发 > fail-closed 合并错误（桥失败原因 +
+  内联凭据出路，含 `DBX app bridge` 可 grep 标记，不假死不静默重拨）。
+  转发超时随 `timeoutSecs` clamp 5–300；两阶段写在应用侧完成一次性/hash
+  绑定，本地会话不参与。
+- 测试：`appbridge_test.go` 9 用例（端口解析/契约字段/httptest mock 桥
+  转发 + envelope 透传/非 envelope 包装/404 与非法 JSON fail-closed/
+  ensure 预算/stdio 转发不污染本地池/会话类工具不走桥）；
+  smoke M14 三段（空 app-data fail-closed 跑满 30s ensure 预算——ssh
+  smoke 场景 8 同款；本地 mock 桥转发契约断言五字段 + envelope 逐字；
+  mock 404 表面化）。
+
+**任务 2：digest 聚合变体容器实测（M15，真实数据 12 用户）**
+
+- **修复：`distinctAttr` 自动并入远端投影**（`buildDigestSearchAttrs`）。
+  现象→根因：只传 `distinctAttr:"uid"` 不传 `attributes` 时，服务端投影
+  只有 objectClass，distinct 聚合恒空且无提示。→ distinctAttr 不在投影时
+  追加；Go `TestBuildDigestSearchAttrs` + 容器断言 valueCount=12（修复前
+  此处恒 0）。
+- **修复：零命中 digest 的 stats 键恒在**。现象→根因：filter 命中 0 时
+  `stats.objectClass/subtrees` 空 map 被 `omitempty` 从 JSON 吞键，AI 的
+  响应形状在零命中时漂移（smoke 断言直接 KeyError 暴露）。→ digest.go
+  去 omitempty，空聚合输出 `{}`；Go `TestAggregateZeroMatchKeepsShapeKeys`。
+- 容器断言：groupBy(objectClass) 计数=12、组数 ≤20；subtrees 按连接根
+  base 把 12 个 uid 收拢进 OU 键（base 直接子语义：变体 1b 固化 base=OU
+  时直接子各自成键的形状）；distinct uid valueCount=12、values ≤10 且
+  truncated 标志（topN clamp）；sample ≤5、description 121 runes 截断
+  （DN 不截断）；零命中 → 空聚合键 + 空会话 cursor 可翻（done）；聚合键
+  为空（distinct 指向不存在属性）→ valueCount=0 不报错。
+
+**任务 3：ldap_ui_schema 行为（M16 + 单测）**
+
+- 响应形状提取 `renderSchemaNames` 纯函数：>300 截断恰 300 + truncated
+  标志、恰好 300 不置标志、空 schema 不 panic（`schema_test.go` 3 用例）。
+- 容器实测：OpenLDAP attributeTypes 远超 300 → `attributeNamesTruncated
+  =true` 且恰 300、objectClass 数 <300 不截断；第二次调用（热缓存）形状
+  逐字段一致；断连后报 `not connected` 可行动错误。缓存 TTL 过期触发冷
+  取语义补 `ldapconn` `TestSchemaCacheTTLExpiryTriggersColdFetch`（冷/热/
+  失效/深拷贝既有覆盖在 schema_test）。
+
+**任务 4：cursor 会话容量边界（M17 + 单测）**
+
+- 新增 `TestCursorOffsetBeyondEndClamps`（越界 clamp 末尾空批 done，与
+  kafka/files cursor.go 同语义）、`TestCursorRepeatedPagingSameSession`
+  （显式 offset 重读幂等 + 游标推进 + 续读衔接）、`TestCursorConfigure
+  AppliesToNewSessions`（settings 接线：新 TTL/容量/行上限对下一次 Put
+  生效、已存在会话不追溯）。
+- **修复：空批 `rows` 恒 `[]` 非 null**（cursorNext 层 nil → 空切片；
+  M17 越界用例暴露 JSON null 破坏 AI 形状假设）。
+- **同族对齐：settings 接入 cursor/confirm 参数**（files 同名同名范围）：
+  新增 `digestScanLimit`（kafka 同名，1–100000）、`maxCursorRows`（1–
+  100000）、`cursorTtlSecs`（1–3600）、`maxCursorSessions`（1–32）、
+  `confirmTtlSecs`（10–600）。`CursorStore.Configure` / `ConfirmStore.
+  SetTTL` 运行期生效；cursor 过期/未知与 confirmToken 过期错误携带实际
+  生效值（files 同款语义，替换第一轮硬编码 "10 minutes"）。容器断言：
+  cursorTtlSecs=1 → TTL 后报 `cursor expired (TTL 1s)`；confirmTtlSecs=30
+  → preview expiresAt 距 now ≈30s。
+- smoke M17：深度翻页推进、显式 offset=0 重读内容幂等、offset 越界
+  clamp（空批 done + clamp 后 offset 回显）、settings TTL 接线。
+
+**同族一致性交叉核对（任务 5，对照 ssh/files/kafka MCP 文档与实现）**
+
+- 错误码语义（-32000 业务 / -32601 方法未注册）、digest 响应 16 KiB 上限
+  丢弃顺序、两阶段 hash 绑定 + 一次性语义：四插件一致。
+- **别家形状漂移（只报告未动）**：
+  1. kafka stdio（`kafka/backend/internal/mcp/stdio.go`）与 files stdio
+     均无 DBX 桥接兜底（kafka 报 "no DBX bridge fallback (this build)"，
+     与 ldap 第一轮同款）——ldap 本轮已补，建议两插件后续跟进。
+  2. kafka settings 缺 cursor 三件套与 confirmTtlSecs（cursor TTL/LRU
+     写死）；cursor 过期消息硬编码 "10 minutes"；unknown cursorId 无
+     「重发 digest」自纠指引（files/ldap 均有）。
+  3. files 的 settings 下限（cursorTtlSecs ≥10、maxCursorRows ≥100）比
+     ldap 机制（1 起步报错式 + Sanitized clamp）严——语义等效，不阻塞。
+
+**回归（真实输出）**：`go vet ./...` 通过；`go test ./...` 全绿五包
+（mcp 包 69 测试函数，`-count=1`）；`CGO_ENABLED=0 go build -trimpath
+-o bin/dbx-plugin-ldap .` 成功；OpenLDAP 容器（127.0.0.1:1389）拉起后
+`DBX_PLUGIN_SIDECAR=$PWD/backend/bin/dbx-plugin-ldap python3
+scripts/smoke_mcp.py` **17/17 PASS（FAIL=0 SKIP=0）**，含 M14 桥三段、
+M15 聚合变体、M16 schema 冷热截断、M17 cursor 边界（容器场景真实跑）。
+期间一次 3 场景 SKIP 为 OrbStack 端口转发瞬断（三连 probe 全通后重跑
+即全 PASS，非代码回归）。文档 `ldap/docs/MCP.zh-CN.md` 已同步桥接兜底、
+settings 表（12 项）、digest/cursor 形状语义与 smoke 清单。凭据全程环境
+变量传递、不落盘不入库。未执行任何 git 提交。
+
+**剩余风险**：(1) 桥转发依赖运行中的 DBX.app，无真机 DBX.app 环境（CI/
+容器）里桥存在路径仅由本地 mock 桥覆盖（契约形状级），真机回环建议在
+宿主 e2e 路补一次；(2) 桥未发布时 fail-closed 走满 30s ensure 预算
+（ssh 同款），AI 侧感知为 ~30s 后收到可行动错误而非快速失败——与
+ssh 行为一致，如需加快可在宿主侧发布「应用未运行」探针；(3) OrbStack
+端口转发偶发瞬断会让容器场景整体 SKIP（脚本既有 fail-safe 语义），重跑
+即可；(4) files/kafka 的桥接兜底与 kafka settings/消息自纠缺口未动
+（范围红线：别家只报告）。
+
+## MCP 收敛轮第三轮：intent 回报错误补自纠指引（2026-09-13）
+
+前轮对标报告的遗留小项收口：
+
+- **改动（单点）**：`internal/mcp/server.go` `ReportUIState` 对未知/已过期
+  intentId 的回报错误，由裸 `intent %q is unknown or expired` 补齐自纠指引，
+  对齐 files uiState 同款语义：`intent %q is unknown or expired (intents are
+  per-process and expire after 60s); re-issue the ldap_ui_* call, or omit
+  intentId to read the latest snapshot`。仅文案，错误仍走业务错误 -32000
+  （main.go bizError），报文 wave 2 已修好的 cursor/confirm TTL 实值报错
+  **未动**。
+- **断言**：`server_test.go` 新增
+  `TestServerUIStateReportUnknownIntentGuidance`——未知 intentId 必报错，
+  且错误必须含 `60s` / `ldap_ui_*` / `omit intentId` 三个自纠要素（与
+  `TestServerCursorNextErrors` 的「错误给可行动指引」同款门）。
+- **文档**：MCP.zh-CN `ldap/ui/state/report` 节同步一句（错误附自纠指引，
+  60s 进程内过期、重发 ldap_ui_* 或省略 intentId 读最新快照）。
+
+**回归**：`go vet ./...` 通过；`go test ./...` 六包全绿（mcp 包含新用例）；
+`CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-ldap .` 成功。改动为
+纯错误文案 + 单测，不涉及连接/容器场景行为，未拉 OpenLDAP 容器跑 smoke
+（smoke 无 UI intent 回报负路径用例，容器跑法覆盖不到该分支）。
+
+**剩余风险**：无新增。前端若对旧错误文案做了字符串匹配（未发现），需改为
+前缀/包含匹配——现网前端只透传错误，不受影响。
+
+## 第四轮（2026-09-13）桥回环：真机 DBX.app 端到端验证
+
+隔离 app-data（`shared/host-e2e/app-data`）+ 测试 DBX.app（host debug
+bundle，经 launch.sh 注入 `DBX_DATA_DIR`），ldap 0.1.64 随四插件装入
+同一 app-data；桥端口发布后 TCP 探测通过。
+
+- **转发契约（核心验收）**：standalone `dbx-plugin-ldap --mcp`
+  （`DBX_APP_DATA_DIR` 指向隔离 app-data）`tools/call ldap_search_digest
+  {connectionId:"no-such-ldap-conn", filter:"(objectClass=*)"}` →
+  `resolveConnectionOrForward` 经桥转发 → 宿主 resolve_connection 404
+  `{"error":"Connection with id 'no-such-ldap-conn' not found"}` 原样
+  并入引导错误——TCP+HTTP 打到真 app，转发路径端到端通。
+- **fail-closed 对照**：同调用换空 `DBX_APP_DATA_DIR`（临时目录）→
+  `DBX app bridge unreachable after 30s: no reachable mcp-bridge-port`
+  本地 fail-closed，与「app 侧 returned HTTP 404」两种文案可明确区分
+  （前者无 HTTP 状态码、有 unreachable 字样）。
+- **app-data 内无 ldap 保存连接**（仅 ssh 的 vagrant 固件），「转发 →
+  宿主 → ldap workbench sidecar → 真实结果」全链路未覆盖，待后续 seed
+  一个 ldap 连接后补（seed 操作在隔离 app-data 内允许）。
+- **沉淀**：`shared/host-e2e/mcp_bridge_e2e.sh`（四插件统一回环脚本，
+  本轮真机 4/4 全绿；ldap 探针为其中一环）。
+- 本轮插件源码只读，未改代码。
+
+**剩余风险**：偶发观察到前一插件真连接探针之后的转发调用 90s 无响应、
+单独重跑立即成功（疑似宿主侧/GUI 渲染竞态，脚本已放宽超时 + 重试）；
+全链路真实结果层待 seed 连接补齐。
+
+## 第五轮（2026-09-13）可靠性纵深：stdio 传输 / 会话 churn / 写门对抗输入
+
+三类主题（对照本轮任务书与 `shared/MCP_ACCEPTANCE.zh-CN.md` §2/§5/§8）：
+
+**① stdio 传输层健壮性（实现 + 单测 + smoke M18）**
+
+- `internal/mcp/stdio.go` `handleLine` 重构为 RawMessage 形状分派，请求
+  形状按 JSON-RPC 分档（MCP_ACCEPTANCE §2）：解析失败 -32700（id null）；
+  非法请求 -32600——缺 id（非通知）、id 为 object/array/布尔、method 缺失/
+  空/非字符串、jsonrpc 存在且非 "2.0"（字段缺失容忍，照 ssh 基线宽松）。
+  原实现把缺 method 折成 -32601、method 非字符串误档 -32700、id object
+  原样回显，全部修正。`Serve` 增加 16 MiB 单行上限（超限 -32700 拒该行
+  继续服务）。已知家族差异（登记）：ssh 对缺 method 仍回 -32601，本轮
+  ldap/kafka 按 -32600 分档（语义更准；shared/ 契约表本轮不可改，需下轮
+  拉齐 ssh 或更新表格）。
+- 新增 `stdio_robust_test.go` 6 用例（S-STDIO-R1..R6：非法 JSON/UTF-8/
+  截断/NUL、通知静默、形状分档、8 MiB 行 + 超上限行、pipelining 5 请求
+  id 一一对应、空行/CRLF），每条破坏性断言后 ping 验证存活。
+- smoke M18（真进程离线）覆盖同表全矩阵。
+
+**② 会话/存储 churn（Go 单测 churn_test.go，S-CHURN-*）**
+
+- **ConfirmStore 修复真缺陷**：原实现只在 Consume 时删除令牌，大量
+  「只要预览不确认」的调用（preview 弃单）会**无界撑大令牌表**——Issue
+  时顺手 prune 过期未消费令牌（`pruneLocked`），600 轮 churn 收敛在
+  TTL 窗口内（S-CHURN-CONF-1/2，kafka 同构）。
+- **CursorStore 修复语义偏差**：淘汰原为纯插入序 FIFO（活跃会话会被误
+  逐，与文档"LRU ≤8"不符）——`Next` 命中即 `touchLocked` 顶到队尾，
+  真 LRU（S-CHURN-CUR-2 钉死"活跃 A 不被误逐、最久未用 B 淘汰"）。
+- IntentStore churn 500 轮登记/回报/过期收敛在 LRU 容量内、快照不被
+  churn 污染（S-CHURN-INT-1）。
+- smoke M19（容器）：同参数 digest 重复两次 matched/stats 稳定、cursor
+  同 offset 重读稳定、同参数两次 preview 各自独立 token。
+
+**③ 写门对抗输入（writegate_test.go，S-WGATE-1..8）**
+
+- **DN 控制字符加固（真缺陷）**：实测 go-ldap `ldap.ParseDN` 对裸换行/
+  空字节/ANSI 转义等控制字符**不报错**——注入风格 DN 静默通过本地校验
+  直达服务端，且原样落 audit.jsonl（审计日志注入面）。
+  `ldapconn.normalizeLDAPWriteDN` 单点拒绝 `<0x20`/`0x7f` 裸控制字符
+  （RFC 4514 转义形态 `\0A` 不受影响），工作台写路径同享该加固。
+- **预检前置（MCP_ACCEPTANCE §5）**：`ldapconn` 导出 `NormalizeWriteDN`/
+  `EnsureWriteBaseAllowed`，`entryWrite` 在两阶段 preview 签发令牌前完成
+  DN 结构 + 写白名单校验（注入 DN/越白名单目标不再白烧令牌）；只读连接
+  preview 拒绝（第二道门）由既有路径钉测（S-WGATE-3/4：拒绝时令牌表
+  必须为空）。
+- 属性名大小写变体（USERPASSWORD/userPassword）命中屏蔽属性表（策略先
+  于拨号）、changes 操作名大小写归一/upsert 拒绝、recursive 删根 DN 走
+  完两阶段到达执行层（S-WGATE-5..8）。
+
+**回归（真实输出）**
+
+- `cd backend && go vet ./...` 通过；`go test ./... -count=1` 全绿
+  （internal/mcp 由 69 函数增至 **90 函数**，本轮新增 19：stdio_robust 6 +
+  churn 5 + writegate 8 减去既有覆盖重合）；`CGO_ENABLED=0 go build
+  -trimpath -o bin/dbx-plugin-ldap .` 成功。
+- OpenLDAP 容器（dbx-ldap-test:1389）：
+  `DBX_PLUGIN_SIDECAR=$PWD/backend/bin/dbx-plugin-ldap python3
+  scripts/smoke_mcp.py` → **total=19 PASS=19 FAIL=0 SKIP=0**
+  （M1–M19 全 PASS，新增 M18/M19）。
+
+**smoke 客户端两处修复（与 kafka K17 同源，测试面缺陷而非 sidecar 缺陷）**
+
+1. McpStdioClient 响应读取丢弃不匹配 id 的帧——逐请求 goroutine 响应
+   乱序时先到的帧被丢，后续读取永远等不到（挂死）。改为 `pending`
+   缓冲（通知帧除外）。
+2. `select` 直接探测 BufferedReader 的 fd：上一帧已把后续数据拉进用户态
+   缓冲时管道为空，select 满超时假报"响应丢失"（实测 2/6 复现）。改为
+   `os.read` + 自管行缓冲，超时语义为真。
+
+**M15 数据隔离修复**：造数 uid 改带 run 唯一前缀（容器共存其他用例的
+`uid=agent*` 数据时 matched 撞车，实测 14≠12 FAIL 一次）。
+
+**剩余风险**：(1) 容器为共享资源，M15/M19 之外的场景仍假设基线数据
+（seed 6 条 + 连接自身造数）；(2) ssh 侧缺 method 的 -32601 分档差异待
+家族拉齐；(3) stdio `pending` 缓冲只服务单客户端顺序消费，多路复用同一
+stdio 的客户端理论可乱序取帧（现状客户端均顺序等待，无影响）。
+
+### 2026-09-14 ZCode MCP 接入与真机 agent 调用测试（MCP 集成会话）
+
+- **ZCode 接入**：用户级 zcode config 新增 `dbx-ldap`（`backend/bin/
+  dbx-plugin-ldap --mcp` + 专属 `DBX_PLUGIN_DATA_DIR`；与 dbx-files/
+  dbx-kafka 同轮接入，形状镜像既有 dbx-ssh 条目）。
+- **真机 agent 调用测试**：OpenLDAP 测试容器（compose + 环境变量传密码）
+  + 内联凭据全链路——空库 digest 边界、OU/inetOrgPerson add、groupBy
+  聚合、rows+cursor 翻页、两阶段 delete、错误密码（Invalid Credentials
+  可读且不泄凭据）、UI 工具 UNAVAILABLE（isError 形状，与 files 旧
+  -32000 形状的族内不一致即本轮 files 对齐的动因）。全链路按预期。
+- smoke 终态 **total=19 PASS=19 FAIL=0 SKIP=0**（M18 修复与 M15 数据
+  隔离见上节；本轮复跑全绿）。sidecar 无代码改动，二进制未重建。
+
+### 2026-09-14 续：zcode 真机接入发现 required:null 拒收并修复
+
+- **现象**：zcode 会话里 `dbx-files`/`dbx-ssh` 正常连入，`dbx-ldap`/
+  `dbx-kafka` 整个服务器缺席；配置与二进制均正常、standalone stdio
+  全通。CLI 日志（`~/.zcode/cli/log/zcode-*.jsonl`）实锤：
+  `mcp.server.failed — Invalid result for tools/list: ["tools",1,
+  "inputSchema","required"] expected array, received null`。
+- **根因**：`toolEntry` 对 UI 类工具传 nil `required` 切片，encoding/json
+  序列化成 `"required":null`；zcode 对 tools/list 做 zod 严格校验，一项
+  不合即**拒收整个服务器**。files（Rust）键缺席故幸免。
+- **修复**：`toolEntry` 空 required 省略键（ldap/kafka 同改）；新增
+  `tools_schema_test.go` 红线测试（全量+只读两清单 marshal 后不得含
+  `"required":null`）；strict-shape 全字段检查通过；mcp 包单测全绿，
+  smoke **19/19**，二进制已重建。
+- **接入状态**：`dbx-ldap` 待会话重启（或 Settings → MCP 重连）后即以
+  `mcp__dbx-ldap__*` 工具出现。
+
+## 第七轮（2026-09-14）并发安全 -race 验证 + 缺参枚举口径拉齐 + enum 在线钉桩
+
+三类主题（任务书：并发安全与口径拉齐轮；对齐 `shared/MCP_ACCEPTANCE.zh-CN.md`
+§3.3/§3.9）：
+
+**① go test -race 全量首验（本轮最高优先级）**
+
+- `cd backend && go test -race -count=1 ./...` 首跑即全绿、**race 零告警**
+  （6 包：根/ldapconn/ldapgssapi/lifecycle/mcp/store）。前六轮 churn/边界
+  测试全部顺序执行，本轮以真并发补上竞争检测器验证面。
+- **补真并发压力测试**（`internal/mcp/concurrency_test.go`，S-CONC-*，3 个，
+  每张表一个，全部离线 + 原子注入时钟 `concClock` + 互斥错误收集器
+  `concErrs`）：
+  - S-CONC-CONF-1：16 goroutine × 40 轮混合 issue→即时消费（必须 OK）/
+    4 方竞争消费同一令牌（**恰好一方 OK，其余 unknown——一次性语义并发下
+    不得双重消费**）/ 远期消费（expired）/ 弃单；阶段 2 短 TTL 弃单洪泛，
+    收敛后跨 TTL 签发触发 prune → 表收敛为 1（>2000 次操作）。
+  - S-CONC-CUR-1：24 goroutine × 8 会话物化（16 行确定性内容）× 每会话
+    4 读者固定窗口并发翻页——命中必须逐行精确（并发下不得串行/丢行/错位），
+    被淘汰报 unknown 合法；终态 sessions/order 一致且收敛在容量 4
+    （960 次操作）。
+  - S-CONC-INT-1：12 goroutine × 50 登记双投递给 6 回报池（双回报竞争）+
+    快照写入方持续覆盖——存活条目终态必不是 pending（无丢更新）、表收敛在
+    容量 32、快照读取永得完整写形状；跨 TTL prune 收敛为 1
+    （600 登记 + 1200 回报）。
+- 三者在 -race 下全过，无数据竞争、无双重消费、容量收敛。
+
+**② 缺参报错枚举式拉齐（对齐 ssh，§3.9）**
+
+- `util.go` 新增 `missingRequired(args, keys...)`：一次枚举全部缺失
+  required 参数（`Missing required parameters: connectionId, action, dn`，
+  按 schema `required` 声明顺序；缺失判定 = 键不存在或显式 null）。
+  present-but-类型错误（空串/类型不符）不混入枚举，仍由逐参数校验精确
+  点名——与 ssh 语义逐字对齐（保留 "Missing required" 关键词）。
+- 落地点（server.go 六处）：`uiSearch`（filter）、`uiSelect`（dn）、
+  `uiSchema`（connectionId）、`searchDigest`（connectionId+filter）、
+  `cursorNext`（cursorId）、`entryWrite`（connectionId+action+dn）。
+- **行为对齐 schema**：`search_digest` 的 `filter` 缺失不再静默回退
+  `(objectClass=*)` 全扫——schema 早已声明 required，回退会让"忘传条件"
+  变成整树扫描（准确性 + 成本双输）；present-but-空串仍报精确的
+  RFC 4515 提示。全库无调用方依赖旧回退（smoke/单测逐一核对）。
+- 单测 +3（util_test.go）：S-REQ-ENUM 三连——helper 三缺全点名/单缺只
+  其一/null 视同缺失；entry_write 入口接线（含空 action 精确点名）；
+  search_digest 枚举与空串分岔。smoke M8 同步断言（三缺全点名 +
+  单缺 + null）。
+
+**③ enum 非法值在线冒烟（离线探针不可达段，§3.3）**
+
+- `normalizeScopeArg` 报错文案补列 RFC 别名：
+  `scope must be base, one, or sub (aliases baseObject/singleLevel/subtree
+  accepted; got "bogus")`——schema enum 值与别名都列出；既有前缀保持，
+  旧断言不受影响。`entry_write` 的 action 报错已列全 schema enum。
+- smoke 新增 **M20**（容器在线段）：真实连接下 `scope:"bogus"`/
+  `action:"bogus"` 报错逐项列出合法值（含 got 实际值）；
+  `scope:"SUBTREE"` 大小写归一在线钉桩（正常 digest，matched>0）。
+  M13 离线 scope 断言同步加别名列出检查。
+
+**回归（真实输出）**
+
+- `go vet ./...` 通过；`go test -race -count=1 ./...` 全绿 race 零告警；
+  internal/mcp 测试函数 91 → **97**（本轮 +6：并发压力 3 + 缺参枚举 3）。
+- `CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-ldap .` 成功
+  （-race 只影响测试，构建不变）。
+- `python3 shared/mcp_schema_check.py --binary backend/bin/dbx-plugin-ldap`
+  → **RESULT: CLEAN**（schema required 与枚举报错一致性无漂移）。
+- OpenLDAP 容器（dbx-ldap-test:1389，凭据经环境注入不落盘）：
+  `scripts/smoke_mcp.py` → **total=20 PASS=20 FAIL=0 SKIP=0**
+  （M1–M20 全 PASS，新增 M8 枚举断言 + M20 在线钉桩段）。
+
+**剩余风险**：(1) 并发压力测试只覆盖三张 store 表的纯逻辑面，Server 层
+settings 混合流量并发未单列（settings 读写已由 s.mu 串行化，且被
+store 并发面间接覆盖）；(2) shared/ 契约表 §3.9 的 ssh 推荐方向尚未回写
+枚举语义的家族落地图（ldap/kafka 已落地，ssh 为实现原点）；(3) 测试容器
+为共享资源，M20 造数仅连接内自建 + 断连清理，不触碰基线 seed。
+
+**重启复验（同日）**：会话重启后 `mcp__dbx-ldap__*` 全套工具出现；zcode
+内真实任务通过——内联凭据 digest（子树统计）→ add → rows+cursor 翻页 →
+两阶段 delete → 错误密码（Result Code 49 干净透出，无凭据泄漏）。
+
+## 第八轮（2026-09-14）终验：全容器组合冒烟
+
+MCP 专项收口轮：第七轮代码之后在全新重建的 OpenLDAP 容器上做最终全量
+终验（凭据运行时随机、跑完 `compose down -v` 即焚）。本插件源码本轮只读。
+
+- 容器编排（`scripts/smoke_container.py --keep`，compose 全新拉起 + seed +
+  协议 smoke）：**total=19 PASS=19 FAIL=0 SKIP=0**（S1–S19 全绿，
+  memberOf/managedBy 两条按服务端能力照例内联 SKIP 语义不计数）。
+- MCP 全量（`scripts/smoke_mcp.py`）：**total=20 PASS=20 FAIL=0 SKIP=0**
+  （M1–M20 全 PASS；**M20 enum 在线断言通过**——`scope/action` 非法值
+  报错逐项列出合法值、`SUBTREE` 大小写归一化在线 digest matched=7）。
+- 结论：第七轮全部改动（并发安全、缺参枚举口径、M20 在线钉桩）在真实
+  容器组合下无回归，第七轮记录的容器段数据（M1–M20 全 PASS）在本轮
+  全新容器上复现成立。本插件无独立性能脚本，不做基线采集（digest/翻页
+  延迟由 M15/M17/M19 断言覆盖正确性面）。

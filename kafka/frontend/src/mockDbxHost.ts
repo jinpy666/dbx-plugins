@@ -1174,6 +1174,11 @@ window.dbxPlugin = {
   clipboard: { readText: async () => "", writeText: async () => undefined },
 };
 
+// 走查注入：ui_test 经 window.dbxPlugin.emitKafkaUiIntent 发 kafka/ui/intent
+// （vitest 直接走模块导出）。mock 专用钩子不属于宿主桥契约面，用
+// Object.assign 挂载避免污染 DbxPluginApi 类型（函数声明提升，此处引用安全）。
+Object.assign(window.dbxPlugin, { emitKafkaUiIntent });
+
 export { context, appearance };
 
 /** 测试/走查注入：按 sidecar `kafka/ui/intent` 事件形状发一条 intent

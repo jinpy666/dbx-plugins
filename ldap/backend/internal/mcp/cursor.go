@@ -61,6 +61,23 @@ func NewCursorStore(ttl time.Duration, capacity, maxRows int) *CursorStore {
 	}
 }
 
+// Configure 运行期调整会话参数（mcp/settings/set 的 cursorTtlSecs /
+// maxCursorSessions / maxCursorRows）：下一次 Put 生效；已存在会话的
+// ExpiresAt 不追溯。≤0 的项保持原值。
+func (s *CursorStore) Configure(ttl time.Duration, capacity, maxRows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ttl > 0 {
+		s.ttl = ttl
+	}
+	if capacity > 0 {
+		s.capacity = capacity
+	}
+	if maxRows > 0 {
+		s.maxRows = maxRows
+	}
+}
+
 // Put 物化一次 digest 的行（超 maxRows 截断并置 Truncated）；新会话把最旧
 // 会话按 LRU 淘汰。id 冲突概率可忽略（16 字节随机），冲突时旧会话被覆盖。
 func (s *CursorStore) Put(rows []CursorRow, baseDN, filter string, now time.Time) *CursorSession {
@@ -107,6 +124,7 @@ type NextResult struct {
 }
 
 // Next 分批取行：offset<0 时续读会话内游标（AI 不需要自己记 offset）。
+// 命中即顶到淘汰序队尾（真 LRU：持续翻页的活跃会话不被纯插入序淘汰）。
 // 会话过期（expired，读取时顺手清除）或不存在（unknown）时不返回行。
 func (s *CursorStore) Next(id string, req NextRequest, now time.Time) (*NextResult, LookupStatus) {
 	s.mu.Lock()
@@ -119,6 +137,7 @@ func (s *CursorStore) Next(id string, req NextRequest, now time.Time) (*NextResu
 		s.removeLocked(id)
 		return nil, LookupExpired
 	}
+	s.touchLocked(id)
 	n := req.N
 	if n <= 0 {
 		n = 20
@@ -169,6 +188,18 @@ func (s *CursorStore) removeLocked(id string) {
 			break
 		}
 	}
+}
+
+// touchLocked 命中续读时把会话顶到淘汰序队尾（真 LRU：容量淘汰看最近
+// 使用而非纯插入序，活跃会话不被误逐）。调用方持锁。
+func (s *CursorStore) touchLocked(id string) {
+	for index, existing := range s.order {
+		if existing == id {
+			s.order = append(s.order[:index], s.order[index+1:]...)
+			break
+		}
+	}
+	s.order = append(s.order, id)
 }
 
 // newCursorID 生成 "cur-<hex16>" 会话 id。

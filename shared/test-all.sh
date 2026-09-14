@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dbx-plugins 三插件一键自动化验证（workspace 级编排）。
+# dbx-plugins 四插件一键自动化验证（workspace 级编排）。
 #
 #   shared/test-all.sh                # 全量：单元 + 前端 + 容器化 smoke
 #   shared/test-all.sh --quick        # 快速：只跑单元测试与前端三件套
@@ -9,7 +9,9 @@
 #         无容器按 SKIP 语义）→ mock UI 走查；
 #   ldap  go vet + go test（-cover 覆盖率）→ 前端三件套 → 容器 smoke
 #         （smoke_container.py 自编排 OpenLDAP，随机密码仅环境变量）；
-#   files cargo test → 前端三件套 → container_smoke.sh（MinIO + OpenSSH）。
+#   files cargo test → 前端三件套 → container_smoke.sh（MinIO + OpenSSH）；
+#   kafka go vet + go test → 前端三件套 → dev-cluster 容器 smoke（KRaft 单节点，
+#         无 docker 按 SKIP 语义）→ MCP smoke（含 stdio 段）。
 #
 # 退出码语义：任一插件 FAIL 即非零；SKIP 不算失败（但汇总里如实呈现）。
 # 环境要求：cargo/go/pnpm（PATH 自动补全）、docker（容器段缺失时按 SKIP）。
@@ -135,6 +137,41 @@ if run_step files "backend cargo test" cargo test --manifest-path "$ROOT/files/b
   fi
 else
   record files FAIL "单元/前端失败，见上方输出"
+fi
+
+# ---------------------------------------------------------------- kafka ------
+echo ""
+echo "############################################################"
+echo "# [kafka] io.dbx.kafka"
+echo "############################################################"
+if run_step kafka "backend go vet + test" bash -c \
+  "cd '$ROOT/kafka/backend' && go vet ./... && go test ./..."; then
+  if ! frontend_trio kafka; then
+    record kafka FAIL "前端三件套失败，见上方输出"
+  elif [ "$QUICK" = 1 ]; then
+    record kafka PASS "go+vitest 全绿（quick 模式）"
+  else
+    unset DBX_PLUGIN_SIDECAR || true
+    # sidecar 显式构建（smoke_mcp 的 stdio 段用它；参数同插件 scripts/test.sh）
+    run_step kafka "sidecar build" bash -c \
+      "cd '$ROOT/kafka/backend' && CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-kafka ."
+    # smoke_container.py 自编排 compose（up+seed+smoke+down）。注意：本机若有
+    # 常驻 dev-cluster（同占 9092），此段会端口冲突 → 按下方 SKIP 语义落账，
+    # 先 `kafka/scripts/dev-cluster.sh down` 再跑全量。
+    if run_step kafka "container smoke (compose S-suite)" \
+      python3 "$ROOT/kafka/scripts/smoke_container.py" &&
+      run_step kafka "MCP smoke (K-suite incl. stdio)" \
+      env DBX_PLUGIN_SIDECAR="$ROOT/kafka/backend/bin/dbx-plugin-kafka" \
+      python3 "$ROOT/kafka/scripts/smoke_mcp.py"; then
+      record kafka PASS "go+vitest+容器 smoke+MCP smoke 全绿"
+    elif [ "${KAFKA_TEST_REQUIRE:-0}" = "1" ]; then
+      record kafka FAIL "容器 smoke 失败（KAFKA_TEST_REQUIRE=1）"
+    else
+      record kafka SKIP "容器 smoke 未跑通（docker/端口占用按 SKIP 语义，见输出）"
+    fi
+  fi
+else
+  record kafka FAIL "go test 失败，见上方输出"
 fi
 
 # ---------------------------------------------------------------- 汇总 -------

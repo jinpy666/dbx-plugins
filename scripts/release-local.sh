@@ -138,6 +138,9 @@ PY
 
 # Toolchain paths (nvm node, pnpm, cargo) — same source of truth as plugin build.sh.
 export PATH="$HOME/.nvm/versions/node/v22.21.0/bin:$HOME/Library/pnpm:$HOME/.cargo/bin:$PATH"
+# Background builds have no TTY: pnpm refuses to rebuild a modules dir that was
+# installed by a different pnpm version unless it can proceed non-interactively.
+export CI=true
 # Host Cargo.lock (aws-* crates) requires rustc >= 1.94.1; default toolchain is 1.88.0.
 export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.97.1}"
 # Deliberately NO RUSTC_WRAPPER/sccache here: it crashed russh compilation

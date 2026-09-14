@@ -310,3 +310,17 @@ func TestSchemaCacheDefaultTTLAndIndependentKeys(t *testing.T) {
 		t.Errorf("cache entry mutated through deep copy: %+v", again)
 	}
 }
+
+func TestSchemaCacheTTLExpiryTriggersColdFetch(t *testing.T) {
+	// 缓存命中（热）→ TTL 过期后 Get 返回 nil（热/冷边界由调用方重新拉取），
+	// 即 ldap_ui_schema 第二次调用走缓存、TTL 过后重查 subschema 的语义。
+	cache := NewSchemaCache(30 * time.Millisecond)
+	cache.Put("conn-1", LDAPSchemaMetadata{AttributeNames: []string{"cn"}})
+	if got := cache.Get("conn-1"); got == nil {
+		t.Fatalf("warm entry should hit: %+v", got)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if got := cache.Get("conn-1"); got != nil {
+		t.Fatalf("expired entry should miss (cold refetch expected): %+v", got)
+	}
+}

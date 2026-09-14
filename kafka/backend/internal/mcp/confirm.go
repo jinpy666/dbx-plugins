@@ -2,9 +2,10 @@ package mcp
 
 // confirm.go：两阶段写确认令牌（设计 §4）。
 //
-// delete（含 recursive）与 modifyDn 强制两阶段：无 confirmToken 返回
-// preview + 一次性 confirmToken（60s TTL，参数 hash 绑定）；带 token 且
-// hash 一致才执行；参数被改即作废重开预览。
+// 强制两阶段写（kafka：topics/delete、groups/offsets/reset、
+// topics/records/clear）：无 confirmToken 返回 preview + 一次性 confirmToken
+//（60s TTL，参数 hash 绑定）；带 token 且 hash 一致才执行；参数被改即作废
+// 重开预览。
 // 纯逻辑：时间由调用方注入，便于单测覆盖过期/hash 失配/一次性消费。
 
 import (
@@ -39,12 +40,32 @@ type ConfirmEntry struct {
 // ConfirmStore 令牌表（进程内，一次性消费）。并发安全。
 type ConfirmStore struct {
 	mu    sync.Mutex
+	ttl   time.Duration
 	items map[string]ConfirmEntry
 }
 
-// NewConfirmStore 创建令牌表。
+// NewConfirmStore 创建令牌表（TTL 缺省 60s；mcp/settings/set 的
+// confirmTtlSecs 可调 10–600，ldap/files 同名同范围）。
 func NewConfirmStore() *ConfirmStore {
-	return &ConfirmStore{items: map[string]ConfirmEntry{}}
+	return &ConfirmStore{ttl: ConfirmTTL, items: map[string]ConfirmEntry{}}
+}
+
+// SetTTL 运行期调整令牌 TTL（ldap 同构）：下一次 Issue 生效，已签发令牌
+// 的 ExpiresAt 不追溯（MCP_ACCEPTANCE §5/§8）。≤0 的值被忽略（防误配清零）。
+func (s *ConfirmStore) SetTTL(ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ttl = ttl
+}
+
+// TTL 当前令牌 TTL（过期报文携带实际生效值用）。
+func (s *ConfirmStore) TTL() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ttl
 }
 
 // HashParams 计算 write 请求的绑定 hash（sha256 hex）。输入为归一化后的
@@ -54,14 +75,27 @@ func HashParams(canonical []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Issue 签发一次性令牌（c-<hex12>，60s TTL）。
+// Issue 签发一次性令牌（c-<hex12>，TTL 见 SetTTL/缺省 60s）。签发前顺手
+// 清理已过期未消费的令牌（churn 防线：大量「只要预览不确认」的调用不能
+// 无界撑大令牌表——Consume 只在显式消费时删除，过期即弃的令牌没有别的
+// 删除路径；ldap 同构）。
 func (s *ConfirmStore) Issue(paramHash string, now time.Time) (string, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneLocked(now)
 	token := fmt.Sprintf("c-%s", randomHex(6))
-	expiresAt := now.Add(ConfirmTTL)
+	expiresAt := now.Add(s.ttl)
 	s.items[token] = ConfirmEntry{ParamHash: paramHash, ExpiresAt: expiresAt}
 	return token, expiresAt
+}
+
+// pruneLocked 清除已过期的未消费令牌（调用方持锁；map 遍历中删除安全）。
+func (s *ConfirmStore) pruneLocked(now time.Time) {
+	for token, entry := range s.items {
+		if !now.Before(entry.ExpiresAt) {
+			delete(s.items, token)
+		}
+	}
 }
 
 // Consume 校验并消费令牌：

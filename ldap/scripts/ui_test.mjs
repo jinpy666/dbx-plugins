@@ -406,6 +406,42 @@ test("source searches preserve escaped UTF-8 and order integer attributes numeri
   }
 });
 
+// intent 走查放在用例链末尾：applyIntentSearch 会整体替换表单状态，
+// 不影响前面用例的顺序假设。user0001 已被 rename 用例移走，选 user0002。
+test("MCP ui intent fills the form, runs the search and reports state", async (page) => {
+  await page.evaluate(() => {
+    const reports = [];
+    const invoke = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+    window.dbxPlugin.invoke = async (method, params, options) => {
+      if (method === "ldap/ui/state/report") reports.push({ intentId: params.intentId, status: params.status });
+      return invoke(method, params, options);
+    };
+    window.__uiReports = reports;
+    window.dbxPlugin.emitUiIntent({ intentId: "ui-e2e-1", action: "search", params: { baseDn: "dc=demo,dc=dbx", filter: "(uid=user0002)", scope: "sub" } });
+  });
+  await page.locator(".result-row").first().waitFor({ timeout: 5000 }).catch(async () => {
+    const debug = await page.evaluate(() => ({
+      reports: window.__uiReports,
+      preview: document.querySelector(".qb-preview")?.textContent ?? null,
+      resultRows: document.querySelectorAll(".result-row").length,
+      notice: document.querySelector(".notice, .toast, [role='status']")?.textContent ?? null,
+      hasEmit: typeof window.dbxPlugin.emitUiIntent,
+    }));
+    throw new Error(`intent search produced no rows; page state: ${JSON.stringify(debug)}`);
+  });
+  expectEqual(await page.locator(".qb-preview").first().innerText(), "(uid=user0002)", "intent filter lands in the builder preview");
+  try {
+    await page.waitForFunction(
+      () => window.__uiReports.some((report) => report.intentId === "ui-e2e-1" && report.status === "applied"),
+      undefined,
+      { timeout: 8000 },
+    );
+  } catch {
+    const seen = await page.evaluate(() => window.__uiReports);
+    throw new Error(`expected an applied ldap/ui/state/report for ui-e2e-1, saw ${JSON.stringify(seen)}`);
+  }
+});
+
 // -- main ----------------------------------------------------------------------
 
 const playwright = await loadPlaywrightCore();

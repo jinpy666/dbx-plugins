@@ -1,5 +1,9 @@
 // dbx-plugin-kafka sidecar 入口（A 路）。
 //
+// 入口互斥：`--mcp` 进入独立 stdio MCP 服务器模式（MCP 2024-11-05，ssh
+// 同款；internal/mcp stdio.go），不启动 Emitter/插件协议循环/流式会话；
+// 不带标志则按下述 DBX 插件协议模式运行。同一进程只跑其中一种。
+//
 // 装配：dbxpluginsdk.NewServer + Handler switch。方法表按实施文档 §5.2 全量：
 //
 //	connection/test | connection/connect | connection/disconnect      （生命周期）
@@ -30,6 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"os"
 	"strings"
 	"sync"
 
@@ -45,6 +50,48 @@ import (
 // -ldflags "-X main.version=..." 从 manifest.json 注入，保证与 manifest 一致。
 var version = "0.0.0-dev"
 
+// --- 独立 stdio MCP 服务器模式（`--mcp`） ---
+
+// mcpStdioRequested 报告 args 是否携带 `--mcp` 标志（精确匹配，照 ssh
+// mcp 入口约定）。true 时进程进入 stdio MCP 服务器模式，不启动插件协议。
+func mcpStdioRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--mcp" {
+			return true
+		}
+	}
+	return false
+}
+
+// runMcpStdio 独立 stdio MCP 服务器（internal/mcp stdio.go）：自带连接
+// service 与工具面 Server；审计只落 audit.jsonl（无 Emitter，不发事件）。
+// 日志走 stderr（stdout 是协议通道）。
+func runMcpStdio() {
+	st, err := store.Open()
+	if err != nil {
+		log.Printf("[dbx-plugin-kafka] store disabled: %v", err)
+		st = nil
+	}
+	server := mcp.NewStdioServer(version, st, func(rec kafkaconn.AuditRecord) {
+		if st == nil {
+			return
+		}
+		if err := st.AppendAudit(store.AuditRecord{
+			ConnectionID: rec.ConnectionID,
+			Action:       auditAction(rec.Action),
+			Target:       rec.Target,
+			Result:       auditResultForStore(rec.Result),
+			Source:       rec.Source,
+		}); err != nil {
+			log.Printf("[dbx-plugin-kafka] audit write failed: %v", err)
+		}
+	})
+	defer server.Close()
+	if err := server.Serve(os.Stdin, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
 // pluginHandler 实现 dbxpluginsdk.Handler。
 type pluginHandler struct {
 	svc    *kafkaconn.Service
@@ -56,6 +103,12 @@ type pluginHandler struct {
 }
 
 func main() {
+	// `--mcp`：独立 stdio MCP 服务器模式（与插件协议模式互斥，见文件头）。
+	if mcpStdioRequested(os.Args[1:]) {
+		runMcpStdio()
+		return
+	}
+
 	st, err := store.Open()
 	if err != nil {
 		// 数据目录不可用不阻断连接能力：审计/预设降级为不可用。

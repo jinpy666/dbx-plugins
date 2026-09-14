@@ -11,8 +11,9 @@ package kafkaconn
 //
 // 复用面（保守）：非 group 模式且 offsetStrategy ∈ {空, default, earliest,
 // latest}。group 模式（再均衡/提交语义）与 timestamp/committed/offset（需
-// 服务端解析起点）维持 per-request 新建。重置哨兵值 -2(start)/-1(end) 在
-// franz-go directConsumer.applySetOffsets 中原样进 Offset.at，语义成立。
+// 服务端解析起点）维持 per-request 新建。重置目标经 kadm 全分区边界
+// offset（具体值 + leader epoch）SetOffsets——哨兵值/部分分区的 SetOffsets
+// 在 franz-go 直接消费下静默不生效（见 resetConsumeClientForReuse 注释）。
 //
 // 并发：entry.inUse 排他——命中但占用中、或未命中，调用方都走「新建临时
 // client」路径（不等待、不入池）。seenParts/atStart/resetFailed 只在 inUse
@@ -26,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -36,6 +38,9 @@ const (
 	// consumePoolMaxEntries 全服务池上限（不同连接/形状组合）；全占用时允许
 	// 临时超限，release 再收敛。
 	consumePoolMaxEntries = 8
+	// consumeResetListTimeout 复用重置时 ListOffsets 的独立预算（reset 不吃
+	// 用户扫描窗口，也不应无限等——失败即放弃该条目 fallback 新建）。
+	consumeResetListTimeout = 10 * time.Second
 )
 
 // consumePoolEntry 池条目。inUse 由池锁保护；其余字段仅 inUse 持有者访问。
@@ -48,7 +53,8 @@ type consumePoolEntry struct {
 	inUse bool
 	// atStart reset 目标（true=start/earliest，false=end/latest），acquire 刷新。
 	atStart bool
-	// seenParts 该 client 上已观察到的分区（reset 目标集）。
+	// seenParts 该 client 上已观察到有记录的分区（诊断记录；重置已改为
+	// kadm 全分区边界 seek，不再依赖此集合）。
 	seenParts map[int32]struct{}
 	// resetFailed 复用重置失败后不再入池复用。
 	resetFailed bool
@@ -222,10 +228,16 @@ func consumeStartupBudget(fetchWindow time.Duration) time.Duration {
 }
 
 // resetConsumeClientForReuse 复用前重置：drain 丢弃缓冲记录（50ms 上限——
-// 目标只是清掉 client 内存里已 fetch 未 poll 的残留，不需要等新数据），再把
-// 已见分区 SetOffsets 回目标起点。fetch 错误返回 error（调用方放弃该条目
-// fallback 新建）。
-func resetConsumeClientForReuse(client *kgo.Client, topic string, atStart bool, seen map[int32]struct{}) error {
+// 目标只是清掉 client 内存里已 fetch 未 poll 的残留，不需要等新数据），再经
+// kadm 拉目标 topic **全部分区**的边界 offset 后一次性 SetOffsets。fetch 错误
+// 返回 error（调用方放弃该条目 fallback 新建）。
+//
+// 必须全部分区覆盖 + 具体 offset，不能按"已见分区"+ 哨兵值 seek：franz-go
+// v1.20.x 直接消费下，SetOffsets 的 map 未覆盖全部在消费分区时整个 seek
+// 静默丢失（2026-09-13 真集群最小复现：只 seek 有记录的分区 → 第二次
+// earliest 扫描恒 0 条且无任何错误；全覆盖具体 offset → 正常重扫）。
+// ListOffsets 复用同一 client 的连接（kadm 适配层），代价一次 broker 往返。
+func resetConsumeClientForReuse(client *kgo.Client, topic string, atStart bool) error {
 	deadline := time.Now().Add(50 * time.Millisecond)
 	var drainErr error
 	for time.Now().Before(deadline) {
@@ -238,28 +250,38 @@ func resetConsumeClientForReuse(client *kgo.Client, topic string, atStart bool, 
 				drainErr = err
 			}
 		})
-		fetched := 0
-		fetches.EachRecord(func(record *kgo.Record) {
-			seen[record.Partition] = struct{}{}
-			fetched++
-		})
-		if fetched == 0 {
+		if fetches.NumRecords() == 0 {
 			break
 		}
 	}
 	if drainErr != nil {
 		return drainErr
 	}
-	if len(seen) == 0 {
-		return errf("no partition observed for topic %q; cannot reset pooled consumer", topic)
-	}
-	target := int64(-1) // Offset.at 哨兵：-1 = end
+	admin := kadm.NewClient(client)
+	ctx, cancel := context.WithTimeout(context.Background(), consumeResetListTimeout)
+	defer cancel()
+	var listed kadm.ListedOffsets
+	var listErr error
 	if atStart {
-		target = -2 // -2 = start
+		listed, listErr = admin.ListStartOffsets(ctx, topic)
+	} else {
+		listed, listErr = admin.ListEndOffsets(ctx, topic)
 	}
-	parts := make(map[int32]kgo.EpochOffset, len(seen))
-	for partition := range seen {
-		parts[partition] = kgo.EpochOffset{Epoch: -1, Offset: target}
+	if listErr != nil {
+		return errf("list %s offsets for consumer reset: %w", map[bool]string{true: "start", false: "end"}[atStart], listErr)
+	}
+	parts := make(map[int32]kgo.EpochOffset)
+	listed.Each(func(listed kadm.ListedOffset) {
+		// Offset 即目标边界（start 或 end 的具体 offset，>=0；-1 表示该
+		// 分区无可消费边界，跳过——空分区无数据可扫）；LeaderEpoch 是该
+		// offset 处的 leader epoch，比哨兵 -1 更精确。
+		if listed.Err != nil || listed.Offset < 0 {
+			return
+		}
+		parts[listed.Partition] = kgo.EpochOffset{Epoch: listed.LeaderEpoch, Offset: listed.Offset}
+	})
+	if len(parts) == 0 {
+		return errf("no partitions listed for topic %q; cannot reset pooled consumer", topic)
 	}
 	client.SetOffsets(map[string]map[int32]kgo.EpochOffset{topic: parts})
 	return nil

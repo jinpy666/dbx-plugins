@@ -134,11 +134,15 @@ func TestServerCursorNextErrors(t *testing.T) {
 
 func TestServerLocatorValidation(t *testing.T) {
 	server := NewServer(kafkaconn.NewService(), nil)
-	if _, err := server.Call("kafka_ui_select", map[string]any{}); err == nil || !strings.Contains(err.Error(), "partition is required") {
-		t.Fatalf("missing partition must error: %v", err)
+	if _, err := server.Call("kafka_ui_select", map[string]any{}); err == nil || !strings.Contains(err.Error(), "Missing required parameters: partition, offset") {
+		t.Fatalf("double missing must enumerate both in schema order: %v", err)
 	}
-	if _, err := server.Call("kafka_ui_select", map[string]any{"partition": float64(0)}); err == nil || !strings.Contains(err.Error(), "offset is required") {
-		t.Fatalf("missing offset must error: %v", err)
+	if _, err := server.Call("kafka_ui_select", map[string]any{"partition": float64(0)}); err == nil || !strings.Contains(err.Error(), "Missing required parameters: offset") {
+		t.Fatalf("missing offset must enumerate offset only: %v", err)
+	}
+	// present-but-非法值：精确点名，不混入枚举。
+	if _, err := server.Call("kafka_ui_select", map[string]any{"partition": "abc", "offset": float64(1)}); err == nil || !strings.Contains(err.Error(), "partition must be a non-negative integer") {
+		t.Fatalf("invalid partition must be named precisely: %v", err)
 	}
 }
 
@@ -201,8 +205,15 @@ func TestServerToolsExcludeWriteForRestrictedConnections(t *testing.T) {
 }
 
 // connect2 经 lifecycle payload 注册一个连接配置（只登记配置、惰性建连，
-// 不需要真实集群）。
+// 不需要真实集群）。默认 bootstrap 指向 127.0.0.1:9092——注意：本机若真有
+// Kafka，执行类断言会拨号成功；需要"确定不可达"的执行失败场景用 connect2At。
 func connect2(svc *kafkaconn.Service, id string, readOnly, allowDelete bool) error {
+	return connect2At(svc, id, readOnly, allowDelete, "127.0.0.1:9092")
+}
+
+// connect2At connect2 的显式 bootstrap 版（封闭单测用不可达端口，如
+// 127.0.0.1:1，避免依赖"本机 9092 恰好无 broker"的环境假设）。
+func connect2At(svc *kafkaconn.Service, id string, readOnly, allowDelete bool, bootstrap string) error {
 	boolText := func(value bool) string {
 		if value {
 			return "true"
@@ -212,7 +223,7 @@ func connect2(svc *kafkaconn.Service, id string, readOnly, allowDelete bool) err
 	params, err := lifecycle.Parse([]byte(`{
 		"connection": {"id": "` + id + `", "name": "` + id + `", "host": "127.0.0.1", "port": 9092,
 			"read_only": ` + boolText(readOnly) + `,
-			"external_config": {"read_only": false, "allow_delete": ` + boolText(allowDelete) + `, "bootstrap_servers": "127.0.0.1:9092"}}
+			"external_config": {"read_only": false, "allow_delete": ` + boolText(allowDelete) + `, "bootstrap_servers": "` + bootstrap + `"}}
 	}`))
 	if err != nil {
 		return err
@@ -234,7 +245,9 @@ func TestServerWriteGatesOnPolicy(t *testing.T) {
 func TestServerTwoPhasePreviewAndConsume(t *testing.T) {
 	server := NewServer(kafkaconn.NewService(), nil)
 	server.now = func() time.Time { return intentBase }
-	if err := connect2(server.svc, "c1", false, true); err != nil {
+	// 封闭环境：注册指向确定不可达端口的连接，两阶段校验通过后的执行层
+	// 失败（拨号失败）不应依赖"本机 9092 恰好无 broker"。
+	if err := connect2At(server.svc, "c1", false, true, "127.0.0.1:1"); err != nil {
 		t.Fatal(err)
 	}
 	args := map[string]any{"connectionId": "c1", "topics": []any{"orders"}}

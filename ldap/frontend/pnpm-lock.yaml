@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@lucide/vue':
-        specifier: 1.17.0
-        version: 1.17.0(vue@3.5.42(typescript@6.0.3))
+        specifier: 1.45.0
+        version: 1.45.0(vue@3.5.42(typescript@6.0.3))
       vue:
         specifier: ^3.5.35
         version: 3.5.42(typescript@6.0.3)
@@ -68,8 +68,8 @@ packages:
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
 
-  '@lucide/vue@1.17.0':
-    resolution: {integrity: sha512-6Q1ZHgr5FbmJzKWe5BxlNdjLj2lbmuH1zwDtVzUJofX0w9UREwKgq4F4jwKqFYyyIS4Rj3FiJvDi2k6djukmmw==}
+  '@lucide/vue@1.45.0':
+    resolution: {integrity: sha512-tbMlusqK6brViI1xj8nsXAgNDyJOvNeOdOQlBI0hOWCAbnBrPRlanoQ6EygDEMv3dqwXfCZPb4a0/ImtI5KAmQ==}
     peerDependencies:
       vue: '>=3.0.1'
 
@@ -714,7 +714,7 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
 
-  '@lucide/vue@1.17.0(vue@3.5.42(typescript@6.0.3))':
+  '@lucide/vue@1.45.0(vue@3.5.42(typescript@6.0.3))':
     dependencies:
       vue: 3.5.42(typescript@6.0.3)
 

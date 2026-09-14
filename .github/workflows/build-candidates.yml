@@ -2,7 +2,7 @@ name: Build multi-platform plugin candidates
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
     paths:
       - '.github/workflows/build-candidates.yml'
       - 'shared/release/**'

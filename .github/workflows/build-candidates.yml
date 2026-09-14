@@ -2,7 +2,7 @@ name: Build multi-platform plugin candidates
 
 on:
   push:
-    branches: [master, main]
+    branches: [main]
     paths:
       - '.github/workflows/build-candidates.yml'
       - 'shared/release/**'
@@ -70,7 +70,7 @@ jobs:
 
       - name: Expose host SDK for Go sidecars
         shell: bash
-        run: cp -a host dbx-plugin-host-worktree
+        run: cp -a host ../dbx-plugin-host-worktree
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

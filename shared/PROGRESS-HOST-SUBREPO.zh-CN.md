@@ -1011,3 +1011,46 @@ app 内 sidecar simple bind → 结果回流」全链路真机实证成立，§2
 
 **剩余风险**：T1/T5 冷启动竞态仍未解（宿主侧，修复派轮待定）；T1/T5 如需
 绿需先在前端建立工作台 tab 再跑套件。本轮无新增缺陷记录。
+
+---
+
+## 2026-09-14 上游跟进（origin/main 75 提交 + origin/dev/plugin-framework-current 34 提交重写线）
+
+**同步方式**：`scripts/host-sync.sh sync`（fetch + 逐分支 merge，manual 策略）。
+两轮合并均落 commit：origin/main → `42eb84f5d`（含人工修复 amend 后
+`752e111fc`）+ 测试对齐 `fix: align merged sources...`；dev 重写线 →
+`ff7cfbdc3`。91 + 70 个冲突文件，全部逐 hunk 人工裁决。
+
+**合并裁决原则**（本次沿用，后续可复用）：
+
+- 上游 main 为权威演进线：版本号/文档/模板/workflow/marketplace 签名 key、
+  Radio 字段类型、icon 字段、installer LocalDev 重装策略、Svelte starter
+  一律取 main。
+- 本地二开修复保留：MCP 桥（pluginHostBridge 三参 `pluginSandboxDocument`、
+  bootTheme 防白闪、SDK toPlain 克隆、document.dispatchEvent 修复）、
+  WKWebView frameReady 白屏修复、themeRevision 主题监听、ContentArea
+  always-mounted（v-show 防插件 webview 会话丢失）、queryStore
+  reconnectRestoredPluginTabs、条件级联字段（visible_when/required_when/
+  options_action + PluginConnectionFields SSH key picker）、ConnectionDialog
+  startSavedConnection 重构、plugins.rs plugin_data_dir、host.rs 条件感知
+  required 校验、sdk/cli go.work Go 构建链。
+- dev 重写线（34 提交，多数与已合内容同名不同 ID）：核实其全部实质增量
+  （plugin secrets 持久化、driver store layout、Go workspace 修复等）均已被
+  main 覆盖后整体取 ours，仅作历史归一。
+
+**合并后修复**（关键记录，防复发）：
+
+1. `plugin_connection_secret_key()` 函数在两条线上都只有调用没有定义
+   （上次 dev-line sync 遗留破损），本次在 connection_secrets.rs 补回定义
+   （PREFIX 封装 + 空 key 校验），cloud_sync/storage 补 import。
+2. 上游 `InstalledPlugin::new()` → 结构体字面量构造变更导致 query.rs/schema.rs
+   测试 fixture 混合破损，已按 MERGE_HEAD 版本整体替换。
+3. App.vue/EditorGroup.vue/openTabsPersistence.ts 的 auto-merge 重复字段/
+   监听（duplicate attribute）已去重；`activate-plugin-center` 事件链保留
+   （本地插件中心 tab 入口）。
+4. 契约扩展（additive，非破坏）：`closeTab` 桥 API + SDK Cmd+W 快捷键；
+   BRIDGE_VERSION 仍为 1，binary 事件形状未变（`data` 直传），shared/frontend
+   公共层无需变更，插件 optional 跟进即可。
+
+**验证**：cargo check -p dbx --lib --bins --tests 0 警告 0 错误；前端
+typecheck 通过；vitest 1354 文件 / 14208 用例全绿。

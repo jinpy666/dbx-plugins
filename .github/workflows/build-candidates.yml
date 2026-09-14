@@ -72,6 +72,15 @@ jobs:
         shell: bash
         run: cp -a host ../dbx-plugin-host-worktree
 
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:

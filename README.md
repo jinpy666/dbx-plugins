@@ -1,82 +1,74 @@
-# DBX 插件族工作区（dbx-plugins）
+# DBX Plugins
 
-DBX 插件族统一工作区。
-**聚焦四插件，不做任何新插件**（决策存档见 `shared/CAPABILITY_CANDIDATES.zh-CN.md`；
-2026-09-05 经用户决策新增 kafka 插件，见 `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md`）。
+[English](README.en.md) · [贡献指南](CONTRIBUTING.zh-CN.md) ·
+[维护规约](MAINTAINERS.zh-CN.md) · [安全策略](SECURITY.zh-CN.md) ·
+[MCP 使用指南](docs/MCP_USAGE.zh-CN.md)
 
-## 目录结构
+DBX Plugins 为 DBX 提供面向基础设施、目录服务、文件存储和消息平台的专业工作台。
+每个插件都可以独立安装、配置、升级和发布。
 
-```
-dbx-plugins/
-├── README.md          # 本文件（结构说明 + 实施入口）
-├── AGENTS.md          # 工作区规约（硬性规则、文档入口、skills 索引）
-├── .agents/skills/    # 触发式工程 skills：dbx-plugin-dev / dbx-host-e2e /
-│                      #   dbx-ldap-dev / dbx-files-dev / dbx-kafka-dev / dbx-web-docker
-├── shared/            # 公共目录：跨插件方案与基线文档（插件族共同遵循）
-│   ├── IMPL_PLAN_M0_COMMON.zh-CN.md           # M0 公共基线（SDK 契约/lifecycle/审计/测试基建/roadmap）
-│   ├── CAPABILITY_CANDIDATES.zh-CN.md         # 能力盘点（聚焦版：三插件边界 + 不迁移清单）
-│   └── host-e2e/      # 插件无关的宿主 e2e 安装脚本（install.sh，隔离 app-data）
-├── scripts/           # 工作区级脚本：release-local / release-docker / host-sync
-├── host/              # DBX 宿主子仓库（git submodule → t8y2/dbx，插件框架分支 + 本地二开提交）
-├── deploy/web/        # DBX web Docker 发版（Dockerfile + entrypoint + compose，
-│                      #   四插件 Linux .dbxp 烤进镜像，容器首启自动安装）
-├── ssh/          # 插件 1：io.dbx.ssh（Rust）
-│   └── docs/          # 本插件对标清单/协议/测试矩阵（含 batch-send 等增强跟踪）
-├── ldap/              # 插件 2：io.dbx.ldap（Go sidecar）
-│   ├── README.md
-│   └── docs/IMPL_PLAN_DBX_LDAP.zh-CN.md       # 实施文档（M1/M3/M4 任务表）
-├── files/             # 插件 3：io.dbx.files（Rust + Apache OpenDAL）
-│   ├── README.md
-│   └── docs/IMPL_PLAN_DBX_FILES.zh-CN.md      # 实施文档（M2/M3/M4 任务表）
-└── kafka/             # 插件 4：io.dbx.kafka（Go sidecar + franz-go）
-    ├── README.md
-    └── docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md      # 实施文档（Phase 1，2026-09 新增）
-```
+![DBX 插件中心](shared/host-e2e/screenshots/02-plugin-center.png)
 
 ## 插件一览
 
-| 插件 | ID | sidecar | 状态 | 实施文档 |
-|---|---|---|---|---|
-| ssh | `io.dbx.ssh` | Rust（russh，stdio-framed + 二进制帧） | **已上线 v0.2.x**，按自身对标清单增强 | 仓内 `docs/FEATURE_PARITY*.zh-CN.md` |
-| ldap | `io.dbx.ldap` | Go（go-ldap + gokrb5，官方 Go SDK，stdio-jsonl） | 待实施（M0→M1→M3→M4） | `ldap/docs/IMPL_PLAN_DBX_LDAP.zh-CN.md` |
-| files | `io.dbx.files` | Rust（opendal 0.58.x，dbx-plugin-sdk，stdio-framed + 二进制帧） | 待实施（M0→M2→M3→M4） | `files/docs/IMPL_PLAN_DBX_FILES.zh-CN.md` |
-| kafka | `io.dbx.kafka` | Go（franz-go + kadm，官方 Go SDK，stdio-jsonl） | 商用级可用（2026-09-05：45+11 方法，Confluent+AWS Glue 双 SR、Kerberos/ZK、ag-grid 检索，test.sh 全绿） | `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md` |
+| 插件 | 适用场景 | 核心能力 |
+|---|---|---|
+| [SSH & SFTP](ssh/README.md) | 服务器运维 | 终端、远程命令、SFTP、ProxyJump、Known Hosts、Quick Sudo |
+| [LDAP](ldap/README.md) | 目录管理 | DN 树、RFC 4515 搜索、条目编辑、Schema、LDIF/CSV 导出 |
+| [Files](files/README.md) | 文件与对象存储 | 本地、S3、OSS、WebDAV、FTP、SFTP、SMB、同步与大文件传输 |
+| [Kafka](kafka/README.md) | 消息平台运维 | topic、消息、消费组、lag、offset、ACL、Schema Registry |
 
-## 实施入口（给实施 agent）
+所有插件均支持简体中文、繁体中文、英语、西班牙语、意大利语、日语和葡萄牙语，
+并通过 DBX 宿主的 secret binding 管理连接凭据。
 
-1. 读 `shared/IMPL_PLAN_M0_COMMON.zh-CN.md` §6.0（实施顺序总览）与 §6.1（M0 任务清单）；
-2. M0 验收后并行：LDAP M1（`ldap/docs` §9）∥ Files F2-0/F2-1（`files/docs` §11）；
-3. 完成定义四件套：单测 + smoke + 对标清单更新 + 七语（ssh 仓 skill 硬性约定，沿用）；
-4. 宿主侧不确定项按 optional 降级处理，记录进对应插件 PROGRESS 文档。
+## 快速开始
 
-## 宿主子仓库与相邻目录
+安装 DBX 插件 CLI：
 
-- 宿主子仓库：`host/`（git submodule → `https://github.com/t8y2/dbx.git`，分支
-  `dev/plugin-framework-current` = origin/main + 少量本地二开提交）。策略：
-  **上游为主、本地补丁跟随**——用 `scripts/host-sync.sh sync` 定期合并
-  origin/main 保留二开提交，待上游功能覆盖所需后逐个移除二开提交。
-  ssh/files 的 `backend/Cargo.toml` 以 `[patch.crates-io]` 相对路径
-  `../../host/plugins/sdk/rust/dbx-plugin-sdk` 引用其 Rust SDK。
-  旧相邻路径 `~/btroot/dbx-plugin-host-worktree` 保留为指向 `host/` 的符号链接，
-  兼容历史文档与外部引用。
-- 历史基线：四插件能力已全面超越早期外部参照（历史对标记录已随基线退役删除），
-  后续不再参考外部实现。
-- ssh 专项 skill：`dbx-ssh-sftp-dev`（用户级，构建/测试/安装全流程，环境
-  准备同源适用）。
+```bash
+npm install --global @dbx-app/plugin-cli
+```
 
-## 发版
+运行目标插件验证：
 
-- **日常跟上游**：`scripts/host-sync.sh sync`（宿主子仓库拉取并合并上游，
-  保留本地二开提交；完成后在父仓库提交 submodule 指针）。
-- **本地 macOS 应用**：`scripts/release-local.sh`（指纹比对，host/插件无变更
-  自动跳过；四插件并发构建；默认不再拉上游，`--sync-host` 手动同步；完成后
-  发布 `/Applications` → 安装有变更的插件 → 拉起）。
-- **服务器 web 访问**：`scripts/release-docker.sh`（构建含四插件 Linux .dbxp 的
-  dbx-web 镜像，容器首启自动安装；机制与部署见 skill `dbx-web-docker` 与
-  `deploy/web/`）。
+```bash
+ssh/scripts/test.sh --skip-host
+ldap/scripts/test.sh
+files/scripts/test.sh
+kafka/scripts/test.sh
+```
 
-## 仓库发布
+运行工作区级快速检查：
 
-- GitHub 私有仓库 `jinpy666/dbx-plugins`；敏感信息清理决策与转公开前
-  复查清单见 `docs/REPO_PUBLISH.zh-CN.md`（copilot-pool 与无关调研文档
-  已移出发布，本地备份在仓库外）。
+```bash
+shared/test-all.sh --quick
+python3 shared/release/check_repo_hygiene.py
+```
+
+多平台构建由 [Build multi-platform plugin candidates](.github/workflows/build-candidates.yml)
+负责，覆盖四插件 × 五个 DBX 原生 target，并在 CI 中上传 `.dbxp`、`.artifact.json`
+和合并候选包。发布流程与官方 DBX plugin release reusable workflow 对齐，详见
+[多平台 CI 与发布产出](docs/CI_MULTI_PLATFORM.zh-CN.md)。
+
+## 目录结构
+
+```text
+ssh/       SSH 与 SFTP 插件
+ldap/      LDAP 插件
+files/     多后端文件存储插件
+kafka/     Kafka 管理插件
+shared/    公共宿主适配、测试和发布检查
+scripts/   工作区维护与发布脚本
+host/      DBX 宿主子模块
+```
+
+## 发布与安全
+
+四个插件是独立发布单元，使用 `<plugin>-v<version>` 形式的 Git tag。作者 CI
+生成候选包，DBX Store 负责审核、签名和 Marketplace catalog 发布。
+
+凭据、私钥、连接导出、本地 app-data、构建产物和运行时状态不得提交到仓库。
+疑似漏洞请按照 [SECURITY.zh-CN.md](SECURITY.zh-CN.md) 私下报告。
+
+公开发布前的许可证、版权主体和 publisher 信息必须由维护者确认，详情见
+[公开发布检查清单](docs/REPO_PUBLISH.zh-CN.md)。

@@ -1,0 +1,32 @@
+name: Release DBX Kafka plugin
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: startsWith(github.event.release.tag_name, 'kafka-v')
+    name: Validate Kafka release identity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifest and release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python3 shared/release/validate_manifests.py kafka --tag "$RELEASE_TAG"
+
+  release:
+    if: startsWith(github.event.release.tag_name, 'kafka-v')
+    needs: validate
+    uses: t8y2/dbx/.github/workflows/plugin-release-reusable.yml@plugin-sdk-v1
+    with:
+      release-tag: ${{ github.event.release.tag_name }}
+      working-directory: kafka
+      package-command: dbx-plugin package .
+      package-path: dist/*.dbxp
+      metadata-path: dist/*.artifact.json
+      plugin-cli-version: 0.1.3

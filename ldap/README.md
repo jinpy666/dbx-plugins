@@ -1,33 +1,58 @@
-# dbx-ldap-plugin（io.dbx.ldap）
+# DBX LDAP
 
-DBX 的 LDAP 控制台插件：DN 树浏览、RFC 4515 搜索（分页）、条目
-查看/编辑/新增/删除/改名、RootDSE 与 Schema 元数据、LDIF/CSV 导出、
-搜索预设；8 种认证（simple/anonymous/unauthenticated/kerberos(GSSAPI)/
-ntlm/ntlm_hash/digest_md5/external）；DN 白名单 + 屏蔽属性 + 只读 +
-审计安全策略。初版能力迁移自已退役的外部参照实现。
+[English](README.en.md) · [工作区贡献指南](../CONTRIBUTING.zh-CN.md)
 
-## 状态
+DBX LDAP 是用于目录浏览和管理的 LDAP 工作台。它适合目录查询、用户和组维护、
+Schema 检查以及批量导出，同时提供明确的只读、DN 范围和属性保护策略。
 
-**待实施**（方案定稿，见 `shared/`）。里程碑：M0（公共基线）→ M1（核心）→
-M3（进阶认证）→ M4（MCP 工具 + 收尾）。
+![DBX LDAP 工作台](docs/screenshots/01-workbench-initial.png)
 
-## 技术形态
+## 适合场景
 
-- sidecar：**Go**（官方 Go SDK，`stdio-jsonl`），二进制 `dbx-plugin-ldap`
-- 依赖：`go-ldap/ldap/v3 v3.4.13`、`jcmturner/gokrb5/v8 v8.4.4`（纯 Go，CGO=0）
-- 连接：宿主 connection-provider（`database_type: "ldap"`），凭据走
-  secret binding，插件不持久化
-- 拨号：`runtime.host:port`（DBX 传输层出口），TLS SNI/SPN 用逻辑主机名
+- 快速定位用户、组、组织单位和服务账号。
+- 检查目录 Schema、属性定义和 RootDSE 能力。
+- 在审批后的 Base DN 范围内完成条目维护，并导出审计或交付数据。
 
-## 文档
+## 核心能力
 
-- 实施文档（唯一工作来源）：[docs/IMPL_PLAN_DBX_LDAP.zh-CN.md](docs/IMPL_PLAN_DBX_LDAP.zh-CN.md)
-  ——迁移映射、manifest 字段全表、sidecar 方法契约、安全策略、前端组件、
-  smoke 场景 S1–S10、任务表 L1/L3/L4
-- 公共基线：`../shared/IMPL_PLAN_M0_COMMON.zh-CN.md`（lifecycle/审计/测试基建）
+- DN 树浏览、分页搜索和 RFC 4515 过滤器。
+- 查看、新增、编辑、重命名和删除目录条目。
+- RootDSE、Schema 和属性元数据检查。
+- 保存搜索预设，支持 LDIF 和 CSV 导出。
+- 支持 anonymous、unauthenticated、simple、Kerberos/GSSAPI、NTLM、NTLM 哈希、
+  DIGEST-MD5 和 SASL External 等认证方式。
+- 支持 LDAP、StartTLS 和 LDAPS，并可配置 TLS 校验、CA 路径和服务器名称。
+- 支持只读模式、允许写入的 Base DN、屏蔽属性和审计安全策略。
+- 界面支持简体中文、繁体中文、英语、西班牙语、意大利语、日语和葡萄牙语。
 
-## 脚手架入口
+![LDAP Schema 检查](docs/screenshots/05-schema-panel.png)
 
-M0-T1 通过后，`dbx-plugin create --template go` 生成骨架并入本目录，
-scripts/ 四件套（build/test/smoke/sidecar_client_jsonl）按
-`shared/IMPL_PLAN_M0_COMMON.zh-CN.md` §5 模板落地。
+## MCP 自动化
+
+独立 stdio 模式启动：
+
+```bash
+backend/bin/dbx-plugin-ldap --mcp
+```
+
+常用工具包括 `ldap_search_digest`、`ldap_cursor_next`、`ldap_ui_schema` 和
+`ldap_entry_write`。大结果使用 cursor 翻页，删除条目需要两阶段确认。
+完整配置见 [MCP 使用指南](../docs/MCP_USAGE.zh-CN.md)和
+[LDAP MCP 参考](docs/MCP.zh-CN.md)。
+
+## 安全设计
+
+绑定密码、Kerberos 凭据和其他敏感信息由 DBX 宿主 secret binding 管理，插件不
+持久化凭据。生产连接建议启用 TLS 校验、只读模式和最小化的读写 Base DN 范围。
+
+## 开发与验证
+
+```bash
+cd frontend && pnpm install && pnpm typecheck && pnpm test && pnpm build
+cd ../backend && go vet ./... && go test ./...
+cd ..
+scripts/test.sh
+```
+
+协议和集成验证说明位于 `docs/`；公开贡献请先阅读
+[贡献指南](../CONTRIBUTING.zh-CN.md)。

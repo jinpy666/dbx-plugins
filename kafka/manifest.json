@@ -3,9 +3,11 @@
   "manifest_version": 1,
   "id": "io.dbx.kafka",
   "name": "DBX Kafka",
-  "version": "0.1.36",
+  "version": "0.1.38",
   "publisher": "dbx",
-  "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
+  "description": "Operate Apache Kafka from one workspace: inspect topics and partitions, produce and consume messages, filter and decode payloads, monitor consumer lag, manage offsets and ACLs, stream records, and export results.",
+  "source": "https://github.com/jinpy666/dbx-plugins",
+  "homepage": "https://github.com/jinpy666/dbx-plugins/tree/main/kafka",
   "icon": "assets/plugin.svg",
   "engines": {
     "dbx": ">=0.5.77",
@@ -689,7 +691,7 @@
   "localizations": {
     "zh-CN": {
       "name": "DBX Kafka",
-      "description": "DBX 的 Kafka 控制台插件：topic 与分区、消息生产与消费（过滤/解码）、消费组（lag 与 offset 重置）、ACL、流式消费与导出。",
+      "description": "在一个工作台中管理 Apache Kafka：查看 topic 与分区、生产和消费消息、过滤与解码 payload、监控消费组 lag、管理 offset 和 ACL、流式消费并导出结果。",
       "contributions": {
         "io.dbx.kafka.connection": {
           "label": "Kafka 集群",
@@ -1069,7 +1071,7 @@
     },
     "en": {
       "name": "DBX Kafka",
-      "description": "Kafka console plugin for DBX: topics and partitions, message produce/consume with filtering and decoding, consumer groups with lag and offset reset, ACLs, streaming consumption and export.",
+      "description": "Operate Apache Kafka from one workspace: inspect topics and partitions, produce and consume messages, filter and decode payloads, monitor consumer lag, manage offsets and ACLs, stream records, and export results.",
       "contributions": {
         "io.dbx.kafka.connection": {
           "label": "Kafka cluster",

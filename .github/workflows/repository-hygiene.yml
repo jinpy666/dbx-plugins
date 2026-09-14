@@ -1,0 +1,24 @@
+name: Repository hygiene
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate plugin manifests
+        run: |
+          python3 shared/release/validate_manifests.py ssh
+          python3 shared/release/validate_manifests.py ldap
+          python3 shared/release/validate_manifests.py files
+          python3 shared/release/validate_manifests.py kafka
+      - name: Check tracked files and high-confidence secrets
+        run: python3 shared/release/check_repo_hygiene.py

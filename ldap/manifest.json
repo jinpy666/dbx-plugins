@@ -3,9 +3,11 @@
   "manifest_version": 1,
   "id": "io.dbx.ldap",
   "name": "DBX LDAP",
-  "version": "0.1.65",
+  "version": "0.1.67",
   "publisher": "dbx",
-  "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
+  "description": "Browse, search, and manage LDAP directories with RFC 4515 filters, schema inspection, entry editing, LDIF/CSV export, and guarded write controls.",
+  "source": "https://github.com/jinpy666/dbx-plugins",
+  "homepage": "https://github.com/jinpy666/dbx-plugins/tree/main/ldap",
   "icon": "assets/plugin.svg",
   "engines": {
     "dbx": ">=0.5.77",
@@ -538,7 +540,7 @@
   "localizations": {
     "zh-CN": {
       "name": "DBX LDAP",
-      "description": "DBX 的 LDAP 控制台插件：DN 树、RFC 4515 搜索、条目编辑、Schema 与搜索预设。",
+      "description": "用于浏览、搜索和管理 LDAP 目录：支持 RFC 4515 过滤器、Schema 检查、条目编辑、LDIF/CSV 导出和受控写入。",
       "contributions": {
         "io.dbx.ldap.connection": {
           "label": "LDAP 服务器",
@@ -820,7 +822,7 @@
     },
     "en": {
       "name": "DBX LDAP",
-      "description": "LDAP console plugin for DBX: DN tree, RFC 4515 search, entry editing, schema and search presets.",
+      "description": "Browse, search, and manage LDAP directories with RFC 4515 filters, schema inspection, entry editing, LDIF/CSV export, and guarded write controls.",
       "contributions": {
         "io.dbx.ldap.connection": {
           "label": "LDAP server",

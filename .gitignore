@@ -22,18 +22,49 @@ scroll-stress-result.json
 
 # 工具与 IDE 状态
 .idea/
+.vscode/
+.fleet/
 .mimosa/
 .omc/
 .playwright-mcp/
 .release-state/
 .DS_Store
+*.swp
+*.swo
+
+# 测试/覆盖率/缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage/
+*.profraw
+*.profdata
 
 # 日志、环境变量与本地密钥
 *.log
 .env
 .env.*
 !.env.example
+!.env.example.*
 .dbx-repository-signing-key.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+*.bak
+*.orig
+*.rej
+credentials/
+secrets/
+**/credentials/
+**/secrets/
 /.zcode/
 
 # goal 巡检状态（agent 心跳，不入库）

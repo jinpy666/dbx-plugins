@@ -1,37 +1,45 @@
-# 仓库发布记录（GitHub 私有仓库）
+# 仓库公开发布检查清单
 
-**发布日期**：2026-09-12　**仓库**：`jinpy666/dbx-plugins`（private）
+本清单用于将 DBX 插件仓库从私有开发状态转换为公开开源项目。不要在本文档
+记录真实 token、私钥、客户数据、内网地址、个人本机路径或内部部署信息。
 
-本文档记录发布 GitHub 私有仓库时的敏感信息清理决策与规则，后续向该仓库
-推送或转公开前，先对照本清单复查。
+## 代码与历史
 
-## 发布前敏感信息排查结论
+- [ ] `python3 shared/release/check_repo_hygiene.py` 通过。
+- [ ] `git ls-files` 不包含 `.env`、密钥、证书、数据库、连接导出、运行时状态
+      或构建产物。
+- [ ] `git log --all --format='%ae %ce'` 不包含不应公开的工作邮箱。
+- [ ] 所有与项目无关的调研、账号管理、部署和内部工具均已移出仓库。
+- [ ] `host/` 子模块指向公开可访问、与当前插件 SDK 兼容的上游版本。
 
-| 检查项 | 结论 |
-|---|---|
-| API token / 私钥 / 云凭证 | 全仓库与全部 git 历史无命中（仅 AWS 官方文档示例 key，无害） |
-| 硬编码密码 | 无。所有凭证经环境变量传入；`adminpassword` 等仅为本地测试容器默认值 |
-| git 提交作者邮箱 | 原为 `jinpy.he@kuehne-nagel.com`（全部 84 提交），已重写 |
-| 内网 IP / 部署细节 | copilot-pool 内含，已整体移出 |
-| 个人本机用户名（`/Users/jinpy`） | 仅测试 fixture 中的本机路径，保留 |
+## 许可证与身份
 
-## 处置记录
+- [ ] 维护者确认版权主体。
+- [ ] 维护者确认软件许可证，并添加根目录 `LICENSE`。
+- [ ] 四个 Manifest 的 publisher、source、homepage 和 license 一致且准确。
+- [ ] 第三方依赖许可证和 NOTICE 要求已审核。
 
-1. **git 历史重写**（`git filter-repo`，发布时尚无远程，历史重写零成本）：
-   - 作者/提交者邮箱全部替换为 `jinpy666@users.noreply.github.com`；
-   - 从全部历史移除 `copilot-pool/` 与 `docs/PRINTER_RESET_GITHUB_KB.zh-CN.md`。
-2. **copilot-pool/**（Copilot 账号池桥接工具）：整体排除出发布仓库，
-   本地与服务器留存；已加入 `.gitignore`。后续不在该仓库恢复跟踪
-   （含内网服务器 IP 与部署细节，且账号池工具不适合托管在 GitHub）。
-3. **docs/PRINTER_RESET_GITHUB_KB.zh-CN.md**（打印机重置第三方调研笔记）：
-   与 DBX 插件项目无关，移出仓库；已加入 `.gitignore`。
-4. **仓库级 git 身份**已固定为 `jinpy666 <jinpy666@users.noreply.github.com>`，
-   后续在本仓库的提交不会带入公司邮箱。
-5. 以上移出内容的本地备份：`~/btroot/dbx-plugins-local/`（仓库外）。
+## 开源治理
 
-## 转公开前复查清单
+- [ ] 双语 README、贡献指南、行为准则、安全策略和支持说明已发布。
+- [ ] CODEOWNERS、Issue 模板、PR 模板和依赖更新已启用。
+- [ ] 仓库卫生 CI 与 Manifest CI 通过。
+- [ ] 安全报告入口已验证，不要求公开披露漏洞细节。
 
-- [ ] `git log --all --format='%ae %ce' | sort -u` 只含 noreply 邮箱；
-- [ ] 重新全仓 grep token / 私钥 / 内网 IP 模式；
-- [ ] 确认 `host/` 子模块（t8y2/dbx）公开可见性可满足克隆需要；
-- [ ] 复查各插件 `docs/PROGRESS-*.md` 中的真实环境信息（IP、主机名、账号）。
+## 发布与供应链
+
+多平台候选包由 [多平台 CI 与发布产出](CI_MULTI_PLATFORM.zh-CN.md) 自动构建和校验；
+本节清单用于补充人工发布与 DBX Store 提交流程。
+
+- [ ] 每个插件使用不可变的 `<plugin>-v<version>` tag。
+- [ ] 五个平台的 unsigned candidate 均可重现构建。
+- [ ] 候选包 metadata 的 hash、size、plugin ID、version 和 target 已校验。
+- [ ] 候选包不包含 `signature.json` 或任何官方签名密钥。
+- [ ] DBX Store 审核、签名和 catalog 发布由授权流程完成。
+
+## 公开前最终动作
+
+- [ ] 在干净 clone 中完成 README 快速开始。
+- [ ] 在干净 app-data 中完成至少一个插件安装冒烟。
+- [ ] 检查所有公开 URL、仓库权限、分支保护和 Actions 权限。
+- [ ] 记录当前版本、已知限制和回滚版本。

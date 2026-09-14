@@ -71,6 +71,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install pnpm
+        run: npm install --global pnpm@11.24.0
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -90,11 +93,11 @@ jobs:
       - name: Validate manifest
         run: python shared/release/validate_manifests.py "${{ matrix.directory }}"
 
-      - name: Build unsigned candidate
+      - name: Build frontend, sidecar, and unsigned candidate
         working-directory: ${{ matrix.directory }}
         env:
           DBX_PLUGIN_TARGET: ${{ matrix.target }}
-        run: dbx-plugin package .
+        run: bash scripts/build.sh
 
       - name: Upload candidate
         uses: actions/upload-artifact@v4

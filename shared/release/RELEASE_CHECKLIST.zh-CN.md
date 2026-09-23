@@ -21,9 +21,9 @@
 - [ ] candidate 不包含 `signature.json`。
 - [ ] `release-candidates.json` 只包含当前插件。
 
-## DBX Store
+## 发布后自动同步（DBX Store）
 
-- [ ] 提交源码 tag、候选包清单和 release notes。
+- [ ] GitHub Release 已发布（含候选包清单和 release notes），等待自动同步。
 - [ ] 核对 catalog 中的 plugin ID、version、publisher、permissions。
 - [ ] 核对最终 signed artifact 的 `signingKeyId`、SHA-256、size。
 - [ ] 官方 catalog smoke 通过。

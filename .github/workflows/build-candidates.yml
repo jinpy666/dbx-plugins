@@ -77,6 +77,47 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev nasm
+          # The plugin CLI invokes a bare `cargo build` while packaging. Route it
+          # through cargo-zigbuild so Linux sidecars link against a low glibc
+          # baseline: the official docker image runtime is debian:bookworm-slim
+          # (glibc 2.36), and a native ubuntu-24.04 build pins GLIBC_2.38/2.39,
+          # which kills the sidecar in the loader (exit status 1) — seen as
+          # "Plugin initialization failed" on web/docker installs
+          # (dbx-plugin-ssh#8, dbx-plugin-ssh#58).
+          pip3 install --user --break-system-packages ziglang
+          cargo install --locked cargo-zigbuild
+          # Go sidecars (ldap/kafka) must link statically: the CLI's internal
+          # `go build` inherits this env, and a cgo build pins GLIBC_2.34+,
+          # coupling the binary to the build host's glibc. deploy/web already
+          # packages them with CGO_ENABLED=0; keep release candidates identical.
+          echo "CGO_ENABLED=0" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.cargo/wrappers"
+          CARGO_BIN="$(command -v cargo)"
+          cat > "$HOME/.cargo/wrappers/cargo" <<'WRAPPER'
+          #!/bin/sh
+          # Route the packaging CLI's bare `cargo build` through cargo-zigbuild so
+          # Linux sidecars link against zig's low glibc baseline. An explicit
+          # host --target is REQUIRED: without it cargo-zigbuild delegates to the
+          # distro toolchain and the baseline follows the runner (glibc 2.39 on
+          # ubuntu-24.04, which kills the sidecar in the official bookworm
+          # docker image). zigbuild puts output under <triple>/release/ while the
+          # CLI copies from <CARGO_TARGET_DIR>/release/, so mirror top-level
+          # artifacts back. Any non-build cargo call passes through untouched.
+          if [ "$1" != "build" ]; then
+            exec __CARGO__ "$@"
+          fi
+          shift
+          TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          __CARGO__ zigbuild --target "$TRIPLE" "$@" || exit $?
+          if [ -n "${CARGO_TARGET_DIR:-}" ] && [ -d "$CARGO_TARGET_DIR/$TRIPLE/release" ]; then
+            mkdir -p "$CARGO_TARGET_DIR/release"
+            find "$CARGO_TARGET_DIR/$TRIPLE/release" -maxdepth 1 -type f \
+              -exec cp -a {} "$CARGO_TARGET_DIR/release/" \;
+          fi
+          WRAPPER
+          sed -i "s|__CARGO__|$CARGO_BIN|" "$HOME/.cargo/wrappers/cargo"
+          chmod +x "$HOME/.cargo/wrappers/cargo"
+          echo "$HOME/.cargo/wrappers" >> "$GITHUB_PATH"
 
       - name: Install Windows native dependencies
         if: runner.os == 'Windows'

@@ -5,7 +5,8 @@
 - 四个插件目录是四个独立发布单元。
 - `shared/frontend/` 是公共宿主适配的唯一实现点。
 - `host/` 是上游维护的子模块，默认只读。
-- Marketplace 签名和 catalog 发布属于 DBX Store，不属于插件源码维护者。
+- Marketplace 上架由 DBX Store 随插件 GitHub Release 自动同步完成；签名不归
+  插件源码维护者管。
 
 ## 必须执行的维护工作
 
@@ -29,7 +30,7 @@ mock。优先使用 optional 降级，不要硬依赖更新版本的宿主 API�
 - 使用 `<plugin>-v<version>` tag。
 - 为五个 native target 生成 unsigned 候选包。
 - 校验候选 metadata、包 checksum、permissions 和 Manifest identity。
-- 提交 DBX Store 审核并由其完成仓库签名。
+- 发布 GitHub Release，由 DBX Store 自动同步上架（无需提交审核）。
 - 记录 release notes、已知限制和回滚信息。
 
 ## 依赖与安全事件

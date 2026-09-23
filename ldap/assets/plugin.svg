@@ -1,7 +1,0 @@
-<!-- Original DBX LDAP workbench icon. Licensed under the repository Apache-2.0 license. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DBX LDAP">
-  <rect x="21" y="4" width="22" height="16" rx="5" fill="#6d5dfc"/>
-  <path d="M32 20v8M14 28v8M50 28v8M14 28h36" fill="none" stroke="#6d5dfc" stroke-width="4.5" stroke-linecap="round"/>
-  <rect x="4" y="36" width="20" height="16" rx="5" fill="#6d5dfc"/>
-  <rect x="40" y="36" width="20" height="16" rx="5" fill="#6d5dfc"/>
-</svg>

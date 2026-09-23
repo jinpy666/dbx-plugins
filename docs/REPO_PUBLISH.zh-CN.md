@@ -29,13 +29,13 @@
 ## 发布与供应链
 
 多平台候选包由 [多平台 CI 与发布产出](CI_MULTI_PLATFORM.zh-CN.md) 自动构建和校验；
-本节清单用于补充人工发布与 DBX Store 提交流程。
+本节清单用于人工发布核对与 DBX Store 自动同步前的确认。
 
 - [ ] 每个插件使用不可变的 `<plugin>-v<version>` tag。
 - [ ] 五个平台的 unsigned candidate 均可重现构建。
 - [ ] 候选包 metadata 的 hash、size、plugin ID、version 和 target 已校验。
 - [ ] 候选包不包含 `signature.json` 或任何官方签名密钥。
-- [ ] DBX Store 审核、签名和 catalog 发布由授权流程完成。
+- [ ] GitHub Release 已发布，DBX Store 自动同步（签名与 catalog）完成。
 
 ## 公开前最终动作
 

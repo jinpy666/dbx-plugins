@@ -1,5 +1,0 @@
-<!-- Original DBX SSH workbench icon. Licensed under the repository Apache-2.0 license. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SSH">
-  <path d="M9 10 29 32 9 54" fill="none" stroke="#0ea5e9" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M37 53h18" fill="none" stroke="#0ea5e9" stroke-width="10" stroke-linecap="round"/>
-</svg>

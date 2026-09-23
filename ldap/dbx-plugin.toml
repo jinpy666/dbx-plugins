@@ -1,9 +1,0 @@
-schema_version = 1
-
-[backend]
-language = "go"
-directory = "backend"
-binary = "dbx-plugin-ldap"
-
-[package]
-include = ["assets", "ui"]

@@ -62,10 +62,14 @@ scripts/   工作区维护与发布脚本
 host/      DBX 宿主子模块
 ```
 
+以上 `ssh/`、`ldap/`、`files/`、`kafka/` 与 `host/` 均为 git submodule
+（插件源仓 `jinpy666/dbx-plugin-*`、宿主 fork `jinpy666/dbx`），克隆后用
+`git submodule update --init` 检出，在仓内直接开发。
+
 ## 发布与安全
 
 四个插件是独立发布单元，使用 `<plugin>-v<version>` 形式的 Git tag。作者 CI
-生成候选包，DBX Store 负责审核、签名和 Marketplace catalog 发布。
+生成候选包并发布 GitHub Release，DBX Store 自动同步完成 Marketplace 上架。
 
 凭据、私钥、连接导出、本地 app-data、构建产物和运行时状态不得提交到仓库。
 疑似漏洞请按照 [SECURITY.zh-CN.md](SECURITY.zh-CN.md) 私下报告。

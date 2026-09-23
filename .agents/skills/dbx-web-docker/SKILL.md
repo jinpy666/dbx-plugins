@@ -32,14 +32,19 @@ description: 把四插件打进 DBX web Docker 镜像并发布到服务器的全
 ## 常用命令
 
 ```bash
-scripts/release-docker.sh                          # 本机架构镜像 + 冒烟验证
+scripts/release-docker.sh                          # 本机架构镜像 + 冒烟验证 + 产物清理
 scripts/release-docker.sh --skip-host-sync         # 宿主 worktree 没动过时复用上下文
 scripts/release-docker.sh --platform linux/amd64   # 服务器为 amd64 时
 scripts/release-docker.sh --tag repo/dbx-plugins:v1 --push   # 推送镜像仓库
+scripts/release-docker.sh --no-clean               # 跳过清理步骤
 ```
 
 脚本末尾自带冒烟：起临时容器（DBX_DISABLE_PASSWORD=1 + 临时卷），检查
-plugins.tsv、entrypoint 安装结果、HTTP 200，随后清理。
+plugins.tsv、entrypoint 安装结果、HTTP 200，随后清理。每次 release 结束
+自动清理旧产物释放空间（`--no-clean` 跳过）：本流水线冒烟残留容器/卷
+（含被杀运行遗留的）、悬空镜像、同名仓库旧镜像（`GC_DOCKER_KEEP=3` 默认
+保留最新 3 个 tag）、buildx 缓存超过 `GC_BUILDER_KEEP=8g` 的部分；不触碰
+其他项目的镜像和卷。
 
 ## 服务器部署
 

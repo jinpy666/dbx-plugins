@@ -8,9 +8,13 @@
 # Change detection keeps repeat releases fast:
 #   - host: skipped when HEAD + worktree state match the last successful build
 #   - plugins: skipped when the source fingerprint (tracked + untracked files,
-#     version fields excluded) matches the last successful build; version is
-#     NOT bumped for skipped plugins
-#   - install: skipped when the exact version is already in the target store
+#     version fields excluded) matches the last successful build
+#   - install: skipped when the source is unchanged and the exact version is
+#     already in the target store; REBUILT plugins reinstall the same version
+#     (the store version dir is purged first via install.sh --reinstall)
+# Versions are NEVER bumped by this script: manifest.json is the single version
+# source (shared/RELEASE_PROCESS.zh-CN.md) — bump it by hand only when cutting
+# a market release.
 #
 # Usage:
 #   scripts/release-local.sh                    # release only what changed
@@ -25,7 +29,6 @@
 #   scripts/release-local.sh --force-host       # rebuild host even if unchanged
 #   scripts/release-local.sh --skip-plugins     # reuse existing dist/*.dbxp
 #   scripts/release-local.sh --force-plugins    # rebuild all plugins
-#   scripts/release-local.sh --no-bump          # do not bump plugin versions
 #   scripts/release-local.sh --no-launch        # do not open DBX.app at the end
 #   scripts/release-local.sh --isolated         # install into shared/host-e2e/app-data
 #                                               #   instead of the real app data
@@ -41,9 +44,20 @@
 #   scripts/release-local.sh --no-gc           # skip the post-release workspace
 #                                               #   garbage collection (Rust build
 #                                               #   caches, .mimosa agent sessions,
-#                                               #   old logs); scripts/gc.sh can
-#                                               #   also be run standalone
-# Fingerprints/logs live in .release-state/ (gitignored) — delete it to reset.
+#                                               #   old logs, old dist packages,
+#                                               #   old plugin-store versions,
+#                                               #   docker smoke leftovers);
+#                                               #   scripts/gc.sh can also be run
+#                                               #   standalone
+#   scripts/release-local.sh --plan            # print what changed and what would
+#                                               #   build/install — no side effects
+# Plugins and host are git submodules; plugin fingerprints are computed inside
+# each submodule repo (a superproject git ls-files only sees the gitlink).
+# Fingerprints/logs live in .release-state/ (gitignored) — delete it to reset;
+# also needed once after the 2026-09-18 submodule migration (fingerprint basis
+# changed: first run rebuilds all plugins) and once after the 2026-09-19
+# no-bump change (stored fingerprints were post-bump: first run rebuilds all
+# plugins, then "unchanged" skipping converges again).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -61,16 +75,16 @@ fi
 }
 APP_DATA="${DBX_APP_DATA:-$HOME/Library/Application Support/com.dbx.app}"
 INSTALLED_APP="/Applications/DBX.app"
-# kafka (Go, like ldap) rides the same generic loop: bump_version's Cargo.toml
-# handling and plugin_fingerprint's ver hash are guarded for Go plugins, and
-# the build/install steps only assume <plugin>/scripts/build.sh + manifest.json.
+# kafka (Go, like ldap) rides the same generic loop: plugin_fingerprint's ver
+# hash is guarded for Go plugins (no Cargo.toml/lock), and the build/install
+# steps only assume <plugin>/scripts/build.sh + manifest.json.
 PLUGINS=(ssh ldap files kafka)
 STATE_DIR="$ROOT/.release-state"
 mkdir -p "$STATE_DIR/logs"
 T0="$(date +%s)"
 
 SYNC_HOST=0; SKIP_HOST=0; SKIP_PLUGINS=0; FORCE_HOST=0; FORCE_PLUGINS=0
-SKIP_BUMP=0; NO_LAUNCH=0; REINSTALL_PLUGINS=0; MERGE_POLICY=manual; NO_GC=0
+NO_LAUNCH=0; REINSTALL_PLUGINS=0; MERGE_POLICY=manual; NO_GC=0; PLAN=0
 PLUGIN_SEL=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -80,9 +94,10 @@ while [ $# -gt 0 ]; do
     --skip-plugins) SKIP_PLUGINS=1 ;;
     --force-host) FORCE_HOST=1 ;;
     --force-plugins) FORCE_PLUGINS=1 ;;
-    --no-bump) SKIP_BUMP=1 ;;
+    --no-bump) ;; # legacy no-op: versions are never bumped by this script
     --no-launch) NO_LAUNCH=1 ;;
     --no-gc) NO_GC=1 ;;
+    --plan) PLAN=1 ;;
     --isolated) APP_DATA="$ROOT/shared/host-e2e/app-data" ;;
     --reinstall-plugins) REINSTALL_PLUGINS=1 ;;
     --merge-policy=*) MERGE_POLICY="${1#--merge-policy=}" ;;
@@ -108,34 +123,6 @@ if [ "${#PLUGIN_SEL[@]}" -gt 0 ]; then
 fi
 case "$MERGE_POLICY" in ours|manual) ;; *) echo "unknown merge policy: $MERGE_POLICY (ours|manual)" >&2; exit 2 ;; esac
 
-# 每次构建版本号递增（patch +1）：manifest.json 必改；Rust 插件同步 Cargo.toml
-# 并再生 Cargo.lock（否则 CLI 以 --locked 构建时因本地包版本过期而失败）。
-# 只对真正要构建的插件 bump；指纹未变的插件版本保持不变。
-bump_version() {
-  python3 - "$1" <<'PY'
-import json, pathlib, re, sys
-d = pathlib.Path(sys.argv[1])
-m = d / "manifest.json"
-data = json.loads(m.read_text())
-parts = data["version"].split(".")
-parts[-1] = str(int(parts[-1]) + 1)
-version = ".".join(parts)
-data["version"] = version
-m.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-cargo = d / "backend" / "Cargo.toml"
-if cargo.exists():
-    text = cargo.read_text()
-    cargo.write_text(re.sub(r'(?m)^version = ".*"$', f'version = "{version}"', text, count=1))
-print(f"  {d.name}: {data['version']}")
-PY
-  local cargo="$1/backend/Cargo.toml"
-  if [ -f "$cargo" ]; then
-    local pkg
-    pkg="$(sed -n 's/^name = "\(.*\)"/\1/p' "$cargo" | head -1)"
-    (cd "$1/backend" && cargo update -p "$pkg" --offline >/dev/null)
-  fi
-}
-
 # Toolchain paths (nvm node, pnpm, cargo) — same source of truth as plugin build.sh.
 export PATH="$HOME/.nvm/versions/node/v22.21.0/bin:$HOME/Library/pnpm:$HOME/.cargo/bin:$PATH"
 # Background builds have no TTY: pnpm refuses to rebuild a modules dir that was
@@ -151,33 +138,40 @@ export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.97.1}"
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 # ---------------------------------------------------------------------------
-# Fingerprints: plugin = (rest, ver). rest covers every tracked + untracked
-# source file except docs/ and the version-bearing files; ver covers exactly
-# those. A successful build stores the post-bump fingerprint, so "no edits
-# since" reproduces it verbatim on the next run and skips bump + build.
-plugin_rest_files() {
-  (cd "$ROOT" && git ls-files -co --exclude-standard -- "$1" \
-    | awk -v p="$1/" '
-      index($0, p "docs/") == 1 { next }
-      $0 == p "manifest.json" { next }
-      $0 == p "backend/Cargo.toml" { next }
-      $0 == p "backend/Cargo.lock" { next }
+# Fingerprints (submodule-aware). Each plugin is its own git repo, so the file
+# list MUST come from inside the plugin submodule: a superproject
+# `git ls-files -- ssh` only sees the gitlink, which collapsed the fingerprint
+# to a constant and would skip every future change. plugin = (rest, ver, head).
+# rest covers every tracked + untracked source file except docs/, .worktrees/
+# and the version-bearing files; ver covers exactly those; head is the plugin
+# repo HEAD. A successful build stores the post-build fingerprint, so "no edits
+# since" reproduces it verbatim on the next run and skips the rebuild.
+plugin_rest_files() { # <plugin> → plugin-repo-relative source paths on stdout
+  (cd "$ROOT/$1" && git ls-files -co --exclude-standard \
+    | awk '
+      index($0, "docs/") == 1 { next }
+      index($0, ".worktrees/") == 1 { next }
+      $0 == "manifest.json" { next }
+      $0 == "backend/Cargo.toml" { next }
+      $0 == "backend/Cargo.lock" { next }
       { print }')
 }
-hash_files() { # paths (relative to ROOT) on stdin → one sha256
+hash_files() { # <base-dir>; repo-relative paths on stdin → one sha256
+  local base="$1"
   while IFS= read -r f; do
-    if [ -f "$ROOT/$f" ]; then shasum -a 256 "$ROOT/$f"; else printf 'MISSING %s\n' "$f"; fi
+    if [ -f "$base/$f" ]; then shasum -a 256 "$base/$f"; else printf 'MISSING %s\n' "$f"; fi
   done | shasum -a 256 | cut -d' ' -f1
 }
-plugin_fingerprint() {
-  local rest ver
-  rest="$(plugin_rest_files "$1" | hash_files)"
+plugin_fingerprint() { # <plugin> → "rest ver head"
+  local rest ver head
+  rest="$(plugin_rest_files "$1" | hash_files "$ROOT/$1")"
   # '|| true': Go plugins have no Cargo.toml/lock, so cat always fails there —
   # without the guard pipefail + set -e killed the caller and left .fp files
   # empty (which made every later run rebuild those plugins unconditionally).
   ver="$(cd "$ROOT/$1" && cat manifest.json backend/Cargo.toml backend/Cargo.lock 2>/dev/null \
     | shasum -a 256 | cut -d' ' -f1 || true)"
-  printf '%s %s\n' "$rest" "$ver"
+  head="$(git -C "$ROOT/$1" rev-parse HEAD 2>/dev/null || echo none)"
+  printf '%s %s %s\n' "$rest" "$ver" "$head"
 }
 host_fingerprint() {
   # Hash dirty-file CONTENTS too: a porcelain-only list can't see edits to
@@ -193,6 +187,82 @@ host_fingerprint() {
     "$(git -C "$HOST_WORKTREE" rev-parse HEAD)" \
     "$(printf '%s\n%s\n%s\n' "$status" "$diff" "$untracked" | shasum -a 256 | cut -d' ' -f1)"
 }
+
+was_rebuilt() { # <plugin> → 0 if it is in this run's TO_BUILD set
+  local B
+  [ "${#TO_BUILD[@]}" -gt 0 ] || return 1
+  for B in "${TO_BUILD[@]}"; do
+    [ "$B" = "$1" ] && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# --plan: print what changed and what this run would build/install, then exit.
+# No bump, no build, no publish, no install — safe to run at any time.
+plan_only() {
+  echo "release plan (no side effects)"
+  if [ "$SKIP_HOST" = 1 ]; then
+    echo "  host:   skip (--skip-host)"
+  elif [ "$FORCE_HOST" = 1 ]; then
+    echo "  host:   rebuild + publish (--force-host)"
+  else
+    local HF SF dirty
+    HF="$(host_fingerprint)"
+    SF="$(cat "$STATE_DIR/host.fp" 2>/dev/null || true)"
+    dirty="$(git -C "$HOST_WORKTREE" status --porcelain | wc -l | tr -d ' ')"
+    if [ -n "$SF" ] && [ "$HF" = "$SF" ]; then
+      echo "  host:   unchanged since last build — skip"
+    else
+      echo "  host:   changed — rebuild + publish (HEAD $(git -C "$HOST_WORKTREE" rev-parse --short HEAD), $dirty dirty files)"
+    fi
+  fi
+  local P FP STORED have_dist
+  PLAN_REBUILT=""
+  for P in "${PLUGINS[@]}"; do
+    FP="$(plugin_fingerprint "$P")"
+    STORED="$(cat "$STATE_DIR/$P.fp" 2>/dev/null || true)"
+    have_dist=0; ls "$ROOT/$P"/dist/*.dbxp >/dev/null 2>&1 && have_dist=1
+    local dirty_n
+    dirty_n="$(git -C "$ROOT/$P" status --porcelain | wc -l | tr -d ' ')"
+    local detail="HEAD $(git -C "$ROOT/$P" rev-parse --short HEAD 2>/dev/null || echo '?'), $dirty_n uncommitted files"
+    if [ "$SKIP_PLUGINS" = 1 ]; then
+      echo "  $P: skip build (--skip-plugins), $detail"
+    elif [ "$FORCE_PLUGINS" = 1 ]; then
+      PLAN_REBUILT="$PLAN_REBUILT $P"
+      echo "  $P: rebuild (--force-plugins), $detail"
+    elif [ -n "$STORED" ] && [ "$FP" = "$STORED" ] && [ "$have_dist" = 1 ]; then
+      echo "  $P: unchanged since last build — skip, $detail"
+    else
+      PLAN_REBUILT="$PLAN_REBUILT $P"
+      [ "$have_dist" = 1 ] || detail="$detail, no dist/*.dbxp"
+      echo "  $P: changed — build, $detail"
+    fi
+    # install plan (same skip rule as step 5)
+    local ID_VER P_ID P_VER
+    ID_VER="$(python3 - "$ROOT/$P/manifest.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["id"], d["version"])
+PY
+)"
+    P_ID="${ID_VER% *}"; P_VER="${ID_VER#* }"
+    if [ "$REINSTALL_PLUGINS" = 1 ]; then
+      echo "  $P: reinstall v$P_VER (--reinstall-plugins)"
+    elif [ -d "$APP_DATA/plugins/$P_ID/versions/$P_VER" ]; then
+      case " $PLAN_REBUILT " in
+        *" $P "*)
+          echo "  $P: rebuild — reinstall v$P_VER (store dir purged first)" ;;
+        *)
+          echo "  $P: v$P_VER already in store, source unchanged — install skipped" ;;
+      esac
+    else
+      echo "  $P: install v$P_VER -> $APP_DATA/plugins"
+    fi
+  done
+  exit 0
+}
+[ "$PLAN" = 1 ] && plan_only
 
 # ---------------------------------------------------------------------------
 log "step 1/6: host worktree ($HOST_WORKTREE)"
@@ -262,10 +332,6 @@ if [ "$SKIP_PLUGINS" = 0 ]; then
       TO_BUILD+=("$P")
     fi
   done
-  if [ "${#TO_BUILD[@]}" -gt 0 ] && [ "$SKIP_BUMP" = 0 ]; then
-    echo "bump versions:"
-    for P in "${TO_BUILD[@]}"; do bump_version "$ROOT/$P"; done
-  fi
   # Parallel plugin builds share the dbx-plugin CLI; make sure it exists ONCE
   # before the jobs race for it (build.sh rebuilds it only when absent).
   if ! command -v dbx-plugin >/dev/null 2>&1; then
@@ -358,7 +424,7 @@ else
     fi
   done
   [ "$FAIL" = 0 ] || { echo "plugin build(s) failed" >&2; exit 1; }
-  # Store post-bump fingerprints only after every build succeeded.
+  # Store post-build fingerprints only after every build succeeded.
   for P in "${TO_BUILD[@]}"; do plugin_fingerprint "$P" > "$STATE_DIR/$P.fp"; done
 fi
 
@@ -373,11 +439,19 @@ print(d["id"], d["version"])
 PY
 )"
   P_ID="${ID_VER% *}"; P_VER="${ID_VER#* }"
-  if [ "$REINSTALL_PLUGINS" = 0 ] && [ -d "$APP_DATA/plugins/$P_ID/versions/$P_VER" ]; then
-    echo "  $P: v$P_VER already in store — skip install (--reinstall-plugins to force)"
-  else
-    shared/host-e2e/install.sh "$ROOT/$P" --app-data "$APP_DATA" --no-restart
+  if [ -d "$APP_DATA/plugins/$P_ID/versions/$P_VER" ] \
+    && ! was_rebuilt "$P" && [ "$REINSTALL_PLUGINS" = 0 ]; then
+    echo "  $P: v$P_VER already in store, source unchanged — skip install (--reinstall-plugins to force)"
+    continue
   fi
+  INSTALL_ARGS=(--app-data "$APP_DATA" --no-restart)
+  if [ -d "$APP_DATA/plugins/$P_ID/versions/$P_VER" ]; then
+    # Versions are no longer bumped locally, so a rebuilt plugin keeps its
+    # version and the host store installer rejects "already installed" —
+    # purge the old version dir + activation records first via --reinstall.
+    INSTALL_ARGS+=(--reinstall)
+  fi
+  shared/host-e2e/install.sh "$ROOT/$P" "${INSTALL_ARGS[@]}"
 done
 python3 - "$APP_DATA/plugins" <<'PY'
 import json, pathlib, sys

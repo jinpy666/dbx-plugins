@@ -66,8 +66,8 @@ host/      DBX host submodule
 ## Releases and security
 
 The four plugins are independent release units using `<plugin>-v<version>` Git
-tags. Author CI builds candidates; DBX Store performs review, signing, and
-Marketplace catalog publication.
+tags. Author CI builds candidates and publishes the GitHub Release; the DBX
+Store syncs it automatically for Marketplace listing.
 
 Credentials, private keys, connection exports, local app data, build artifacts,
 and runtime state must not be committed. Report suspected vulnerabilities through

@@ -46,7 +46,7 @@ host/      DBX 宿主子模块
 ## 发布与安全
 
 四个插件是独立发布单元，使用 `<plugin>-v<version>` 形式的 Git tag。作者 CI
-生成候选包，DBX Store 负责审核、签名和 Marketplace catalog 发布。
+生成候选包并发布 GitHub Release，DBX Store 自动同步完成 Marketplace 上架。
 
 凭据、私钥、连接导出、本地 app-data、构建产物和运行时状态不得提交到仓库。
 疑似漏洞请按照[安全策略](SECURITY.zh-CN.md)私下报告。

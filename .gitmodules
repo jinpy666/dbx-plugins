@@ -1,4 +1,16 @@
 [submodule "host"]
 	path = host
-	url = https://github.com/t8y2/dbx.git
-	branch = dev/plugin-framework-current
+	url = https://github.com/jinpy666/dbx.git
+	branch = feat/plugin-font-tokens
+[submodule "ssh"]
+	path = ssh
+	url = git@github.com:jinpy666/dbx-plugin-ssh.git
+[submodule "ldap"]
+	path = ldap
+	url = git@github.com:jinpy666/dbx-plugin-ldap.git
+[submodule "files"]
+	path = files
+	url = git@github.com:jinpy666/dbx-plugin-files.git
+[submodule "kafka"]
+	path = kafka
+	url = git@github.com:jinpy666/dbx-plugin-kafka.git

@@ -7,8 +7,8 @@ See [MAINTAINERS.zh-CN.md](MAINTAINERS.zh-CN.md) for the Chinese version.
 - The four plugin directories are independent release units.
 - `shared/frontend/` is the single source of truth for shared host adapters.
 - `host/` is an upstream-owned submodule and is read-only by default.
-- Marketplace signing and catalog publication belong to DBX Store, not plugin
-  source maintainers.
+- Marketplace listing syncs automatically from each plugin GitHub Release;
+  signing stays outside plugin source maintainers' control.
 
 ## Required maintenance work
 
@@ -33,7 +33,8 @@ hard dependence on a newer host API.
 - Use the target plugin tag format: `<plugin>-v<version>`.
 - Produce unsigned candidates for all five native targets.
 - Verify candidate metadata, package checksums, permissions, and manifest identity.
-- Submit to DBX Store for review and repository signing.
+- Publish the GitHub Release; the DBX Store syncs it automatically (no manual
+  review submission).
 - Record release notes, known limitations, and rollback information.
 
 ## Dependency and incident response

@@ -15,9 +15,13 @@ kafka 插件，见 `kafka/docs/IMPL_PLAN_DBX_KAFKA.zh-CN.md`）。
 - `shared/`：跨插件方案与基线（总提案、M0 公共基线、能力盘点）；
   **`shared/frontend/` 是宿主适配公共代码唯一实现点**（binary 事件归一化、
   主题令牌兜底等），插件前端相对引用、不各抄一份，见其 README。
-- `host/`：DBX 宿主子仓库（git submodule → t8y2/dbx，上游为主、本地二开
-  补丁跟随）；同步入口 `scripts/host-sync.sh`，红线与流程见
-  `shared/PROGRESS-HOST-SUBREPO.zh-CN.md`。
+- `ssh/`、`ldap/`、`files/`、`kafka/`、`host/` 均为 git submodule（插件源仓
+  `jinpy666/dbx-plugin-*`、宿主 fork `jinpy666/dbx`），在仓内直接检出开发；
+  同级旧路径 `~/btroot/dbx-plugin-*`、`~/btroot/dbx` 以符号链接指回仓内
+  检出，旧绝对路径引用照常可用（真实内容只在主仓内一份）。
+- `host/`：DBX 宿主子仓库（git submodule → jinpy666/dbx fork，upstream 仍为
+  t8y2/dbx：上游为主、本地二开补丁跟随）；同步入口 `scripts/host-sync.sh`，
+  红线与流程见 `shared/PROGRESS-HOST-SUBREPO.zh-CN.md`。
 - 各插件 `docs/IMPL_PLAN_*.zh-CN.md` 是该插件唯一工作来源；
   `docs/PROGRESS-*.zh-CN.md` 随任务收尾更新。
 

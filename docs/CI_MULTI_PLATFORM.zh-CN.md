@@ -2,7 +2,9 @@
 
 本仓库使用 DBX 官方插件 CLI 和官方 reusable workflow 约定构建原生插件。
 原生 sidecar 不做“跨编译后伪装 target”：每个 DBX target 由对应 GitHub Actions
-runner 构建，避免 Rust/Go 依赖、系统库和运行时 ABI 不匹配。
+runner 构建，避免 Rust/Go 依赖、系统库和运行时 ABI 不匹配。例外是 Linux 的
+C 运行时基线：构建 runner 的 glibc 只能比运行环境新、不能比它旧，因此 Linux
+target 的链接走 cargo-zigbuild 固定低 glibc 基线（见下文「Linux glibc 基线」）。
 
 ## 支持的五个 target
 
@@ -42,14 +44,49 @@ io.dbx.<plugin>-<version>-<target>.artifact.json
 最后的 `verify` job 会下载所有候选包，校验插件身份、target 覆盖、文件大小、
 SHA-256 和未签名状态，并生成一个合并 artifact。
 
+## Linux glibc 基线（web/docker 安装的关键约束）
+
+DBX 官方 web docker 镜像的运行时是 `debian:bookworm-slim`（glibc 2.36）。
+在 ubuntu-24.04（glibc 2.39）上原生构建的 Rust sidecar 会钉死
+`GLIBC_2.38`/`GLIBC_2.39` 符号（`__isoc23_sscanf`、`pidfd_spawnp` 等），
+动态加载器在 `main()` 之前即失败，宿主侧表现为
+`Plugin 'io.dbx.ssh' initialization failed: exited with status 1`
+（dbx-plugin-ssh#8、#58，files 插件同因）。为此 CI 在 Linux runner 上：
+
+1. 安装 `ziglang`（pip）+ `cargo-zigbuild`，并放一个 `cargo` 包装器到 PATH
+   最前：CLI 打包裸调的 `cargo build` 被转成 `cargo zigbuild --target
+   <宿主triple>`（链接走 zig，固定低 glibc 基线，实测 2.30），再把产物从
+   `<triple>/release/` 镜像回 CLI 拷贝期待的 `<CARGO_TARGET_DIR>/release/`。
+   注意 **必须显式传 `--target`**：cargo-zigbuild 不带 `--target` 时退回
+   宿主工具链链接，基线跟着 runner 走（ubuntu-24.04 下等于没修，端到端
+   实测会钉出 bookworm 级 2.34 而非 zig 的 2.30）。Rust 代码仍是 runner
+   原生架构，不是伪装 target。插件 `scripts/build.sh` 的 `~/.cargo/bin`
+   PATH 前置因此改为条件式，避免把包装器压回去。
+2. 导出 `CGO_ENABLED=0`：ldap/kafka 的 Go sidecar 经 CLI 内部 `go build`
+   构建时保持静态链接（cgo 构建会钉死 `GLIBC_2.34+`），与 deploy/web
+   镜像内的打包方式一致。
+
+`shared/release/validate_artifact_set.py` 会解包每个 linux candidate，
+校验其 ELF sidecar 的最高 GLIBC 符号版本 ≤ 2.31（留出余量；静态 Go 产物
+无动态版本要求，直接放行）。基线上调必须是有意识的决策。
+
+本地复现构建效果（以 arm64 为例）：
+
+```bash
+pip3 install ziglang && cargo install cargo-zigbuild
+rustup target add aarch64-unknown-linux-gnu
+cd ssh/backend && cargo zigbuild --release --target aarch64-unknown-linux-gnu
+# 在 debian:bookworm-slim 容器里运行产物，应正常进入 stdio 主循环
+```
+
 ### GitHub Release 发布
 
 四个 `release-*.yml` 继续调用 DBX 官方
 `t8y2/dbx/.github/workflows/plugin-release-reusable.yml@plugin-sdk-v1`。
 该 workflow 同样使用五平台矩阵，并把候选包上传到对应 GitHub Release。
 
-候选包是 unsigned review candidate，不应在本仓库 CI 中放入签名私钥。正式安装包
-由 DBX Store 或受控仓库完成审核、签名和目录发布。
+候选包是 unsigned candidate，不应在本仓库 CI 中放入签名私钥。GitHub Release
+发布后由 DBX Store 自动同步完成签名与目录发布。
 
 ## 本地复现
 

@@ -73,6 +73,16 @@ shared/host-e2e/install.sh <plugin-dir> --no-restart # 不拉起测试 DBX.app
 
 详见 skill `dbx-host-e2e`。
 
+本地联合发布统一走 `scripts/release-local.sh`：先 `--plan` 看变更与计划
+（无副作用），再默认运行只重建/重装有变化的插件；指纹按 submodule 内部
+计算，`.release-state/` 可删可重置。每次 release 收尾自动跑
+`scripts/gc.sh`（`--no-gc` 跳过；也可 standalone / `--dry-run`）：清理 Rust
+构建缓存、旧日志、旧 dist 包、插件 store 旧版本（真实 + e2e app-data，默认
+保留最新 3 版并保护当前激活版）、docker 冒烟残留。
+市场发布：打 `<plugin>-v<version>` tag、发布 GitHub Release 即由 DBX Store
+自动同步上架（2026-09 起，无需审核 Issue/候选 PR），发布后核对 catalog 版本；
+流程见 `shared/RELEASE_PROCESS.zh-CN.md`。
+
 ## 宿主契约监察（每次 host sync / DBX.app 更新后必做）
 
 宿主是上游权威（host/ 子模块随 origin/main 演进），**插件面对的宿主契约可能

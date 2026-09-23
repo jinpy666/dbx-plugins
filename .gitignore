@@ -76,3 +76,10 @@ secrets/
 # 发布排除（2026-09-12 私有仓库发布决策，仅本地留存，已备份至仓库外）
 copilot-pool/
 docs/PRINTER_RESET_GITHUB_KB.zh-CN.md
+
+# 仓内平铺的插件 git worktree 工作区（属 ssh/files 子仓，不入库）
+/dbx-plugin-ssh-*/
+/dbx-files-*/
+
+# 本地 A4 验收套件（.dbxp 候选包与 DBX.app 副本，不入库）
+/a4-acceptance-kit/

@@ -33,13 +33,15 @@ paths, or deployment details in this document.
 ## Release and supply chain
 
 Multi-platform candidates are built and verified by [Multi-platform CI and release output](CI_MULTI_PLATFORM.en.md);
-this section covers the remaining manual release and DBX Store submission steps.
+this section covers the remaining manual release checks before the DBX Store
+auto-sync.
 
 - [ ] Every plugin uses an immutable `<plugin>-v<version>` tag.
 - [ ] Unsigned candidates are reproducible for all five native targets.
 - [ ] Candidate hash, size, plugin ID, version, and target are validated.
 - [ ] Candidates contain no `signature.json` or official signing key.
-- [ ] DBX Store performs authorized review, signing, and catalog publication.
+- [ ] The GitHub Release is published and the DBX Store auto-sync (signing and
+      catalog) completed.
 
 ## Final public-release actions
 

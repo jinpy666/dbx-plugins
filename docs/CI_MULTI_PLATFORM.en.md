@@ -3,7 +3,10 @@
 This repository uses the official DBX plugin CLI and reusable workflow contract
 to build native plugin candidates. Native sidecars are built on the matching
 GitHub Actions runner instead of pretending that a cross-compiled binary is a
-different target.
+different target. One exception applies to the Linux C runtime baseline: a
+build runner's glibc may only be newer than the runtime environment, never
+older, so Linux targets link through cargo-zigbuild with a pinned low glibc
+baseline (see "Linux glibc baseline" below).
 
 ## Supported targets
 
@@ -35,14 +38,55 @@ sets `DBX_PLUGIN_TARGET`, runs `dbx-plugin package .`, and uploads the package a
 metadata. A final verification job checks identity, target coverage, file size,
 SHA-256, and unsigned-candidate status before uploading a merged bundle.
 
+## Linux glibc baseline (critical for web/docker installs)
+
+The official DBX web docker image runs `debian:bookworm-slim` (glibc 2.36). Rust
+sidecars built natively on ubuntu-24.04 (glibc 2.39) pin `GLIBC_2.38`/`GLIBC_2.39`
+symbols (`__isoc23_sscanf`, `pidfd_spawnp`, …), so the dynamic loader fails
+before `main()` and the host reports
+`Plugin 'io.dbx.ssh' initialization failed: exited with status 1`
+(dbx-plugin-ssh#8, #58; the files plugin shares the root cause). To prevent
+this, the CI sets up Linux runners as follows:
+
+1. Install `ziglang` (pip) and `cargo-zigbuild`, then place a `cargo` wrapper at
+   the front of PATH: the bare `cargo build` invoked by the packaging CLI is
+   rerouted to `cargo zigbuild --target <host-triple>` (zig links, pinning a low
+   glibc baseline — 2.30 observed), and the artifacts are mirrored from
+   `<triple>/release/` back to `<CARGO_TARGET_DIR>/release/` where the CLI
+   copies from. The explicit `--target` is REQUIRED: without it cargo-zigbuild
+   falls back to the distro toolchain and the baseline follows the runner (a
+   no-op on ubuntu-24.04 — verified end-to-end, it produced bookworm-level
+   2.34 instead of zig's 2.30). The Rust code still compiles natively
+   per-architecture — this is not a disguised cross-target build. The plugins'
+   `scripts/build.sh` therefore only prepends `~/.cargo/bin` to PATH
+   conditionally, so the wrapper is not shadowed.
+2. Export `CGO_ENABLED=0` so the Go sidecars (ldap/kafka) built by the CLI's
+   internal `go build` stay statically linked (a cgo build pins `GLIBC_2.34+`),
+   matching how the deploy/web image packages them.
+
+`shared/release/validate_artifact_set.py` unpacks every linux candidate and
+requires the ELF sidecars' highest GLIBC symbol version to be ≤ 2.31 (with
+margin; statically linked Go binaries have no dynamic version requirements and
+pass through). Raising the baseline must be a deliberate decision.
+
+Reproduce the build locally (arm64 example):
+
+```bash
+pip3 install ziglang && cargo install cargo-zigbuild
+rustup target add aarch64-unknown-linux-gnu
+cd ssh/backend && cargo zigbuild --release --target aarch64-unknown-linux-gnu
+# Run the binary inside a debian:bookworm-slim container; it should enter the
+# stdio main loop instead of failing in the loader
+```
+
 The four `release-*.yml` workflows continue to call DBX's official
 `t8y2/dbx/.github/workflows/plugin-release-reusable.yml@plugin-sdk-v1` workflow.
 That workflow uses the same five-target matrix and publishes candidates to a
 GitHub Release for review.
 
-Candidates are unsigned review artifacts. Signing keys must never be placed in
-this repository's build jobs; DBX Store or a protected repository workflow signs
-approved packages later.
+Candidates are unsigned artifacts. Signing keys must never be placed in this
+repository's build jobs; publishing the GitHub Release lets the DBX Store sync
+and sign automatically.
 
 ## Reproduce locally
 

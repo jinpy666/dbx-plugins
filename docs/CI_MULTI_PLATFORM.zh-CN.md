@@ -27,22 +27,26 @@ io.dbx.<plugin>-<version>-<target>.artifact.json
 
 ### Pull request / main 构建
 
-`.github/workflows/build-candidates.yml` 使用 20 个并发矩阵任务：
+`.github/workflows/build-candidates.yml` 由四个 job 串联：
 
-```text
-4 plugins × 5 native targets = 20 builds
-```
+1. `changes`：paths-filter 计算**实际变更的插件集合**（`workflow_dispatch`
+   没有差异基线，视为全部四个插件），后续矩阵只重建这些插件——单插件改动
+   从 20 个构建降到 5 个。
+2. `frontend`（每个变更插件 1 个）：插件 UI 是目标平台无关的自包含单文件，
+   typecheck / test / vite build **每个插件只跑一次**，产出的 `ui/` 以
+   artifact 交给所有打包任务（pnpm store 走 setup-node 缓存）。
+3. `build`（变更插件 × 5 target）：浅克隆所需子模块（Go 插件额外拉 `host/`
+   作原生 CLI 兜底），按插件类型只装所需工具链（Rust 插件不装 Go，反之亦然；
+   Linux 上 apt/ziglang/cargo-zigbuild 仅 Rust 插件安装），并启用 Rust target
+   缓存（Swatinem/rust-cache）与预编译 cargo-zigbuild。随后下载 `ui/` 产物，
+   以 `DBX_PREBUILT_UI=1` 运行 `scripts/build.sh`——该 flag 是四插件 build.sh
+   的统一约定：跳过前端三步、直接打包 CI 预置的 `ui/index.html`（缺失即
+   快速失败，不静默回退重编）。
+4. `verify`：下载全部候选包，校验插件身份、target 覆盖、文件大小、SHA-256
+   和未签名状态，并生成一个合并 artifact。
 
-每个任务会：
-
-1. 安装固定版本 `@dbx-app/plugin-cli`。
-2. 设置 Node.js、Go 和 Rust 工具链。
-3. 设置 `DBX_PLUGIN_TARGET`。
-4. 运行 `dbx-plugin package .`。
-5. 上传 `.dbxp` 和 `.artifact.json`。
-
-最后的 `verify` job 会下载所有候选包，校验插件身份、target 覆盖、文件大小、
-SHA-256 和未签名状态，并生成一个合并 artifact。
+工具链版本：Node 22、Go 1.26.x（≥ ldap 1.24 / kafka 1.26 的 go.mod 要求，
+避免每个任务触发 GOTOOLCHAIN 自动下载）、Rust stable。
 
 ## Linux glibc 基线（web/docker 安装的关键约束）
 
@@ -101,6 +105,9 @@ dbx-plugin package .
 
 不应在 macOS runner 上设置 `linux-x64` 或 `windows-x64`。官方 CLI 会拒绝 native
 build host 与 target 不一致的请求；这正是 CI 使用原生 runner 矩阵的原因。
+
+`DBX_PREBUILT_UI` 是 CI 专用开关：本地不设置该变量，`scripts/build.sh`
+照常完整执行前端三步。
 
 ## 官方依据
 

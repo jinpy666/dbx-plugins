@@ -7,13 +7,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: repo-hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        # The checks scan tracked files at HEAD (git ls-files); history is not
+        # needed, so keep the default shallow checkout.
         with:
-          fetch-depth: 0
+          fetch-depth: 1
       - name: Validate plugin manifests
         run: |
           python3 shared/release/validate_manifests.py ssh

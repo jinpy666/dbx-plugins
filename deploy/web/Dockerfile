@@ -41,7 +41,10 @@ COPY ssh/frontend/ ssh/frontend/
 COPY files/frontend/ files/frontend/
 COPY ldap/frontend/ ldap/frontend/
 COPY kafka/frontend/ kafka/frontend/
-RUN npm i -g pnpm \
+# pnpm store 走 cache mount：四个前端依赖在层失效（源码变更）后不必全量重拉，
+# 与 Stage 1 的宿主前端同一份 store。
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    npm i -g pnpm \
     && for p in ssh files ldap kafka; do \
          cd "/build/$p/frontend" \
          && (pnpm install --frozen-lockfile || pnpm install) \
@@ -55,18 +58,8 @@ FROM --platform=$BUILDPLATFORM rust:1-bookworm AS backend
 ARG TARGETARCH
 WORKDIR /build/ws
 
-# 宿主子仓库（release-docker.sh 已剔除 target/node_modules/.git）与插件源码。
-# 布局与本地结构一致：插件在 /build/ws/<p>/，宿主树在 /build/host
-# ——插件 [patch.crates-io] 的相对路径 ../../host 从 /build/ws/<p>/backend
-# 上溯两级正好落在 /build。
-COPY --from=host . /build/host/
-COPY ssh/ ssh/
-COPY files/ files/
-COPY ldap/ ldap/
-COPY kafka/ kafka/
-# 覆盖插件 UI 构建产物（frontend build 生成 ui/index.html）
-COPY --from=plugin-ui /out/overlay/ ./
-
+# 工具链层前置：不依赖任何源码 COPY，源码变更不会触发 apt / ziglang /
+# cargo-zigbuild 的全量重装（这一层冷装要好几分钟）。
 RUN dpkg --add-architecture arm64 \
     && apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config perl python3-pip gcc-aarch64-linux-gnu \
@@ -80,9 +73,7 @@ COPY --from=golang:1.24-bookworm /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}"
 
 # cargo 包装器：官方 CLI 打包时裸调 `cargo build --release ...`，转给 zigbuild
-# 执行（剥掉首参 build）。不注入 --target：RUN 进程本身就跑在目标平台
-# （原生或 QEMU），zigbuild 无 --target 即原生构建，产物落 CLI 期望的
-# target/release/（带 --target 会多一层 <triple>/ 目录，CLI 找不到）。
+# 执行（剥掉首参 build）。--target 由 CLI 依据 DBX_RUST_TARGET 传入。
 # 包装器必须直调真实 cargo，避免递归。
 RUN mkdir -p /wrappers \
     && printf '#!/bin/sh\n[ "$1" = "build" ] && shift\nexec /usr/local/cargo/bin/cargo zigbuild "$@"\n' > /wrappers/cargo \
@@ -94,9 +85,27 @@ RUN case "$TARGETARCH" in \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac
 
+# 宿主子仓库（release-docker.sh 已剔除 target/node_modules/.git）与插件源码。
+# 布局与本地结构一致：插件在 /build/ws/<p>/，宿主树在 /build/host
+# ——插件 [patch.crates-io] 的相对路径 ../../host 从 /build/ws/<p>/backend
+# 上溯两级正好落在 /build。
+COPY --from=host . /build/host/
+COPY ssh/ ssh/
+COPY files/ files/
+COPY ldap/ ldap/
+COPY kafka/ kafka/
+# 覆盖插件 UI 构建产物（frontend build 生成 ui/index.html）
+COPY --from=plugin-ui /out/overlay/ ./
+
 # ---- dbx-web + install_plugin（交叉编译，产物随镜像架构） --------------------
 # dbx-core 的 build.rs 需要 plugins/dialects + plugins/connection-types（已随 host 树拷入）。
-RUN cd /build/host \
+# cargo registry/git 与 target 走 cache mount：源码小幅变更时只重编改动的 crate
+# 而不是整棵依赖树；target 内产物都在 <triple>/ 子目录下，多架构共享同一份缓存
+# 不会串（cargo 按指纹区分）。
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git \
+    --mount=type=cache,target=/build/host/target,id=target-host \
+    cd /build/host \
     && RUST_TARGET="$(cat /tmp/rust_target)" \
     && ARCH_PREFIX="$(echo "$RUST_TARGET" | cut -d- -f1)-linux-gnu" \
     && LIBRARY_PATH="/usr/lib/$ARCH_PREFIX" \
@@ -110,16 +119,32 @@ RUN cd /build/host \
     && cp "target/$RUST_TARGET/release/examples/install_plugin" "/out/linux/$TARGETARCH/"
 
 # ---- 官方 dbx-plugin CLI（构建期使用，本机架构即可） --------------------------
-RUN cd /build/host/plugins/sdk/cli && cargo build --release
+# target 走 cache mount 提速，但 cache mount 只在声明它的 RUN 内可见——
+# 构建完立即把二进制拷到普通层路径 /out/cli，供后面的打包 RUN 引用。
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git \
+    --mount=type=cache,target=/build/host/plugins/sdk/cli/target,id=target-cli \
+    cd /build/host/plugins/sdk/cli \
+    && cargo build --release \
+    && mkdir -p /out/cli && cp target/release/dbx-plugin /out/cli/
 
 # ---- 打包三插件为 Linux .dbxp + 生成 entrypoint 安装清单 ----------------------
-RUN RUST_TARGET="$(cat /tmp/rust_target)" \
+# ssh/files 的 Rust sidecar：与本地 build.sh 同款技巧——把 CLI 打包时的内部
+# cargo build 指到插件 backend/target 的 cache mount，跨次构建增量复用（CLI
+# 会复用并保留该目录；没有它 CLI 用完即删的 dist/.build-rust-<target> 等于每次
+# 全量重编）。registry/git 与上面各 RUN 同 id，同 builder 内跨层共享下载缓存。
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git \
+    --mount=type=cache,target=/build/ws/ssh/backend/target,id=target-ssh \
+    --mount=type=cache,target=/build/ws/files/backend/target,id=target-files \
+    RUST_TARGET="$(cat /tmp/rust_target)" \
     && GOARCH="$(cat /tmp/goarch)" \
-    && CLI=/build/host/plugins/sdk/cli/target/release/dbx-plugin \
+    && CLI=/out/cli/dbx-plugin \
     && mkdir -p /out/plugins /out/linux \
     && for p in ssh files; do \
          cd "/build/ws/$p" \
          && env -u DBX_PLUGIN_SDK_ROOT PATH="/wrappers:$PATH" DBX_RUST_TARGET="$RUST_TARGET" \
+              CARGO_TARGET_DIR="/build/ws/$p/backend/target" \
               NO_COLOR=1 "$CLI" package . \
          && cp dist/*.dbxp /out/plugins/ || exit 1; \
        done \

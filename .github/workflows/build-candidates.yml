@@ -22,6 +22,9 @@ on:
 
 permissions:
   contents: read
+  # Once a permissions block is declared, unlisted scopes become none;
+  # dorny/paths-filter needs PR read access for its API fallback.
+  pull-requests: read
 
 concurrency:
   group: plugin-candidates-${{ github.workflow }}-${{ github.ref }}
@@ -31,49 +34,141 @@ env:
   PLUGIN_CLI_VERSION: '0.1.3'
 
 jobs:
+  # Resolve which plugins actually changed so the platform matrix only rebuilds
+  # those plugins (a one-plugin fix used to fan out to all 20 jobs). Any hit on
+  # the workflow file or shared/release tooling marks every plugin as changed.
+  # workflow_dispatch has no meaningful diff base, so it always builds all four.
+  changes:
+    name: Detect changed plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      plugins: ${{ steps.all.outputs.changes || steps.filter.outputs.changes }}
+    steps:
+      - name: All plugins (manual dispatch)
+        id: all
+        if: github.event_name == 'workflow_dispatch'
+        run: echo 'changes=["ssh","ldap","files","kafka"]' >> "$GITHUB_OUTPUT"
+
+      - name: Check out source
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Filter changed plugins
+        if: github.event_name != 'workflow_dispatch'
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ssh:
+              - '.github/workflows/build-candidates.yml'
+              - 'shared/release/**'
+              - 'ssh/**'
+            ldap:
+              - '.github/workflows/build-candidates.yml'
+              - 'shared/release/**'
+              - 'ldap/**'
+            files:
+              - '.github/workflows/build-candidates.yml'
+              - 'shared/release/**'
+              - 'files/**'
+            kafka:
+              - '.github/workflows/build-candidates.yml'
+              - 'shared/release/**'
+              - 'kafka/**'
+
+  # The plugin UI (ui/index.html) is a single self-contained, target-independent
+  # file: typecheck/test/vite-build it ONCE per plugin here and hand the prebuilt
+  # ui/ to every packaging job instead of rebuilding it 5x across the platform
+  # matrix. build.sh consumes it via DBX_PREBUILT_UI=1.
+  frontend:
+    name: frontend / ${{ matrix.plugin }}
+    needs: changes
+    if: needs.changes.outputs.plugins != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.changes.outputs.plugins) }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check out plugin submodule (shallow)
+        run: |
+          # CI has no SSH deploy key for the submodule remotes; rewrite to HTTPS.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 "${{ matrix.plugin }}"
+
+      - name: Install pnpm
+        run: npm install --global pnpm@11.24.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: ${{ matrix.plugin }}/frontend/pnpm-lock.yaml
+
+      - name: Frontend typecheck + test + build
+        working-directory: ${{ matrix.plugin }}
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend typecheck
+          pnpm --dir frontend test
+          pnpm --dir frontend build
+
+      - name: Upload prebuilt UI
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-ui-${{ matrix.plugin }}
+          # Glob (not a bare directory) pins the artifact root at <plugin>/ui,
+          # so the packaging jobs can unpack it straight under the plugin
+          # checkout as <plugin>/ui/index.html.
+          path: ${{ matrix.plugin }}/ui/**
+          if-no-files-found: error
+          retention-days: 3
+
   build:
     name: ${{ matrix.plugin }} / ${{ matrix.target }}
+    needs: [changes, frontend]
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { plugin: ssh,   directory: ssh,   runner: macos-15,       target: darwin-arm64 }
-          - { plugin: ssh,   directory: ssh,   runner: macos-15-intel, target: darwin-x64 }
-          - { plugin: ssh,   directory: ssh,   runner: windows-2022,   target: windows-x64 }
-          - { plugin: ssh,   directory: ssh,   runner: ubuntu-24.04,   target: linux-x64 }
-          - { plugin: ssh,   directory: ssh,   runner: ubuntu-24.04-arm, target: linux-arm64 }
-          - { plugin: ldap,  directory: ldap,  runner: macos-15,       target: darwin-arm64 }
-          - { plugin: ldap,  directory: ldap,  runner: macos-15-intel, target: darwin-x64 }
-          - { plugin: ldap,  directory: ldap,  runner: windows-2022,   target: windows-x64 }
-          - { plugin: ldap,  directory: ldap,  runner: ubuntu-24.04,   target: linux-x64 }
-          - { plugin: ldap,  directory: ldap,  runner: ubuntu-24.04-arm, target: linux-arm64 }
-          - { plugin: files, directory: files, runner: macos-15,       target: darwin-arm64 }
-          - { plugin: files, directory: files, runner: macos-15-intel, target: darwin-x64 }
-          - { plugin: files, directory: files, runner: windows-2022,   target: windows-x64 }
-          - { plugin: files, directory: files, runner: ubuntu-24.04,   target: linux-x64 }
-          - { plugin: files, directory: files, runner: ubuntu-24.04-arm, target: linux-arm64 }
-          - { plugin: kafka, directory: kafka, runner: macos-15,       target: darwin-arm64 }
-          - { plugin: kafka, directory: kafka, runner: macos-15-intel, target: darwin-x64 }
-          - { plugin: kafka, directory: kafka, runner: windows-2022,   target: windows-x64 }
-          - { plugin: kafka, directory: kafka, runner: ubuntu-24.04,   target: linux-x64 }
-          - { plugin: kafka, directory: kafka, runner: ubuntu-24.04-arm, target: linux-arm64 }
-    runs-on: ${{ matrix.runner }}
+        plugin: ${{ fromJSON(needs.changes.outputs.plugins) }}
+        target: [darwin-arm64, darwin-x64, windows-x64, linux-x64, linux-arm64]
+    runs-on: ${{ fromJSON('{"darwin-arm64":"macos-15","darwin-x64":"macos-15-intel","windows-x64":"windows-2022","linux-x64":"ubuntu-24.04","linux-arm64":"ubuntu-24.04-arm"}')[matrix.target] }}
     defaults:
       run:
         shell: bash
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Check out required submodules (shallow)
+        run: |
+          # CI has no SSH deploy key for the plugin submodule remotes; rewrite
+          # to HTTPS. host/ only backs the native-CLI fallback for the Go
+          # sidecars (the npm wrapper's bundled SDK pins go.work to 1.22
+          # against backend go.mod >= 1.24); Rust plugins package with the npm
+          # CLI's native binary alone, which ships for every matrix platform.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          case "${{ matrix.plugin }}" in
+            ldap|kafka) git submodule update --init --depth 1 host ;;
+          esac
+          git submodule update --init --depth 1 "${{ matrix.plugin }}"
 
       - name: Expose host SDK for Go sidecars
+        if: matrix.plugin == 'ldap' || matrix.plugin == 'kafka'
         shell: bash
         run: cp -a host ../dbx-plugin-host-worktree
 
-      - name: Install Linux native dependencies
-        if: runner.os == 'Linux'
+      - name: Install Linux native dependencies (Rust sidecars)
+        if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev nasm
@@ -85,12 +180,6 @@ jobs:
           # "Plugin initialization failed" on web/docker installs
           # (dbx-plugin-ssh#8, dbx-plugin-ssh#58).
           pip3 install --user --break-system-packages ziglang
-          cargo install --locked cargo-zigbuild
-          # Go sidecars (ldap/kafka) must link statically: the CLI's internal
-          # `go build` inherits this env, and a cgo build pins GLIBC_2.34+,
-          # coupling the binary to the build host's glibc. deploy/web already
-          # packages them with CGO_ENABLED=0; keep release candidates identical.
-          echo "CGO_ENABLED=0" >> "$GITHUB_ENV"
           mkdir -p "$HOME/.cargo/wrappers"
           CARGO_BIN="$(command -v cargo)"
           cat > "$HOME/.cargo/wrappers/cargo" <<'WRAPPER'
@@ -119,8 +208,23 @@ jobs:
           chmod +x "$HOME/.cargo/wrappers/cargo"
           echo "$HOME/.cargo/wrappers" >> "$GITHUB_PATH"
 
+      - name: Install cargo-zigbuild (prebuilt binary)
+        if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Static-link Go sidecars on Linux
+        if: runner.os == 'Linux' && (matrix.plugin == 'ldap' || matrix.plugin == 'kafka')
+        run: |
+          # Go sidecars must link statically: the CLI's internal `go build`
+          # otherwise inherits the runner's glibc, and a cgo build pins
+          # GLIBC_2.34+, coupling the binary to the build host. deploy/web
+          # already packages them with CGO_ENABLED=0; keep candidates identical.
+          echo "CGO_ENABLED=0" >> "$GITHUB_ENV"
+
       - name: Install Windows native dependencies
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
         shell: pwsh
         run: choco install nasm -y --no-progress
 
@@ -129,13 +233,13 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install pnpm
-        run: npm install --global pnpm@11.24.0
-
       - name: Set up Go
+        if: matrix.plugin == 'ldap' || matrix.plugin == 'kafka'
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x'
+          # >= backend go.mod (ldap 1.24, kafka 1.26) so the packaging CLI's
+          # `go build` never triggers a per-job GOTOOLCHAIN auto-download.
+          go-version: '1.26.x'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -143,18 +247,35 @@ jobs:
           python-version: '3.x'
 
       - name: Set up Rust
+        if: matrix.plugin == 'ssh' || matrix.plugin == 'files'
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        if: matrix.plugin == 'ssh' || matrix.plugin == 'files'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # build.sh points CARGO_TARGET_DIR at <plugin>/backend/target; the
+          # target-axis key keeps the 5 platform entries from thrashing.
+          workspaces: ${{ matrix.plugin }}/backend
+          key: ${{ matrix.target }}
 
       - name: Install DBX plugin CLI
         run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"
 
-      - name: Validate manifest
-        run: python shared/release/validate_manifests.py "${{ matrix.directory }}"
+      - name: Download prebuilt UI
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-ui-${{ matrix.plugin }}
+          path: ${{ matrix.plugin }}/ui
 
-      - name: Build frontend, sidecar, and unsigned candidate
-        working-directory: ${{ matrix.directory }}
+      - name: Validate manifest
+        run: python shared/release/validate_manifests.py "${{ matrix.plugin }}"
+
+      - name: Build sidecar and package unsigned candidate
+        working-directory: ${{ matrix.plugin }}
         env:
           DBX_PLUGIN_TARGET: ${{ matrix.target }}
+          DBX_PREBUILT_UI: '1'
         run: bash scripts/build.sh
 
       - name: Upload candidate
@@ -164,8 +285,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            ${{ matrix.directory }}/dist/*.dbxp
-            ${{ matrix.directory }}/dist/*.artifact.json
+            ${{ matrix.plugin }}/dist/*.dbxp
+            ${{ matrix.plugin }}/dist/*.artifact.json
 
   verify:
     name: Verify candidate set

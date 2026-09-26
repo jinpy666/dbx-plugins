@@ -27,16 +27,31 @@ io.dbx.<plugin>-<version>-<target>.artifact.json
 
 ## CI workflows
 
-`.github/workflows/build-candidates.yml` runs a 20-job matrix:
+`.github/workflows/build-candidates.yml` chains four jobs:
 
-```text
-4 plugins × 5 native targets = 20 builds
-```
+1. `changes`: paths-filter computes the set of **actually changed plugins**
+   (`workflow_dispatch` has no diff base and builds all four). The downstream
+   matrices rebuild only those plugins — a single-plugin fix drops from 20
+   builds to 5.
+2. `frontend` (one per changed plugin): the plugin UI is a single
+   target-independent self-contained file, so typecheck / test / vite build run
+   **once per plugin** and the produced `ui/` is handed to every packaging job
+   as an artifact (pnpm store cached via setup-node).
+3. `build` (changed plugins × 5 targets): shallow-clones only the required
+   submodules (Go plugins additionally pull `host/` as the native-CLI
+   fallback), installs only the toolchain a plugin needs (no Go for Rust
+   plugins and vice versa; apt/ziglang/cargo-zigbuild on Linux are Rust-only),
+   and enables the Rust target cache (Swatinem/rust-cache) plus a prebuilt
+   cargo-zigbuild. It then downloads the `ui/` artifact and runs
+   `scripts/build.sh` with `DBX_PREBUILT_UI=1` — a convention shared by all
+   four build.sh scripts: skip the frontend three-step and package the
+   CI-staged `ui/index.html` (missing file fails fast, no silent rebuild).
+4. `verify`: downloads all candidates and checks identity, target coverage,
+   file size, SHA-256, and unsigned-candidate status before uploading a merged
+   bundle.
 
-Each job installs the pinned `@dbx-app/plugin-cli`, sets Node.js, Go, and Rust,
-sets `DBX_PLUGIN_TARGET`, runs `dbx-plugin package .`, and uploads the package and
-metadata. A final verification job checks identity, target coverage, file size,
-SHA-256, and unsigned-candidate status before uploading a merged bundle.
+Toolchain versions: Node 22, Go 1.26.x (≥ the go.mod requirements of ldap 1.24
+and kafka 1.26, avoiding a per-job GOTOOLCHAIN auto-download), Rust stable.
 
 ## Linux glibc baseline (critical for web/docker installs)
 
@@ -101,6 +116,9 @@ dbx-plugin package .
 
 The official CLI rejects a native target that does not match the build host. This
 is why CI uses native runners for each target.
+
+`DBX_PREBUILT_UI` is a CI-only flag: local runs leave it unset and
+`scripts/build.sh` keeps executing the full frontend three-step.
 
 ## Official references
 

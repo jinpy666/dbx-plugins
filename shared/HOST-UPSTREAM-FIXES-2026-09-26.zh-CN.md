@@ -25,6 +25,24 @@
   与 `mcp::runtime_probe_canonicalizes_*`）在纯 main 上同样失败，为环境
   敏感的既有失败，未进入 CI 判定。
 
+## 已提交上游（t8y2/dbx，2026-09-26）
+
+提交前 fork main 已同步至 upstream/main（`6b67957ec`），四分支 rebase 到
+上游最新（installer 分支解一处测试导入清单冲突：上游新增
+`INSTALL_LOCK_FILE`/`PLUGIN_TRASH_DIR` 导入；函数体上游无改动），rebase 后
+复验：runtime 155 passed、mcp_bridge 19/20 passed、parity 测试通过。
+
+| 上游 PR | fork PR | 内容 | 上游 CI |
+| --- | --- | --- | --- |
+| [t8y2/dbx#10338](https://github.com/t8y2/dbx/pull/10338) | fork#6 | mcp-bridge plugin_id 绑定校验 | ✅ 10 SUCCESS + 16 SKIP，零失败 |
+| [t8y2/dbx#10339](https://github.com/t8y2/dbx/pull/10339) | fork#7 | mcp-bridge 传输加固（截断/跨站/0600） | ✅ 10 SUCCESS + 16 SKIP，零失败 |
+| [t8y2/dbx#10340](https://github.com/t8y2/dbx/pull/10340) | fork#8 | installer 原子写 + 迁移回滚 | ✅ 17 SUCCESS + 11 SKIP，零失败 |
+| [t8y2/dbx#10341](https://github.com/t8y2/dbx/pull/10341) | fork#9 | manifest schema 补 command/menus | ✅ 17 SUCCESS + 11 SKIP，零失败 |
+
+SKIPPED 均为上游 paths-filter 正常跳过的不相关 job（前端/agent/duckdb 等）。
+后续跟进：等上游 maintainer review；若上游 main 再次前进产生冲突，按本轮
+同样的 rebase 流程处理。
+
 ## 提交纪律（AGENTS.md 规则 8 说明）
 
 - 为什么必须改 host：五项问题全部位于宿主内部（MCP 桥鉴权与绑定、安装器

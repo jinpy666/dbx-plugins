@@ -4,6 +4,27 @@
 `a71e4534a` = 纯 upstream/main，fork 零独有提交）。本轮按"一个分支 = 一个
 上游 PR"组织，全部**非破坏性变更**，每个分支独立可合、互不依赖。
 
+## CI 结果（2026-09-26，fork jinpy666/dbx）
+
+| PR | 分支 | CI 主流水线 | 其余检查 |
+| --- | --- | --- | --- |
+| [#6](https://github.com/jinpy666/dbx/pull/6) | fix/bridge-plugin-id-binding | ✅ success | 55 绿 / 1 SKIP |
+| [#7](https://github.com/jinpy666/dbx/pull/7) | fix/bridge-transport-hardening | ✅ success | 55 绿 / 1 SKIP |
+| [#8](https://github.com/jinpy666/dbx/pull/8) | fix/plugin-installer-atomic-writes | ✅ success（重跑后） | 55 绿 / 1 SKIP |
+| [#9](https://github.com/jinpy666/dbx/pull/9) | fix/manifest-schema-command-menus | ✅ success | 55 绿 / 1 SKIP |
+| ~~#10~~ | fix/drivers-duckdb-sidecar-linkage | 已撤回（见 D 类） | — |
+
+- 四个 PR 唯一的 FAILURE 均为 `autofill`（I18n Autofill）：fork 仓库缺
+  `DEEPSEEK_API_KEY` secret，属 fork 环境限制，与改动无关（所有 PR 与
+  main 基线同样挂）。
+- #8 首跑失败为上游既有 flaky：vitest 4.1.8 `EnvironmentTeardownError`
+  （`sqlDiagnostics.ts` 拆除后加载；frontend-test shard 8992 个测试实际
+  全部通过，main 基线同 job 同报 8 处），二次重跑即绿。PR-8 diff 仅含
+  installer.rs/marketplace.rs，无任何前端文件。
+- 本地预检发现的 2 个 Rust 测试失败（`ai::tauri_entry_respects_global_max_retries_zero`
+  与 `mcp::runtime_probe_canonicalizes_*`）在纯 main 上同样失败，为环境
+  敏感的既有失败，未进入 CI 判定。
+
 ## 提交纪律（AGENTS.md 规则 8 说明）
 
 - 为什么必须改 host：五项问题全部位于宿主内部（MCP 桥鉴权与绑定、安装器
@@ -98,19 +119,19 @@
 
 ## D 类：构建矩阵
 
-### PR-6 `fix/drivers-duckdb-sidecar-linkage` @ c589308e8
+### ~~PR-6 `fix/drivers-duckdb-sidecar-linkage`~~（已撤回，2026-09-26）
 
-- **问题**：`e0da2d09d` crate 拆分把 `dbx-drivers/duckdb-sidecar` 变成空
-  feature，不再联动 `dbx-sql-schema/duckdb-sidecar`（DuckDB DDL 门控所在），
-  只开 drivers 侧 feature 会得到"有 worker 协议、无 DDL 门控"的半开组合，
-  编译不报错、运行期缺行为（同类漂移 bfc834c77 已发生过一次）。
-- **解决**：恢复联动 `duckdb-sidecar = ["dbx-sql-schema/duckdb-sidecar"]`
-  并加依赖边（已验证无环：schema 只依赖 sql-core/sql-dialect/types），
-  Cargo.lock 随附；foundation CI 组本就覆盖 schema 侧 feature，drivers 组
-  经传递现在也编到该组合。
-- **复现**：`cargo tree -p dbx-drivers --features duckdb-sidecar -e features`
-  修复前无 schema feature 激活，修复后有。
-- **验证**：`cargo metadata --locked --offline` 通过（lock 已同步）。
+CI 的 Core architecture contracts 推翻了该修复前提：
+
+- `scripts/core-architecture.test.mjs` 的 `allowedDependencies` 白名单**显式
+  禁止** `dbx-drivers → dbx-sql-schema`（分层边界是上游刻意设计，且
+  `agents/drivers/duckdb/Cargo.lock` 独立 lockfile 依赖该闭包成立）；
+- 所有真实入口（src-tauri / dbx-mcp / dbx-web）都经 `dbx-core/duckdb-sidecar`
+  同时点亮 drivers 侧与 schema 侧，"只开 drivers 侧"的半开组合没有任何
+  现有或预期消费方——空 feature 是有意为之的内部标记，不是漂移。
+
+处置：PR #10 已关闭并说明理由，分支已删。review 发现记为"经上游契约
+驳回"。经验：动 feature 矩阵前先查 `core-architecture.test.mjs`。
 
 ## E 类：本仓修复（随 main 直接提交）
 

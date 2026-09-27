@@ -2,7 +2,12 @@
 # 插件前端/侧车在镜像内重新构建，不能复用 macOS 产物。
 **/node_modules/
 **/dist/
-**/ui/
+# 只排各插件顶层 ui 产物目录（build.mjs 的输出）；不能写 **/ui/，会连
+# src/components/ui/ 组件目录一起排除，镜像内前端构建报 Module not found
+ssh/ui/
+files/ui/
+ldap/ui/
+kafka/ui/
 **/target/
 **/__pycache__/
 .git/

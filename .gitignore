@@ -32,6 +32,10 @@ scroll-stress-result.json
 *.swp
 *.swo
 
+# 前端工具缓存（Vite 依赖预构建临时目录）与 ZCode 会话工作目录
+.vite/
+.workbuddy/
+
 # 测试/覆盖率/缓存
 .pytest_cache/
 .ruff_cache/

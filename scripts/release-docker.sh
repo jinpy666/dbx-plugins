@@ -32,10 +32,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST_WORKTREE="${DBX_HOST_WORKTREE:-}"
 if [ -z "$HOST_WORKTREE" ]; then
   for candidate in "$ROOT/host" "$ROOT/../dbx-plugin-host-worktree"; do
-    if [ -d "$candidate/.git" ]; then HOST_WORKTREE="$candidate"; break; fi
+    if [ -e "$candidate/.git" ]; then HOST_WORKTREE="$candidate"; break; fi
   done
 fi
-[ -n "$HOST_WORKTREE" ] && [ -d "$HOST_WORKTREE/.git" ] || {
+[ -n "$HOST_WORKTREE" ] && [ -e "$HOST_WORKTREE/.git" ] || {
   echo "host checkout not found — init the host/ submodule (scripts/host-sync.sh init) or set DBX_HOST_WORKTREE" >&2
   exit 1
 }

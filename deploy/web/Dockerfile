@@ -41,10 +41,23 @@ COPY ssh/frontend/ ssh/frontend/
 COPY files/frontend/ files/frontend/
 COPY ldap/frontend/ ldap/frontend/
 COPY kafka/frontend/ kafka/frontend/
+# 插件前端引用各插件仓内 shared/frontend（相对 frontend 的 ../..），须一并拷入；
+# 工作区根 shared/ 是同步源，不是插件构建的解析目标
+COPY ssh/shared/ ssh/shared/
+COPY files/shared/ files/shared/
+COPY ldap/shared/ ldap/shared/
+COPY kafka/shared/ kafka/shared/
+# 插件前端 ?raw 引用插件根 assets/（如 PluginLogo 的 plugin.svg）
+COPY ssh/assets/ ssh/assets/
+COPY files/assets/ files/assets/
+COPY ldap/assets/ ldap/assets/
+COPY kafka/assets/ kafka/assets/
 # pnpm store 走 cache mount：四个前端依赖在层失效（源码变更）后不必全量重拉，
-# 与 Stage 1 的宿主前端同一份 store。
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    npm i -g pnpm \
+# 与 Stage 1 的宿主前端同一份 store。pnpm>=11 自管版本会改用 @pnpm/exe 独立
+# 二进制，依赖 libatomic（node:22-slim 未带），须先装上。
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm i -g pnpm \
     && for p in ssh files ldap kafka; do \
          cd "/build/$p/frontend" \
          && (pnpm install --frozen-lockfile || pnpm install) \
@@ -141,6 +154,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     && GOARCH="$(cat /tmp/goarch)" \
     && CLI=/out/cli/dbx-plugin \
     && mkdir -p /out/plugins /out/linux \
+    # files 的 package.include 含 bin/（本地空目录，git 不跟踪空目录，检出即缺失）
+    && mkdir -p /build/ws/files/bin \
     && for p in ssh files; do \
          cd "/build/ws/$p" \
          && env -u DBX_PLUGIN_SDK_ROOT PATH="/wrappers:$PATH" DBX_RUST_TARGET="$RUST_TARGET" \

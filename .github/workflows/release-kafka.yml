@@ -7,13 +7,19 @@ on:
 permissions:
   contents: write
 
+# Same tag cannot run twice concurrently; different tags are independent.
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
   validate:
     if: startsWith(github.event.release.tag_name, 'kafka-v')
     name: Validate Kafka release identity
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate manifest and release tag
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}

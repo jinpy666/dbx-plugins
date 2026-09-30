@@ -14,8 +14,9 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         # The checks scan tracked files at HEAD (git ls-files); history is not
         # needed, so keep the default shallow checkout.
         with:

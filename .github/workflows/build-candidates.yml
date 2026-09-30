@@ -52,7 +52,7 @@ jobs:
 
       - name: Check out source
         if: github.event_name != 'workflow_dispatch'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -95,7 +95,7 @@ jobs:
         plugin: ${{ fromJSON(needs.changes.outputs.plugins) }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check out plugin submodule (shallow)
         run: |
@@ -107,9 +107,11 @@ jobs:
         run: npm install --global pnpm@11.24.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          # Pinned per plugin .nvmrc — the single version source shared with
+          # local scripts (scripts/build.sh read it too).
+          node-version-file: ${{ matrix.plugin }}/.nvmrc
           cache: pnpm
           cache-dependency-path: ${{ matrix.plugin }}/frontend/pnpm-lock.yaml
 
@@ -122,7 +124,7 @@ jobs:
           pnpm --dir frontend build
 
       - name: Upload prebuilt UI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-ui-${{ matrix.plugin }}
           # Glob (not a bare directory) pins the artifact root at <plugin>/ui,
@@ -136,6 +138,15 @@ jobs:
     name: ${{ matrix.plugin }} / ${{ matrix.target }}
     needs: [changes, frontend]
     timeout-minutes: 45
+    # sccache caches rustc invocations (same rationale as files/ci.yml):
+    # `dbx-plugin package` rebuilds the sidecar from a staging copy with its
+    # own target dir, so rust-cache cannot help that step — sccache's
+    # content-keyed compilation cache can. A local-dir backend persisted via
+    # actions/cache keeps a restore miss a cold build instead of a red run.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache-cache
+      CARGO_INCREMENTAL: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -147,7 +158,7 @@ jobs:
         shell: bash
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check out required submodules (shallow)
         run: |
@@ -229,26 +240,43 @@ jobs:
         run: choco install nasm -y --no-progress
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version-file: ${{ matrix.plugin }}/.nvmrc
 
       - name: Set up Go
         if: matrix.plugin == 'ldap' || matrix.plugin == 'kafka'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # >= backend go.mod (ldap 1.24, kafka 1.26) so the packaging CLI's
           # `go build` never triggers a per-job GOTOOLCHAIN auto-download.
           go-version: '1.26.x'
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
       - name: Set up Rust
         if: matrix.plugin == 'ssh' || matrix.plugin == 'files'
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up sccache
+        if: matrix.plugin == 'ssh' || matrix.plugin == 'files'
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache sccache store
+        if: matrix.plugin == 'ssh' || matrix.plugin == 'files'
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.sccache-cache
+          # Primary key carries plugin + target so the parallel matrix saves
+          # never collide; the restore prefix lets sibling jobs share
+          # compilations.
+          key: sccache-${{ runner.os }}-${{ matrix.plugin }}-${{ matrix.target }}-${{ hashFiles(format('{0}/backend/Cargo.lock', matrix.plugin)) }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ matrix.plugin }}-${{ matrix.target }}-
+            sccache-${{ runner.os }}-${{ matrix.plugin }}-
 
       - name: Cache Rust build
         if: matrix.plugin == 'ssh' || matrix.plugin == 'files'
@@ -263,7 +291,7 @@ jobs:
         run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"
 
       - name: Download prebuilt UI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: frontend-ui-${{ matrix.plugin }}
           path: ${{ matrix.plugin }}/ui
@@ -279,7 +307,7 @@ jobs:
         run: bash scripts/build.sh
 
       - name: Upload candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dbx-plugin-${{ matrix.plugin }}-${{ matrix.target }}
           if-no-files-found: error
@@ -295,10 +323,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download all candidates
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: dbx-plugin-*
           path: candidate-artifacts
@@ -308,7 +336,7 @@ jobs:
         run: python3 shared/release/validate_artifact_set.py candidate-artifacts
 
       - name: Publish combined candidate bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dbx-plugin-candidates-${{ github.sha }}
           path: candidate-artifacts

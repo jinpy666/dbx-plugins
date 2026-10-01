@@ -252,11 +252,6 @@ jobs:
           # already packages them with CGO_ENABLED=0; keep candidates identical.
           echo "CGO_ENABLED=0" >> "$GITHUB_ENV"
 
-      - name: Install Windows native dependencies
-        if: runner.os == 'Windows' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
-        shell: pwsh
-        run: choco install nasm -y --no-progress
-
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:

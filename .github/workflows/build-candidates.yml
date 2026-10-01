@@ -107,7 +107,7 @@ jobs:
         run: npm install --global pnpm@11.24.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: pnpm
@@ -229,7 +229,7 @@ jobs:
         run: choco install nasm -y --no-progress
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 

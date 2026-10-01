@@ -197,7 +197,13 @@ jobs:
           python3 -m pip install --break-system-packages ziglang
           python3 -m ziglang version
           mkdir -p "$HOME/.cargo/wrappers"
-          printf '#!/bin/sh\nexec python3 -m ziglang "$@"\n' > "$HOME/.cargo/wrappers/zig"
+          # The packaging CLI spawns cargo with a restricted PATH: it does
+          # include this wrappers dir (the cargo shim is found there) but not
+          # python3 — so the zig shim must call python by ABSOLUTE path or
+          # cargo-zigbuild reads an empty "zig version" ("empty string,
+          # expected a semver version").
+          PY3="$(command -v python3)"
+          printf '#!/bin/sh\nexec "%s" -m ziglang "$@"\n' "$PY3" > "$HOME/.cargo/wrappers/zig"
           chmod +x "$HOME/.cargo/wrappers/zig"
           CARGO_BIN="$(command -v cargo)"
           cat > "$HOME/.cargo/wrappers/cargo" <<'WRAPPER'

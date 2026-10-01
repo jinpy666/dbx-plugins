@@ -182,7 +182,12 @@ jobs:
         if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libdbus-1-dev nasm
+          sudo apt-get install -y pkg-config libudev-dev nasm
+          # libudev-dev: ssh 的 serialport 4 经 libudev-sys 枚举串口。
+          # setup-python@v7 会把 PKG_CONFIG_PATH 设成 Python 自己的
+          # pkgconfig 目录、遮蔽系统路径，pkg-config 因此找不到 libudev.pc
+          # （v5 无此行为，属 v7 升级的连锁影响）——把系统路径加回去。
+          echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
           # The plugin CLI invokes a bare `cargo build` while packaging. Route it
           # through cargo-zigbuild so Linux sidecars link against a low glibc
           # baseline: the official docker image runtime is debian:bookworm-slim

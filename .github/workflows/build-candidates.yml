@@ -222,11 +222,20 @@ jobs:
           chmod +x "$HOME/.cargo/wrappers/cargo"
           echo "$HOME/.cargo/wrappers" >> "$GITHUB_PATH"
 
-      - name: Install cargo-zigbuild and zig (prebuilt binaries)
+      - name: Install zig
+        if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
+        uses: mlugg/setup-zig@v1
+        with:
+          # 与本地验证过的组合一致（cargo-zigbuild 0.23.x + zig 0.16）；旧
+          # pip ziglang 方案在当前 runner 影像下 shim 不再可解析（"Failed
+          # to find zig"），taiki-e/install-action 不收录 zig。
+          version: 0.16.0
+
+      - name: Install cargo-zigbuild (prebuilt binary)
         if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-zigbuild,zig
+          tool: cargo-zigbuild
 
       - name: Static-link Go sidecars on Linux
         if: runner.os == 'Linux' && (matrix.plugin == 'ldap' || matrix.plugin == 'kafka')

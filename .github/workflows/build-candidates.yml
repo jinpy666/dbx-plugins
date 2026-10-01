@@ -190,7 +190,10 @@ jobs:
           # which kills the sidecar in the loader (exit status 1) — seen as
           # "Plugin initialization failed" on web/docker installs
           # (dbx-plugin-ssh#8, dbx-plugin-ssh#58).
-          pip3 install --user --break-system-packages ziglang
+          # zig itself is installed below via taiki-e/install-action: the
+          # pip ziglang shim used to land in ~/.local/bin but stopped being
+          # resolvable on the current runner images (cargo-zigbuild: "Failed
+          # to find zig").
           mkdir -p "$HOME/.cargo/wrappers"
           CARGO_BIN="$(command -v cargo)"
           cat > "$HOME/.cargo/wrappers/cargo" <<'WRAPPER'
@@ -219,11 +222,11 @@ jobs:
           chmod +x "$HOME/.cargo/wrappers/cargo"
           echo "$HOME/.cargo/wrappers" >> "$GITHUB_PATH"
 
-      - name: Install cargo-zigbuild (prebuilt binary)
+      - name: Install cargo-zigbuild and zig (prebuilt binaries)
         if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild,zig
 
       - name: Static-link Go sidecars on Linux
         if: runner.os == 'Linux' && (matrix.plugin == 'ldap' || matrix.plugin == 'kafka')

@@ -190,11 +190,15 @@ jobs:
           # which kills the sidecar in the loader (exit status 1) — seen as
           # "Plugin initialization failed" on web/docker installs
           # (dbx-plugin-ssh#8, dbx-plugin-ssh#58).
-          # zig itself is installed below via taiki-e/install-action: the
-          # pip ziglang shim used to land in ~/.local/bin but stopped being
-          # resolvable on the current runner images (cargo-zigbuild: "Failed
-          # to find zig").
+          # zig comes from the ziglang pip wheel; its ~/.local/bin shim proved
+          # unresolvable on current runner images ("Failed to find zig"), so
+          # expose it deterministically as a shim in the wrappers dir (already
+          # first on PATH via GITHUB_PATH below).
+          python3 -m pip install --break-system-packages ziglang
+          python3 -m ziglang version
           mkdir -p "$HOME/.cargo/wrappers"
+          printf '#!/bin/sh\nexec python3 -m ziglang "$@"\n' > "$HOME/.cargo/wrappers/zig"
+          chmod +x "$HOME/.cargo/wrappers/zig"
           CARGO_BIN="$(command -v cargo)"
           cat > "$HOME/.cargo/wrappers/cargo" <<'WRAPPER'
           #!/bin/sh
@@ -221,15 +225,6 @@ jobs:
           sed -i "s|__CARGO__|$CARGO_BIN|" "$HOME/.cargo/wrappers/cargo"
           chmod +x "$HOME/.cargo/wrappers/cargo"
           echo "$HOME/.cargo/wrappers" >> "$GITHUB_PATH"
-
-      - name: Install zig
-        if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')
-        uses: mlugg/setup-zig@v1
-        with:
-          # 与本地验证过的组合一致（cargo-zigbuild 0.23.x + zig 0.16）；旧
-          # pip ziglang 方案在当前 runner 影像下 shim 不再可解析（"Failed
-          # to find zig"），taiki-e/install-action 不收录 zig。
-          version: 0.16.0
 
       - name: Install cargo-zigbuild (prebuilt binary)
         if: runner.os == 'Linux' && (matrix.plugin == 'ssh' || matrix.plugin == 'files')

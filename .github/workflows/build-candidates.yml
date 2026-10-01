@@ -235,7 +235,7 @@ jobs:
 
       - name: Set up Go
         if: matrix.plugin == 'ldap' || matrix.plugin == 'kafka'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # >= backend go.mod (ldap 1.24, kafka 1.26) so the packaging CLI's
           # `go build` never triggers a per-job GOTOOLCHAIN auto-download.

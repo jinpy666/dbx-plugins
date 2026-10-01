@@ -263,7 +263,7 @@ jobs:
         run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"
 
       - name: Download prebuilt UI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: frontend-ui-${{ matrix.plugin }}
           path: ${{ matrix.plugin }}/ui
@@ -298,7 +298,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download all candidates
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: dbx-plugin-*
           path: candidate-artifacts

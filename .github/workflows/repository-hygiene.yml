@@ -18,9 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         # The checks scan tracked files at HEAD (git ls-files); history is not
-        # needed, so keep the default shallow checkout.
+        # needed, so keep the default shallow checkout. Plugin manifests live
+        # in the four plugin submodules — without them validate_manifests.py
+        # sees empty directories and fails (stood red on main since 09-14).
         with:
           fetch-depth: 1
+          submodules: recursive
       - name: Validate plugin manifests
         run: |
           python3 shared/release/validate_manifests.py ssh
